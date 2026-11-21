@@ -66,26 +66,6 @@ def make_interception(
     return ElasticInterceptionPool(config, requires_tunnel, state_service_secrets)
 
 
-async def start_rollout_interception(
-    runtime_is_local: bool,
-    toolsets: list,
-    shared_tools: "dict[str, SharedToolServer]",
-) -> InterceptionServer:
-    """Start an owned per-rollout `InterceptionServer`."""
-    server = InterceptionServer(
-        requires_tunnel=requires_tunnel(
-            runtime_is_local,
-            [server.config for server in toolsets],
-            shared_tools.values(),
-        ),
-        state_service_secrets=tuple(
-            tool.state_secret for tool in shared_tools.values() if tool.state_secret
-        ),
-    )
-    await server.__aenter__()
-    return server
-
-
 @asynccontextmanager
 async def serve_interception(
     interception: Interception | None,
@@ -104,12 +84,16 @@ async def serve_interception(
         async with interception.acquire(session) as slot:
             yield slot
         return
-    server = await start_rollout_interception(runtime.is_local, servers, shared_tools)
-    try:
-        async with server.acquire(session) as slot:
-            yield slot
-    finally:
-        await server.__aexit__(None, None, None)
+    server = InterceptionServer(
+        requires_tunnel=requires_tunnel(
+            runtime.is_local,
+            [server.config for server in servers],
+            shared_tools.values(),
+        ),
+        state_service_secrets=tuple(session.state_service_secrets),
+    )
+    async with server, server.acquire(session) as slot:
+        yield slot
 
 
 __all__ = [

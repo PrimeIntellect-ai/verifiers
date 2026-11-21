@@ -75,7 +75,7 @@ A truncated or timed-out run is often not worth grading. Set `agent.scoring.skip
 
 `Trace.is_truncated` only checks the run's last model response. Some harnesses keep going after a response hits its per-turn token cap: they compact, or answer a cut-off tool call. Set `agent.max_turn_tokens` to cap each response and stop the run before the next model call once a response hits that cap. The stop condition is `max_turn_tokens`. The run is then truncated, so `skip_on_truncated` applies.
 
-Set `agent.scoring.skip_on_workspace_loss` to keep a rollout whose workspace is gone, such as a Prime VM the agent powered off, as a sample with reward 0 instead of failing it. The provider is checked after a harness failure and when execution closes, with a bounded wait for a dead workspace to be reported as terminated; an unreachable provider is no proof of loss, and only a loss the provider reports without a reason counts, as Prime does for a guest that powered itself off or crashed, and any loss it explains, such as an idle timeout or a lost host, still fails. Such a trace stops with `workspace_lost` and skips task finalization as well as scoring; `trace.info["scoring_skipped"]` is `"workspace_lost"`, and `trace.info["workspace_loss"]` holds the provider's report.
+When Prime confirms the guest terminated its workspace during agent execution, the trace stops with `workspace_lost` and has reward 0. The rollout skips task finalization and scoring. `trace.info["workspace_loss"]` records the provider evidence. A provider-reported infrastructure loss fails the attempt and remains eligible for retry.
 
 ```toml
 [env.agent]
@@ -85,5 +85,4 @@ max_turn_tokens = 4096
 [env.agent.scoring]
 skip_on_truncated = true
 skip_on_timeout = true
-skip_on_workspace_loss = true
 ```

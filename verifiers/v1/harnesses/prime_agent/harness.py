@@ -110,9 +110,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
 
-    async def remote_tools(self, runtime: Runtime, data: TaskData) -> None:
-        return None
-
     # Its chat-completions provider drops whitespace-only assistant text on replay. Recheck on bumps:
     # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.10.5/crates/pa-ai/src/providers/openai_completions/convert.rs#L106
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
@@ -173,7 +170,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def setup_execution(
-        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+        self, runtime: Runtime, connection: ExecutionConnection
     ) -> None:
         await self._install(connection.runtime, {})
         connection.register(

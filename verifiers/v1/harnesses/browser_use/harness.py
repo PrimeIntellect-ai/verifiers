@@ -68,10 +68,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
 
     async def remote_tools(self, runtime: Runtime, data: TaskData):
-        assert runtime._execution_bridge is not None
-        program = await runtime._execution_bridge.runtime.prepare_uv_script(
-            PROGRAM_SOURCE, {}
-        )
+        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, {})
         state = f"/tmp/browser-session-{secrets.token_hex(16)}"
         args = await self._browser_args(runtime, state)
 

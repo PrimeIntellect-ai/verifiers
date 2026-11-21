@@ -201,10 +201,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         await self._install(runtime, self.config.resolved_env)
         await super().setup(runtime)
 
-    async def remote_tools(self, runtime: Runtime, data: TaskData):
-        # Native workers register during prepare_acp.
-        return None
-
     async def _install(self, runtime: Runtime, install_env: dict[str, str]) -> None:
         if self.config.skills:
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
@@ -253,7 +249,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         )
 
     async def setup_execution(
-        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+        self, runtime: Runtime, connection: ExecutionConnection
     ) -> None:
         # The native listener lives only inside B. A always uses the gated execution
         # connection; keeping the listener apart from that session lets detached
@@ -264,7 +260,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         python = f"{self._install_dir()}/tools/rlm/bin/python"
         home = self._skills_home()
         port = await connection.serve(
-            workspace,
+            connection.runtime,
             [
                 python,
                 "-m",
@@ -294,8 +290,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         endpoint: str,
         secret: str,
         system_prompt: str | None,
-        worker_command: list[str] | None = None,
-        worker_cwd: str | None = None,
+        worker_command: list[str],
+        workspace: Runtime,
     ) -> JsonObject:
         compaction = self.config.compaction
         policy_knobs: dict[str, Any] = {
@@ -352,13 +348,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": dict(
-                runtime._execution_bridge.runtime.env
-                if getattr(runtime, "_execution_bridge", None) is not None
-                else runtime.env
-            ),
+            "kernel_env": dict(workspace.env),
             "execution_command": worker_command,
-            "execution_cwd": worker_cwd,
+            "execution_cwd": workspace.info.workdir,
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         if (
@@ -410,7 +402,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             protocol="rlm",
             tool_url=f"{root}/tool",
         )
-        worker_cwd = workspace.info.workdir
         return ACPConfig(
             env={**self.config.resolved_env, "RLM_HOME": rlm_home},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
@@ -424,7 +415,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 secret,
                 system_prompt,
                 worker_command,
-                worker_cwd,
+                workspace,
             ),
         )
 

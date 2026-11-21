@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Self
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -38,9 +38,7 @@ class Runtime:
     env: Mapping[str, str] = field(default_factory=dict)
     user: str | None = None
     home: str | None = None
-    workdir: str | None = None
     _execution_bridge: ExecutionBridge | None = None
-    _lease: Any = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -57,16 +55,6 @@ class Runtime:
     def with_user(self, user: str | None, home: str | None = None) -> Self:
         return replace(self, user=user, home=home if user is not None else None)
 
-    def with_workdir(self, workdir: str | None) -> Self:
-        return replace(self, workdir=workdir)
-
-    async def wait_lan_ready(self) -> None:
-        if self._lease is not None:
-            await self._lease.wait_lan_ready()
-            return
-        if wait_lan := getattr(self.backend, "wait_lan_ready", None):
-            await wait_lan()
-
     def process_env(self, env: dict[str, str]) -> dict[str, str]:
         home = {} if self.home is None else {"HOME": self.home}
         return {**self.env, **home, **env}
@@ -77,14 +65,7 @@ class Runtime:
 
     @property
     def info(self):
-        info = self.backend.info
-        if (
-            self.workdir is not None
-            and hasattr(info, "workdir")
-            and info.workdir != self.workdir
-        ):
-            return info.model_copy(update={"workdir": self.workdir})
-        return info
+        return self.backend.info
 
     @property
     def name(self) -> str:
@@ -117,30 +98,25 @@ class Runtime:
         on the whole runtime rather than only this view; return once the provider
         enforces it. Framework routes are not added. A runtime that started without a
         policy can only stay open."""
-        if not network.network_restricted:
-            config = self.backend.config
-            control_hosts = getattr(self.backend, "_control_blocked_hosts", frozenset())
-            if (
-                control_hosts
-                and isinstance(config, NetworkPolicyConfig)
-                and config.allow == ["*"]
-                and set(config.block) <= control_hosts
-            ):
+        async with self.backend._workspace_network_lock:
+            if self.backend._workspace_routes:
+                await self.backend._apply_workspace_network(network)
                 return
-            await self.backend.prepare_execution(None)
-            return
-        config = self.backend.config
-        if not self.backend.network_restricted or not isinstance(
-            config, NetworkPolicyConfig
-        ):
-            raise SandboxError(
-                f"runtime {self.name!r} started without a network policy, so it cannot "
-                "take one"
+            if not network.network_restricted:
+                await self.backend.prepare_execution(None)
+                return
+            config = self.backend.config
+            if not self.backend.network_restricted or not isinstance(
+                config, NetworkPolicyConfig
+            ):
+                raise SandboxError(
+                    f"runtime {self.name!r} started without a network policy, so it cannot "
+                    "take one"
+                )
+            policy = type(config).model_validate(
+                {**config.model_dump(), "allow": network.allow, "block": network.block}
             )
-        policy = type(config).model_validate(
-            {**config.model_dump(), "allow": network.allow, "block": network.block}
-        )
-        await self.backend.prepare_execution([], policy)
+            await self.backend.prepare_execution([], policy)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run `argv` to completion and collect its output."""
@@ -157,28 +133,7 @@ class Runtime:
         directory, and return. The process runs until the runtime stops."""
         await self.backend.run_background(self, argv, env, log)
 
-    def resolve_path(self, path: str) -> str:
-        if path.startswith("/"):
-            return path
-        if self.type == "subprocess" and self.backend.info.id:
-            base = self.backend.info.id
-        else:
-            base = (
-                self.workdir
-                or getattr(self.backend.config, "workdir", "/app")
-                or "/app"
-            )
-        return f"{base.rstrip('/')}/{path}"
-
     async def write(self, path: str, data: bytes) -> None:
-        if (
-            self.user is None
-            and len(data) <= 512 * 1024
-            and (daemon := getattr(self.backend, "_daemon", None)) is not None
-            and daemon.alive
-        ):
-            await daemon.write_file(self.resolve_path(path), data)
-            return
         await self.backend.write(self, path, data)
 
     async def alive(self) -> bool:

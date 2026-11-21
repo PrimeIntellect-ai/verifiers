@@ -13,7 +13,7 @@ from verifiers.v1.configs.harness import (
     skill_destination,
 )
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
+from verifiers.v1.harnesses.utils.remote import native_remote_tools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
@@ -76,11 +76,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         return message
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        return RemoteToolsSpec(
-            NativeRemoteTools,
-            {"harness": "pi", "disabled_tools": list(self.config.disabled_tools or ())},
-            native_tools=native_tool_names("pi"),
-        )
+        return native_remote_tools("pi", self.config.disabled_tools)
 
     async def setup(self, runtime: Runtime) -> None:
         logger.debug(

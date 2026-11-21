@@ -138,11 +138,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     _executor_cwd: str | None = None
     _staged_configs: dict[str, dict] | None = None
 
-    async def remote_tools(self, runtime: Runtime, data: TaskData) -> None:
-        # Codex's native execution environment transports files and persistent
-        # processes, including nested Code Mode calls, without emulating tools.
-        return None
-
     def can_gate_tool(self, call: ToolCall) -> bool:
         # 0.166.0 deliberately omits PreToolUse for write_stdin. Only these
         # native tools have a synchronous veto hook that can carry a replacement.
@@ -194,7 +189,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         await super().setup(runtime)
 
     async def setup_execution(
-        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+        self, runtime: Runtime, connection: ExecutionConnection
     ) -> None:
         """Install the static musl Codex binary in B without Node or npm."""
         target_root = connection.runtime.with_user(None)
@@ -243,7 +238,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 "CODEX_MANAGED_BY_NPM": "1",
             },
         )
-        self._executor_cwd = workspace.info.workdir
+        self._executor_cwd = connection.runtime.info.workdir
 
     async def prepare_acp(
         self,

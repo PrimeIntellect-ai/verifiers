@@ -46,11 +46,8 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
             "# REMOTE_TOOL_CLIENT", REMOTE_TOOL_CLIENT_SOURCE
         )
 
-    async def remote_tools(self, runtime: Runtime, data: TaskData):
-        return None
-
     async def setup_execution(
-        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+        self, runtime: Runtime, connection: ExecutionConnection
     ) -> None:
         await connection.runtime.prepare_uv_script(self._source(), {})
 

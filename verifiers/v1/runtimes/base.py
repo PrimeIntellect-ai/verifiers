@@ -6,6 +6,7 @@ import asyncio
 import atexit
 import base64
 import contextlib
+import logging
 import shlex
 import time
 import uuid
@@ -14,6 +15,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urlsplit
 
 from pydantic_config import BaseConfig
 
@@ -24,6 +26,7 @@ from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from verifiers.v1.runtimes.harness_daemon import HarnessDaemonClient
     from verifiers.v1.runtimes.runtime import Runtime
 
 logger = get_logger(__name__)
@@ -83,8 +86,6 @@ class RuntimeProcess(ABC):
 
     stdout: AsyncIterator[bytes]
     stderr: AsyncIterator[bytes]
-    execution_endpoint: dict | None = None
-    """Optional process-scoped LAN endpoint, using the execution bridge protocol."""
 
     @abstractmethod
     async def write(self, data: bytes) -> None:
@@ -241,6 +242,10 @@ class RuntimeBackend(ABC):
         self.env: dict[str, str] = {}
         self.cache = RuntimeCache()
         self._setup_claimed = False
+        self._daemon_lock = asyncio.Lock()
+        self._daemon: HarnessDaemonClient | None = None
+        self._workspace_routes: dict[object, tuple[str, ...]] = {}
+        self._workspace_network_lock = asyncio.Lock()
         self._background: list[RuntimeProcess] = []
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
@@ -275,7 +280,7 @@ class RuntimeBackend(ABC):
         first = not self.stopped
         self.stopped = True  # before the await: no new borrows once teardown begins
         started = time.perf_counter()
-        if (daemon := getattr(self, "_daemon", None)) is not None:
+        if (daemon := self._daemon) is not None:
             self._daemon = None
             with contextlib.suppress(Exception):
                 await run_shielded(daemon.aclose())
@@ -393,9 +398,72 @@ class RuntimeBackend(ABC):
         """Open egress for trusted setup when reusing a restricted runtime."""
         if not self.network_restricted:
             return
-        if self._setup_claimed:
+        async with self._workspace_network_lock:
+            if self._setup_claimed and not self._workspace_routes:
+                await self.prepare_execution(None)
+            self._setup_claimed = True
+
+    @contextlib.asynccontextmanager
+    async def workspace_network(
+        self, policy: NetworkPolicyConfig, routes: list[str], *, borrowed: bool
+    ):
+        """Reserve evaluator routes while a rollout uses this workspace."""
+        if not routes:
+            raise SandboxError("workspace has no control-plane routes")
+        key = object()
+        try:
+            async with self._workspace_network_lock:
+                self._workspace_routes[key] = tuple(routes)
+                await self._apply_workspace_network(policy)
+            yield
+        finally:
+            async with self._workspace_network_lock:
+                self._workspace_routes.pop(key, None)
+                if borrowed and not self.stopped:
+                    try:
+                        await self._apply_workspace_network(policy)
+                    except Exception:
+                        logger.warning(
+                            "Failed to restore borrowed workspace egress",
+                            exc_info=logger.isEnabledFor(logging.DEBUG),
+                        )
+
+    async def _apply_workspace_network(self, policy: NetworkPolicyConfig) -> None:
+        # The caller holds the lock across the provider update. Multiple borrows,
+        # including a nested judge, must retain every live evaluator endpoint.
+        hosts = set()
+        for routes in self._workspace_routes.values():
+            for route in routes:
+                parsed = urlsplit(route)
+                if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                    raise SandboxError("workspace has an invalid control-plane route")
+                if policy.allow != ["*"] and policy.permits(
+                    parsed.scheme,
+                    parsed.hostname,
+                    parsed.port or (443 if parsed.scheme == "https" else 80),
+                ):
+                    raise SandboxError(
+                        "task network allowlist includes a framework endpoint"
+                    )
+                if not parsed.hostname.endswith(".sandbox.internal"):
+                    hosts.add(parsed.hostname)
+        block = (
+            list(dict.fromkeys([*policy.block, *sorted(hosts)]))
+            if policy.allow == ["*"]
+            else policy.block
+        )
+        effective = type(self.config).model_validate(
+            {**self.config.model_dump(), "allow": policy.allow, "block": block}
+        )
+        if effective.network_restricted:
+            await self.prepare_execution([], effective)
+        else:
             await self.prepare_execution(None)
-        self._setup_claimed = True
+        # The config describes task requirements; the trace records the applied rules.
+        self.config = self.config.model_copy(
+            update={"allow": policy.allow, "block": policy.block}
+        )
+        self.info.allow, self.info.block = effective.allow, effective.block
 
     async def lost(self) -> RuntimeLoss | None:
         """The provider's report that this runtime is gone; None while it runs, and

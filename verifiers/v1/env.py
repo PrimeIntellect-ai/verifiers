@@ -395,28 +395,22 @@ class Env(ABC, Generic[ConfigT]):
         return episode
 
     @contextlib.asynccontextmanager
-    async def serving(self, interception: Interception | None = None):
+    async def serving(self):
         """Hold the env-level serving resources for the duration of an eval; plan and
         run slots inside. Torn down on exit (`stop()`, then the framework's)."""
-        from verifiers.v1.runtimes.harness_pool import harness_pool_scope
-
-        async with harness_pool_scope(), self.shared_tools() as shared:
-            resource = (
-                contextlib.nullcontext(interception)
-                if interception is not None
-                else make_interception(
-                    self.config.interception,
-                    requires_tunnel=self._requires_tunnel(shared),
-                    state_service_secrets=tuple(
-                        server.state_secret
-                        for server in shared.values()
-                        if server.state_secret
-                    ),
-                )
+        async with self.shared_tools() as shared:
+            interception = make_interception(
+                self.config.interception,
+                requires_tunnel=self._requires_tunnel(shared),
+                state_service_secrets=tuple(
+                    server.state_secret
+                    for server in shared.values()
+                    if server.state_secret
+                ),
             )
-            async with resource as active_interception:
+            async with interception:
                 self._shared_tools = shared
-                self._interception = active_interception
+                self._interception = interception
                 try:
                     await self.start()
                     yield

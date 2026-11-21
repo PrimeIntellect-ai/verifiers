@@ -20,7 +20,7 @@ import inspect
 import json
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
-from contextlib import AbstractAsyncContextManager, suppress
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import get_origin, get_type_hints
@@ -56,15 +56,6 @@ logger = get_logger(__name__)
 
 MCPProxy = Callable[[str, str], AbstractAsyncContextManager[str]]
 ToolResultKey = tuple[int | str, str]
-
-
-def _parse_tool_key(raw: list) -> ToolResultKey:
-    first = raw[0]
-    if isinstance(first, int):
-        return (first, str(raw[1]))
-    if isinstance(first, str) and first.isdigit():
-        return (int(first), str(raw[1]))
-    return (str(first), str(raw[1]))
 
 
 def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
@@ -224,10 +215,10 @@ class RolloutSession:
     execution_bridge: ExecutionBridge | None = None
     tool_gate_can_deny: Callable[[ToolCall], bool] | None = None
     check_tool_call: Callable | None = None
-    native_tool_decisions: dict[tuple[int, str], tuple[str, dict]] = field(
+    # Retries for one call await the same task. Independent calls can run in parallel.
+    _tool_receipts: dict[ToolResultKey, tuple[ToolCall, asyncio.Task[dict]]] = field(
         default_factory=dict
     )
-    _tool_gate_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pinned_tool_results: dict[ToolResultKey, ToolMessage] = field(default_factory=dict)
     """The results the model must see, by issuing turn (or prefix) and call id: rewrites and
     results it substituted for blocked calls. The harness keeps its own copy of each in its
@@ -244,12 +235,7 @@ class RolloutSession:
     )
     """Native argument forms observed at the gate, scoped to their conversation prefix.
     Remote adapters execute the sampled call; replay must retain that call too."""
-    _remote_gate_queue: asyncio.Queue[dict | None] = field(
-        default_factory=asyncio.Queue
-    )
-    _pending_pins: dict[
-        ToolResultKey, tuple[ToolCall, list[str], asyncio.Future[None]]
-    ] = field(default_factory=dict)
+    _tool_prefixes: dict[int, list[str]] = field(default_factory=dict)
     prepared_users: Counter[str] = field(default_factory=Counter)
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
@@ -399,20 +385,6 @@ class RolloutSession:
         """Run typed request interceptors and stops over one canonical request. Only the
         uncommitted tail's user and tool messages may change; a rewritten tool result is
         pinned for the rest of the rollout."""
-        if self._pending_pins:
-            present_ids = {
-                message.tool_call_id
-                for message in request.messages
-                if isinstance(message, ToolMessage)
-            }
-            pending = [
-                asyncio.shield(future)
-                for _, (call, _, future) in list(self._pending_pins.items())
-                if call.id in present_ids and not future.done()
-            ]
-            if pending:
-                with suppress(TimeoutError, asyncio.CancelledError):
-                    await asyncio.wait_for(asyncio.gather(*pending), timeout=10.0)
         request = self.pin_tool_results(request, dialect, known_path)
         if not self.request_interceptors and (not run_stops or not self.request_stops):
             return request, [], None
@@ -656,14 +628,7 @@ class RolloutSession:
             prefix_hash = self._prefix_hash(history, dialect)
             for call in assistant.tool_calls:
                 self.tool_issuers.setdefault((prefix_hash, call.id), set()).add(node)
-        uses_local_gate = bool(
-            getattr(self.remote_tool_handler, "uses_local_gate", False)
-        )
-        native_tools: frozenset[str] | None = getattr(
-            self.remote_tool_handler, "native_tools", None
-        )
-        queued: list[dict] = []
-        pending_entries: list[tuple[ToolResultKey, ToolCall]] = []
+        self._tool_prefixes[node] = alias_prefixes
         for call in assistant.tool_calls:
             if self.check_tool_call is not None:
                 self.check_tool_call(
@@ -685,10 +650,8 @@ class RolloutSession:
                 return stopped
             verdict = request.messages[-1]
             assert isinstance(verdict, ToolMessage)
-            is_native = native_tools is None or call.name in native_tools
             if verdict == probe:
                 self.tool_decisions[key] = None
-                denied = None
             else:
                 if not self.gates_tools or (
                     self.tool_gate_can_deny is not None
@@ -696,33 +659,9 @@ class RolloutSession:
                 ):
                     return records[-1].handler
                 self.tool_decisions[key] = verdict
-                denied = verdict.model_dump(exclude_none=True)
-            if uses_local_gate and (is_native or denied is not None):
-                queued.append(
-                    {
-                        "key": list(key),
-                        "call": call.model_dump(),
-                        "denied": denied,
-                    }
-                )
-                pending_entries.append((key, call))
         if self.remote_tool_handler is not None and not self.gates_tools:
             raise HarnessError("split tool execution requires a harness tool gate")
-        if uses_local_gate and queued:
-            loop = asyncio.get_running_loop()
-            for key, call in pending_entries:
-                self._pending_pins[key] = (
-                    call,
-                    list(alias_prefixes),
-                    loop.create_future(),
-                )
-            self._remote_gate_queue.put_nowait({"items": queued})
         return None
-
-    def _finish_pending_pin(self, key: ToolResultKey) -> None:
-        entry = self._pending_pins.pop(key, None)
-        if entry is not None and not entry[2].done():
-            entry[2].set_result(None)
 
     def _record_replay_alias(
         self, alias_prefixes: Sequence[str], call: ToolCall, arguments: object
@@ -734,71 +673,41 @@ class RolloutSession:
                     aliases.append((arguments, call))
 
     def _pin_tool_verdict(
-        self, key: ToolResultKey, call: ToolCall, raw_or_msg: ToolMessage | dict
+        self, key: ToolResultKey, call: ToolCall, verdict: ToolMessage
     ) -> ToolMessage:
-        payload = (
-            raw_or_msg.model_dump(exclude_none=True)
-            if isinstance(raw_or_msg, ToolMessage)
-            else raw_or_msg
-        )
-        verdict = ToolMessage.model_validate(bound_tool_message(payload))
         if verdict.tool_call_id != call.id or verdict.name != call.name:
             raise HarnessError("remote tool handler returned the wrong call")
         self.tool_decisions[key] = verdict
         self.pinned_tool_results[key] = verdict
         return verdict
 
-    async def poll_remote_gate(self, timeout: float = 20.0) -> dict:
-        if self.released or self.stopped:
-            return {"closed": True}
-        try:
-            batch = await asyncio.wait_for(
-                self._remote_gate_queue.get(), timeout=timeout
-            )
-        except TimeoutError:
-            return {"items": []}
-        if batch is None or self.released:
-            return {"closed": True}
-        return batch
-
-    def record_remote_pin(
+    async def _tool_once(
         self,
-        raw_key: list,
-        raw_message: dict,
-        arguments: object = None,
-    ) -> None:
-        key = _parse_tool_key(raw_key)
-        pending = self._pending_pins.get(key)
-        if pending is None or self.tool_decisions.get(key) is not None:
-            raise HarnessError("unexpected or unapproved remote tool pin")
-        call, alias_prefixes, _ = pending
-        self._pin_tool_verdict(key, call, raw_message)
-        self._record_replay_alias(alias_prefixes, call, arguments)
-        self.gated_tools.add(key)
-        self._finish_pending_pin(key)
+        leaf: int,
+        call: ToolCall,
+        decide: Callable[[int, ToolCall], Awaitable[dict]],
+    ) -> dict:
+        key = (leaf, call.id)
+        receipt = self._tool_receipts.get(key)
+        if receipt is None:
+            task = asyncio.create_task(decide(leaf, call))
+            self.adopt(task)
+            self._tool_receipts[key] = (call, task)
+        else:
+            previous, task = receipt
+            if previous != call:
+                raise HarnessError("tool call id was reused with different arguments")
+        return await asyncio.shield(task)
 
-    def record_remote_denial_ack(
-        self,
-        raw_key: list,
-        arguments: object = None,
-    ) -> None:
-        key = _parse_tool_key(raw_key)
-        pending = self._pending_pins.get(key)
-        if pending is None or self.tool_decisions.get(key) is None:
-            raise HarnessError("unexpected remote tool denial acknowledgement")
-        call, alias_prefixes, _ = pending
-        self._record_replay_alias(alias_prefixes, call, arguments)
-        self.gated_tools.add(key)
-        self._finish_pending_pin(key)
+    async def _execute_sampled_tool(self, leaf: int, call: ToolCall) -> dict:
+        assert self.remote_tool_handler is not None
+        verdict = self._pin_tool_verdict(
+            (leaf, call.id), call, await self.remote_tool_handler(call)
+        )
+        return {"action": "deny", "message": verdict.model_dump(exclude_none=True)}
 
     async def decide_tool(
         self, tool_call_id: str, name: str | None = None, arguments: object = None
-    ) -> dict:
-        async with self._tool_gate_lock:
-            return await self._decide_tool(tool_call_id, name, arguments)
-
-    async def _decide_tool(
-        self, tool_call_id: str, name: str | None, arguments: object
     ) -> dict:
         """Answer the harness's gate for a call it is about to execute with the verdict
         `gate_tool_calls` recorded. Native gates may wrap the model's call id or carry it
@@ -847,7 +756,6 @@ class RolloutSession:
             ] or matches
         if len(matches) == 1:
             leaf, call = matches[0]
-            dialect = self.tool_dialects.get(leaf)
             deferred = getattr(self.remote_tool_handler, "defer_until_gate", False)
             if (
                 self.remote_tool_handler is not None
@@ -856,10 +764,9 @@ class RolloutSession:
                 and name != call.name
             ):
                 raise HarnessError("split tool gate call differs from the sampled call")
-            branch = graph.path(self.trace, leaf)
             if self.remote_tool_handler is not None and not deferred:
                 self._record_replay_alias(
-                    [self._prefix_hash(branch[:-1], dialect)], call, arguments
+                    self._tool_prefixes.get(leaf, ()), call, arguments
                 )
             key: ToolResultKey = (leaf, call.id)
             self.gated_tools.add(key)
@@ -875,10 +782,7 @@ class RolloutSession:
             if self.remote_tool_handler is not None and verdict is None and is_native:
                 if key not in self.tool_decisions:
                     raise HarnessError("split tool gate has no policy decision")
-                verdict = self._pin_tool_verdict(
-                    key, call, await self.remote_tool_handler(call)
-                )
-            self._finish_pending_pin(key)
+                return await self._tool_once(leaf, call, self._execute_sampled_tool)
         elif matches or not name:
             raise HarnessError(
                 f"tool gate asked about {tool_call_id!r}, which matches "
@@ -915,21 +819,17 @@ class RolloutSession:
         Some environments also issue setup commands before the first model turn.
         These use the same policy boundary and retry receipts as sampled calls.
         """
-        native_key = (leaf, tool_call_id)
-        fingerprint = json.dumps([name, arguments], sort_keys=True)
-        if receipt := self.native_tool_decisions.get(native_key):
-            previous, decision = receipt
-            if previous != fingerprint:
-                raise HarnessError(
-                    "native tool call id was reused with different arguments"
-                )
-            return decision
+        call = ToolCall(
+            id=tool_call_id, name=name, arguments=json.dumps(arguments, sort_keys=True)
+        )
+        return await self._tool_once(leaf, call, self._judge_native_tool)
+
+    async def _judge_native_tool(self, leaf: int, call: ToolCall) -> dict:
         known_path = graph.path_node_ids(self.trace, leaf) if leaf >= 0 else []
         branch = [self.trace.nodes[i].message for i in known_path]
         tools = (
             self.trace.nodes[known_path[0]].tools if known_path else self.trace.tools
         )
-        call = ToolCall(id=tool_call_id, name=name, arguments=json.dumps(arguments))
         if branch and isinstance(branch[-1], AssistantMessage):
             assistant = branch.pop()
             known_path = known_path[:-1]
@@ -947,7 +847,7 @@ class RolloutSession:
             )
         else:
             assistant = AssistantMessage(content="", tool_calls=[call])
-        probe = ToolMessage(tool_call_id=call.id, content="", name=name)
+        probe = ToolMessage(tool_call_id=call.id, content="", name=call.name)
         request, records, stopped = await self.rewrite_request(
             Request(messages=[*branch, assistant, probe], tools=tools or None),
             dialect=self.tool_dialects.get(leaf),
@@ -968,9 +868,6 @@ class RolloutSession:
                         raise HarnessError(
                             "remote tool handler returned the wrong native call"
                         )
-                    verdict = ToolMessage.model_validate(
-                        bound_tool_message(verdict.model_dump(exclude_none=True))
-                    )
             decision = (
                 {"action": "allow"}
                 if verdict is None
@@ -979,7 +876,6 @@ class RolloutSession:
                     "message": verdict.model_dump(exclude_none=True),
                 }
             )
-        self.native_tool_decisions[native_key] = (fingerprint, decision)
         return decision
 
     @cached_property
@@ -1005,11 +901,6 @@ class RolloutSession:
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""
         self.released = True
-        self._remote_gate_queue.put_nowait(None)
-        for _, (_, _, future) in list(self._pending_pins.items()):
-            if not future.done():
-                future.cancel()
-        self._pending_pins.clear()
         for task in list(self.tasks):
             task.cancel()
 

@@ -66,7 +66,6 @@ RUNTIME_FEATURES = {
     "expose": "port exposure",
     "compose": "Compose services",
     "services": "native service VMs",
-    "split": "split deployment",
 }
 
 # Harness dialects that cannot run against the CI model yet.
@@ -156,8 +155,6 @@ def supports(runtime: str, feature: str) -> bool:
     if feature == "network":
         config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
         return isinstance(config, NetworkPolicyConfig)
-    if feature == "split":
-        return runtime in ("docker", "prime")
     if feature == "services":
         return issubclass(runtime_cls(runtime), PrimeBackend)
     flag = {

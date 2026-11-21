@@ -1,4 +1,4 @@
-"""Malicious Bash task: policy, workspace edits, and sandbox inspection."""
+"""Check shell policy, workspace edits, and sandbox isolation."""
 
 import verifiers.v1 as vf
 from verifiers.v1.runtimes import Runtime

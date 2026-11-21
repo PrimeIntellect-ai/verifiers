@@ -15,6 +15,7 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.runtimes.harness_daemon import (
     HarnessDaemonClient,
     ensure_backend_daemon,
+    prepare_daemon_command,
 )
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
@@ -74,6 +75,10 @@ class ACPConfig:
 
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
+
+    async def setup(self, runtime: Runtime) -> None:
+        # Install the runner before the rollout applies the final network policy.
+        await prepare_daemon_command(runtime)
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         """Consume the typed result of one ACP prompt."""
@@ -196,21 +201,12 @@ class ACPHarnessSession(HarnessSession):
         self.config = config
         self._lock = asyncio.Lock()
         self._daemon: HarnessDaemonClient | None = None
-        self._daemon_key = f"{trace.id}:{id(self)}"
         self._graceful_close: bool = True
 
     async def _ensure_daemon(self) -> HarnessDaemonClient:
-        if self._daemon is None or not self._daemon.alive:
-            daemon = await ensure_backend_daemon(self.runtime.backend)
-            if daemon is None:
-                raise HarnessError("harness runtime does not support ACP daemon RPC")
-            self._daemon = daemon
+        if self._daemon is None:
+            self._daemon = await ensure_backend_daemon(self.runtime.backend)
         return self._daemon
-
-    async def warm(self) -> None:
-        async with self._lock:
-            if not self._closed:
-                await self._ensure_daemon()
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed:
@@ -219,9 +215,7 @@ class ACPHarnessSession(HarnessSession):
             raise ValueError("steering requires a nonempty user message")
         if self._daemon is None:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
-        result = await self._daemon.acp_steer(
-            self._daemon_key, message, message_id=message_id
-        )
+        result = await self._daemon.acp_steer(message, message_id=message_id)
         if not isinstance(result, dict):
             raise TypeError("invalid ACP steering receipt")
         return result
@@ -244,7 +238,7 @@ class ACPHarnessSession(HarnessSession):
         )
         config = {
             "command": self.config.command,
-            "cwd": self.config.cwd or self.runtime.workdir,
+            "cwd": self.config.cwd or getattr(self.runtime.info, "workdir", None),
             "ready_file": self.config.ready_file,
             "user_contents": user_contents,
             "mcp_urls": self.mcp_urls,
@@ -270,7 +264,6 @@ class ACPHarnessSession(HarnessSession):
             calls_before = len(self.trace.calls)
             try:
                 response = await daemon.acp_prompt(
-                    session_key=self._daemon_key,
                     env=self.config.env,
                     config=config,
                 )
@@ -302,12 +295,7 @@ class ACPHarnessSession(HarnessSession):
         if self._daemon is None:
             return {}
         daemon, self._daemon = self._daemon, None
-        res = await daemon.acp_close(
-            self._daemon_key,
-            graceful=graceful and self._graceful_close,
-        )
-        meta = res.get("response_metadata") if isinstance(res, dict) else None
-        return meta if isinstance(meta, dict) else {}
+        return await daemon.acp_close(graceful=graceful and self._graceful_close)
 
     async def close(self) -> None:
         if self._closed:

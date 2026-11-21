@@ -37,7 +37,6 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     RuntimeLoss,
     make_backend,
-    runtime_is_local,
 )
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
@@ -84,7 +83,7 @@ _HOME_PROBE = (
 async def resolve_agent_runtime(
     runtime: Runtime, user: str | None, home: str | None = None
 ) -> Runtime:
-    """The runtime the harness runs through: `runtime` itself, or a view running as `user`
+    """The workspace view for the agent’s tools. Bind `user` when declared,
     with `HOME` set to `home` or its passwd home. `user` must exist with a home it can write
     (task authors ship it in the image), and the view must really run as it, so a
     runtime ignoring the user never runs the agent as root."""
@@ -137,7 +136,6 @@ class Rollout:
         self.harness = harness
         self.route = route
         self.runtime_config = runtime_config
-        self._harness_runtime_config = agent_config.runtime
         self._scoring_policy = resolve_scoring(task.scoring, agent_config.scoring)
         self._grading_config = None
         self._scoring_task = task
@@ -257,31 +255,9 @@ class Rollout:
         self.trace.record_timeout(stage)
 
     async def _workspace_lost(self) -> RuntimeLoss | None:
-        """The workspace's loss as its provider reports it, when the scoring policy
-        keeps such a rollout as a sample. Checked after a failure rather than polled:
-        an unreachable provider proves nothing."""
+        """Confirm a lost workspace with its provider before classifying the trace."""
         backend = self.deployment and self.deployment.execution_backend
-        if backend is None or not self._scoring_policy.skip_on_workspace_loss:
-            return None
-        # A guest that just powered itself off still reads as running for a while, a
-        # status poll can fail, and a wedged guest may never answer: none of these
-        # proves anything, so a workspace that no longer executes is watched until its
-        # provider reports it lost.
-        with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(60):
-                loss = await backend.lost()
-                if loss is None:
-                    # Reserve the remaining budget for provider confirmation when
-                    # a wedged guest never answers its execution probe.
-                    with contextlib.suppress(TimeoutError):
-                        async with asyncio.timeout(5):
-                            if await backend.bind().alive():
-                                return None
-                while loss is None:
-                    await asyncio.sleep(2)
-                    loss = await backend.lost()
-                return loss
-        return None
+        return await backend.lost() if backend is not None else None
 
     def _workspace_gone(self, loss: RuntimeLoss) -> None:
         """End the agent's execution on a lost workspace. A loss the provider attributes
@@ -305,17 +281,7 @@ class Rollout:
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
-            workspace_config = self.runtime_config
-            # Provision B with an enforceable policy from its first process.
-            # Trusted setup runs before the final task policy is installed.
-            if (
-                isinstance(workspace_config, NetworkPolicyConfig)
-                and not workspace_config.network_restricted
-            ):
-                workspace_config = workspace_config.model_copy(
-                    update={"allow": [], "block": ["*"]}
-                )
-            self.runtime = make_backend(workspace_config, name=self.trace.id).bind()
+            self.runtime = make_backend(self.runtime_config, name=self.trace.id).bind()
         elif (
             self._borrowed_runtime is not None
             and self._borrowed_runtime.backend.stopped
@@ -359,8 +325,6 @@ class Rollout:
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
                 spec = self.task.deployment_spec()
-                for toolset in toolsets:
-                    toolset.validate_split_execution()
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
                     # Tool servers on Prime VMs of their own boot with the workspace.
@@ -378,52 +342,11 @@ class Rollout:
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
-                    harness_config=self._harness_runtime_config,
-                    harness_image=self.harness.HARNESS_IMAGE,
+                    for_agent=True,
                     execution_network=self.runtime_config,
                 )
                 try:
-                    warmup_task: asyncio.Task[None] | None = None
-                    if not runtime.is_local or any(
-                        not runtime_is_local(t.config.runtime)
-                        for t in toolsets
-                        if hasattr(t.config, "runtime")
-                        and not getattr(t.config, "url", None)
-                    ):
-                        from verifiers.v1.mcp.launch import warmup_runtime_packages
-
-                        warmup_task = asyncio.create_task(
-                            warmup_runtime_packages(*(type(t) for t in toolsets))
-                        )
-                    interception_task: asyncio.Task | None = None
-                    if self._interception is None and not runtime.is_local:
-                        from verifiers.v1.interception import start_rollout_interception
-
-                        interception_task = asyncio.create_task(
-                            start_rollout_interception(
-                                runtime.is_local, toolsets, self._shared_tools
-                            )
-                        )
-                    started_ok = False
-                    try:
-                        await self.deployment.start()
-                        started_ok = True
-                    finally:
-                        if warmup_task is not None:
-                            with contextlib.suppress(Exception):
-                                await warmup_task
-                        if interception_task is not None:
-                            if not started_ok and not interception_task.done():
-                                interception_task.cancel()
-                            with contextlib.suppress(BaseException):
-                                warmed_server = await interception_task
-                                if started_ok:
-                                    self._stack.push_async_callback(
-                                        warmed_server.__aexit__, None, None, None
-                                    )
-                                    self._interception = warmed_server
-                                else:
-                                    await warmed_server.__aexit__(None, None, None)
+                    await self.deployment.start()
                     self._deployment_started = True
                     runtime = self.runtime = self.deployment.workspace
                     self.trace.agent.harness_runtime = (
@@ -518,6 +441,7 @@ class Rollout:
                         toolsets,
                         self._agent_runtime,
                         shared=self._shared_tools,
+                        model_secret=model_secret,
                         state_secret=state_secret,
                         proxy_mcp=self._session.proxy_mcp,
                         state_route=self.trace.id,
@@ -541,15 +465,20 @@ class Rollout:
                 # Service hosts resolve inside the deployment (Compose names, LAN
                 # names), not as egress.
                 internal = {*services, *self.deployment.hosts.values()}
+                remote_tools = [
+                    url
+                    for url in self._urls.values()
+                    if not getattr(url, "harness_local", False)
+                ]
                 framework_routes = [
                     url
-                    for url in [self._endpoint, *self._urls.values()]
+                    for url in [self._endpoint, *remote_tools]
                     if urlsplit(url).hostname not in internal
                 ]
                 self.deployment.control_routes = [
                     base_url,
                     self._endpoint,
-                    *self._urls.values(),
+                    *remote_tools,
                 ]
                 harness_data = self.trace.task.data
                 async with boundary(HarnessError, "opening harness session"):
@@ -640,17 +569,9 @@ class Rollout:
                     if self._session.stopped:
                         return
                     async with boundary(HarnessError, "opening harness session"):
-                        local_gate_url = (
-                            self._session.remote_tool_handler.local_gate_url
-                            if isinstance(
-                                self._session.remote_tool_handler, SandboxTools
-                            )
-                            else None
-                        )
                         session_kwargs = (
                             {
-                                "tool_interception_url": local_gate_url
-                                or self._agent_runtime.host_url(
+                                "tool_interception_url": self._agent_runtime.host_url(
                                     f"{base_url.rstrip('/')}/tool"
                                 )
                             }
@@ -667,7 +588,6 @@ class Rollout:
                             harness_data,
                             **session_kwargs,
                         )
-                        await self._harness_session.warm()
 
                 # Adapter and session configuration are trusted setup. They run while
                 # policy is applying, and no harness process starts until all succeed.
@@ -686,9 +606,6 @@ class Rollout:
                                         f"{base_url.rstrip('/')}/execution"
                                     ),
                                     model_secret,
-                                    interception_url=self._agent_runtime.host_url(
-                                        f"{base_url.rstrip('/')}/tool"
-                                    ),
                                 )
                             )
                         group.create_task(open_session())
@@ -730,7 +647,6 @@ class Rollout:
         workspace = self._agent_runtime
         bridge = self._session.execution_bridge = self.deployment.connection(workspace)
         self._stack.push_async_callback(bridge.close)
-        workspace = replace(bridge.runtime, _execution_bridge=bridge)
         adapter = await self.harness.remote_tools(workspace, self.task.data)
         if adapter is not None:
             handler = self._session.remote_tool_handler = SandboxTools(
@@ -742,28 +658,16 @@ class Rollout:
             _execution_bridge=bridge,
         )
 
-        lease = getattr(self._agent_runtime, "_lease", None)
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(self.harness.setup(self._agent_runtime))
-                group.create_task(bridge.start())
                 group.create_task(
-                    self.harness.setup_execution(
-                        self._agent_runtime, bridge.runtime, bridge
-                    )
+                    self.harness.setup_execution(self._agent_runtime, bridge)
                 )
                 if adapter is not None:
                     group.create_task(handler.prepare())
-                elif lease is not None:
-                    from verifiers.v1.runtimes.harness_daemon import (
-                        ensure_backend_daemon,
-                    )
-
-                    group.create_task(ensure_backend_daemon(lease.backend))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]
-        if lease is not None:
-            lease.notify_setup_complete()
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:
@@ -894,7 +798,6 @@ class Rollout:
         if (
             runtime_stopping
             and self._borrowed_runtime is None
-            and getattr(self.deployment, "_harness_lease", None) is None
             and target.type in ("prime", "docker")
         ):
             self._harness_cleaned = True

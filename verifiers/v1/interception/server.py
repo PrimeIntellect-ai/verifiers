@@ -55,7 +55,6 @@ from verifiers.v1.dialects.base import (
 )
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.errors import (
-    HarnessError,
     ProviderError,
     RolloutError,
     TaskError,
@@ -594,8 +593,8 @@ class InterceptionServer(Interception):
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
-        app.router.add_post("/tool", self.handle_tool)
-        app.router.add_post("/execution", self.handle_execution)
+        app.router.add_post("/tool", self.handle_tool_request)
+        app.router.add_post("/execution", self.handle_tool_request)
         # A launched tool server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the state bearer.
         app.router.add_get("/task", self.handle_task_get)
@@ -657,29 +656,8 @@ class InterceptionServer(Interception):
             )
         return mediated, capabilities
 
-    async def handle_execution(self, request: web.Request) -> web.Response:
-        """Rollout-authenticated transport to registered B-side workers."""
-        session = self.sessions.get(
-            request.headers.get("Authorization", "").removeprefix("Bearer ")
-        )
-        if session is None:
-            return web.json_response({"error": "unauthorized"}, status=401)
-        session.adopt(asyncio.current_task())
-        if session.released or session.execution_bridge is None:
-            return web.json_response({"error": "execution unavailable"}, status=409)
-        try:
-            body = from_json(await request.read())
-            if not isinstance(body, dict):
-                return web.json_response({"error": "expected an object"}, status=400)
-            return web.json_response(await session.execution_bridge.handle(body))
-        except RolloutError as error:
-            session.error = error
-            return web.json_response({"error": str(error)}, status=400)
-
-    async def handle_tool(self, request: web.Request) -> web.Response:
-        """`POST /tool`: the harness's gate asks whether to run a tool call — its
-        `{tool_call_id, name, arguments}` in, the verdict of `RolloutSession.decide_tool`
-        out. The model bearer keys it: it never alters what the model already received."""
+    async def handle_tool_request(self, request: web.Request) -> web.Response:
+        """Authorize tool decisions and workspace process I/O with the rollout bearer."""
         session = self.sessions.get(
             request.headers.get("Authorization", "").removeprefix("Bearer ")
         )
@@ -688,35 +666,28 @@ class InterceptionServer(Interception):
         session.adopt(asyncio.current_task())
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
-        body = from_json(await request.read())
+        try:
+            body = from_json(await request.read())
+        except (ConnectionError, ValueError):
+            return web.json_response(
+                {"error": "incomplete or invalid request"}, status=400
+            )
         if not isinstance(body, dict):
             return web.json_response({"error": "expected an object"}, status=400)
         try:
-            op = body.get("op")
-            if op == "poll":
-                return web.json_response(await session.poll_remote_gate())
-            if op in ("pin", "ack_denied"):
-                raw_key = body.get("key")
-                if not isinstance(raw_key, list) or len(raw_key) != 2:
-                    raise HarnessError("invalid remote gate key")
-                async with session._tool_gate_lock:
-                    if op == "pin":
-                        raw_msg = body.get("message")
-                        if not isinstance(raw_msg, dict):
-                            raise HarnessError("invalid remote gate message")
-                        session.record_remote_pin(
-                            raw_key, raw_msg, body.get("arguments")
-                        )
-                    else:
-                        session.record_remote_denial_ack(raw_key, body.get("arguments"))
-                return web.json_response({"ok": True})
-            return web.json_response(
-                await session.decide_tool(
+            if request.path == "/execution":
+                if session.execution_bridge is None:
+                    return web.json_response(
+                        {"error": "execution unavailable"}, status=409
+                    )
+                result = await session.execution_bridge.handle(body)
+            else:
+                result = await session.decide_tool(
                     str(body.get("tool_call_id", "")),
                     body.get("name"),
                     body.get("arguments"),
                 )
-            )
+            return web.json_response(result)
         except RolloutError as error:
             session.error = error
             return web.json_response({"error": str(error)}, status=400)

@@ -9,12 +9,12 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
-    PrimeBackend,
+    DockerBackend,
     PrimeConfig,
     Runtime,
     RuntimeBackend,
@@ -26,7 +26,6 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.bridge import ExecutionBridge
 from verifiers.v1.runtimes.compose import ComposeSpec
-from verifiers.v1.runtimes.lan_execution import LanExecution
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import clip, get_logger
 
@@ -155,30 +154,19 @@ class ExecutionConnection(ExecutionBridge):
     """One execution connection and lifecycle for a split workspace.
 
     Native workers and the adapter workspace worker register their stdio commands
-    against the same workspace `runtime`. The deployment selects LAN or host stdio.
+    against the same workspace runtime over provider stdio.
     Workspace-local listeners can outlive a session for grading.
     """
 
     def __init__(self, runtime: Runtime) -> None:
         super().__init__(runtime)
         self._workers = WorkerGroup()
-        self.transport: LanExecution | None = None
         self._abandon_on_close = False
-
-    async def start(self) -> None:
-        if self.transport is not None:
-            await self.transport.start(self.runtime)
-        logger.debug(
-            "Started execution connection transport=%s",
-            "lan" if self.transport is not None else "host",
-        )
 
     async def _exec(self, argv: list[str], env: dict[str, str]):
         # Track descendants independently of worker process groups, so failed
         # startup or forced worker termination still gets reaped before grading.
         env = {**env, **self._workers.mark(self.runtime)}
-        if self.transport is not None:
-            return await self.transport.exec(self.runtime, argv, env)
         return await super()._exec(argv, env)
 
     async def serve(
@@ -227,13 +215,9 @@ class ExecutionConnection(ExecutionBridge):
             return
         if self._abandon_on_close:
             await self.abandon()
-            if self.transport is not None:
-                await self.transport.abandon()
             self._workers._listeners.clear()
             return
         await super().close()
-        if self.transport is not None:
-            await self.transport.close()
         await self._workers.close()
 
 
@@ -264,7 +248,7 @@ class _DeploymentStrategy:
     async def verifier(
         self, deployment: Deployment, config: RuntimeConfig, env: dict[str, str]
     ) -> AsyncIterator[RuntimeBackend]:
-        async with provision_backend(config, env=env) as backend:
+        async with provision_backend(config, env=env, workspace=True) as backend:
             yield backend
 
 
@@ -286,8 +270,7 @@ class Deployment:
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
-        harness_config: RuntimeConfig | None = None,
-        harness_image: str | None = None,
+        for_agent: bool = False,
         execution_network: RuntimeConfig | None = None,
     ):
         self.backend = backend
@@ -300,10 +283,8 @@ class Deployment:
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
-        self.harness_config = harness_config
-        self.harness_image = harness_image
         self.execution_network = execution_network or backend.config
-        self._has_harness = harness_config is not None or harness_image is not None
+        self.for_agent = for_agent
         self.control_routes: list[str] = []
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
@@ -312,7 +293,7 @@ class Deployment:
             backend,
             spec,
             self.tool_vms,
-            has_harness=self._has_harness,
+            has_harness=for_agent,
         )
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
@@ -322,8 +303,6 @@ class Deployment:
         self._stack = AsyncExitStack()
         self._owned: set[int] = set()
         self._close_task: asyncio.Task[None] | None = None
-        self._harness_workdir: str | None = None
-        self._harness_lease: object | None = None
 
     async def own(self, backend: RuntimeBackend) -> RuntimeBackend:
         """Acquire a target; register cleanup before startup can partially fail."""
@@ -341,9 +320,18 @@ class Deployment:
 
     async def start(self) -> None:
         try:
+            # Only an owned Docker workspace needs filtering support at creation.
+            # Prime applies policies dynamically; local Compose owns its networks.
+            if (
+                self.for_agent
+                and self.borrowed_runtime is None
+                and self.spec is None
+                and isinstance(self.backend, DockerBackend)
+            ):
+                self.backend.filter_workspace = True
             await self._strategy.start(self)
             if self.execution_backend is None or (
-                self._has_harness and self.harness_backend is None
+                self.for_agent and self.harness_backend is None
             ):
                 raise ValueError(
                     "deployment strategy must bind execution and harness roles"
@@ -367,14 +355,7 @@ class Deployment:
             raise ValueError(
                 "harness execution requires a dedicated harness runtime apart from the workspace"
             )
-        connection = ExecutionConnection(workspace)
-        if isinstance(self.execution_backend, PrimeBackend):
-            from verifiers.v1.runtimes.private_network import lan_host
-
-            connection.transport = LanExecution(
-                self._harness_runtime, lan_host(self.execution_backend)
-            )
-        return connection
+        return ExecutionConnection(workspace)
 
     @property
     def execution_name(self) -> str:
@@ -401,12 +382,7 @@ class Deployment:
     @property
     def _harness_runtime(self) -> Runtime:
         """The trusted harness view, separate from the workspace in split mode."""
-        view = self.harness_backend.bind(env={})
-        if self._harness_workdir is not None:
-            view = view.with_workdir(self._harness_workdir)
-        if self._harness_lease is not None:
-            view = replace(view, _lease=self._harness_lease)
-        return view
+        return self.harness_backend.bind(env={})
 
     def target(self, name: str) -> Runtime:
         """Access a named service or workspace through an execution view."""

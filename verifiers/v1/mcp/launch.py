@@ -2,23 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
-import io
 import math
-import re
 import secrets
 import shlex
 import shutil
 import subprocess
 import sys
 import sysconfig
-import tarfile
 import tempfile
 import uuid
-import zipfile
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
-from email.parser import BytesParser
 from functools import cache
 from importlib.metadata import PathDistribution, distribution, packages_distributions
 from pathlib import Path, PurePosixPath
@@ -36,7 +30,11 @@ from verifiers.v1.mcp.server import (
     ServerBase,
     state_signature,
 )
-from verifiers.v1.mcp.toolset import BaseToolsetConfig, ToolsetTimeoutConfig
+from verifiers.v1.mcp.toolset import (
+    BaseToolsetConfig,
+    ToolsetTimeoutConfig,
+    WorkspaceToolset,
+)
 from verifiers.v1.runtimes import (
     Runtime,
     backend_cls,
@@ -113,68 +111,50 @@ def _package_dir(cls: Callable) -> str:
 
 
 @cache
-def _wheel_files(src: Path) -> tuple[tuple[str, Path], ...]:
-    dist = PathDistribution(src)
-    if not dist.files:
-        raise ToolsetError(f"cannot package {src}: missing RECORD")
-    scripts = {
-        entry.name
-        for entry in dist.entry_points
-        if entry.group in {"console_scripts", "gui_scripts"}
-    }
-    files = []
-    for file in dist.files:
-        if ".." in file.parts or file.is_absolute():
-            if (
-                file.name in scripts
-                and Path(file.locate()).parent.resolve()
-                == Path(sysconfig.get_path("scripts")).resolve()
-            ):
-                continue
-            raise ToolsetError(
-                f"cannot package {src}: installed file outside site-packages: {file}"
-            )
-        if file.suffix == ".pyc" or (
-            file.parent.name == src.name and file.name in _WHEEL_INSTALLER_FILES
-        ):
-            continue
-        files.append((str(file), Path(file.locate())))
-    return tuple(files)
-
-
-_WHEEL_INSTALLER_FILES = {
-    "RECORD",
-    "RECORD.jws",
-    "RECORD.p7s",
-    "INSTALLER",
-    "REQUESTED",
-    "direct_url.json",
-    "uv_cache.json",
-}
-
-
-@cache
-def _installed_package_identity(src: Path) -> tuple[str, str]:
-    # Hash the same payload as wheel pack, without rebuilding an archive on a
-    # readiness hit. This also works in each fresh controller job process.
-    files = {
-        name: (path.read_bytes(), 0x100 | (path.stat().st_mode & 0o111))
-        for name, path in _wheel_files(src)
-    }
-    return _content_identity(files, (src / "METADATA").read_bytes())
-
-
-@cache
 def _build_package(src: Path) -> tuple[str, bytes]:
     """Transfer installed wheel files or build a source project's PEP 517 sdist."""
     with tempfile.TemporaryDirectory(prefix="vf-package-") as directory:
         out = Path(directory)
         if src.suffix == ".dist-info":
+            dist = PathDistribution(src)
+            files = dist.files
+            if not files:
+                raise ToolsetError(f"cannot package {src}: missing RECORD")
             package = out / "package"
-            for name, path in _wheel_files(src):
-                target = package / name
+            scripts = {
+                entry.name
+                for entry in dist.entry_points
+                if entry.group in {"console_scripts", "gui_scripts"}
+            }
+            for file in files:
+                # Installers regenerate entry-point scripts for the target Python.
+                if ".." in file.parts or file.is_absolute():
+                    if (
+                        file.name in scripts
+                        and Path(file.locate()).parent.resolve()
+                        == Path(sysconfig.get_path("scripts")).resolve()
+                    ):
+                        continue
+                    raise ToolsetError(
+                        f"cannot package {src}: installed file outside site-packages: {file}"
+                    )
+                if file.suffix == ".pyc" or (
+                    file.parent.name == src.name
+                    and file.name
+                    in {
+                        "RECORD",
+                        "RECORD.jws",
+                        "RECORD.p7s",
+                        "INSTALLER",
+                        "REQUESTED",
+                        "direct_url.json",
+                        "uv_cache.json",
+                    }
+                ):
+                    continue
+                target = package / file
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, target)
+                shutil.copy2(file.locate(), target)
             command = [
                 "uv",
                 "tool",
@@ -273,78 +253,6 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
     )
 
 
-@cache
-def _package_identity(name: str, data: bytes) -> tuple[str, str]:
-    """Hash package inputs independently of archive timestamps and checkout paths.
-
-    Source distributions remain source distributions: platform-specific projects
-    still build inside the target runtime. An installed wheel and a source build
-    are different inputs and deliberately do not share a readiness record.
-    """
-    files = {}
-    if name.endswith(".whl"):
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            for entry in archive.infolist():
-                path = PurePosixPath(entry.filename)
-                if entry.is_dir() or (
-                    path.parent.suffix == ".dist-info"
-                    and path.name in _WHEEL_INSTALLER_FILES
-                ):
-                    continue
-                files[str(path)] = (
-                    archive.read(entry),
-                    0x100 | (entry.external_attr >> 16 & 0o111),
-                )
-        metadata = next(
-            value[0]
-            for path, value in files.items()
-            if path.endswith(".dist-info/METADATA")
-        )
-    else:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
-            for entry in archive.getmembers():
-                path = str(PurePosixPath(*PurePosixPath(entry.name).parts[1:]))
-                if entry.isfile():
-                    file = archive.extractfile(entry)
-                    assert file is not None
-                    files[path] = (file.read(), 0x100 | (entry.mode & 0o111))
-                elif entry.issym() or entry.islnk():
-                    files[path] = (
-                        entry.linkname.encode(),
-                        0x200 if entry.issym() else 0x300,
-                    )
-        metadata = files["PKG-INFO"][0]
-    return _content_identity(files, metadata)
-
-
-def _content_identity(
-    files: dict[str, tuple[bytes, int]], metadata: bytes
-) -> tuple[str, str]:
-    package = str(BytesParser().parsebytes(metadata)["Name"])
-    package = re.sub(r"[-_.]+", "-", package).lower()
-    digest = hashlib.sha256()
-    for path, (content, mode) in sorted(files.items()):
-        digest.update(
-            path.encode() + b"\0" + mode.to_bytes(2) + hashlib.sha256(content).digest()
-        )
-    return package, digest.hexdigest()
-
-
-async def warmup_runtime_packages(*classes: Callable) -> None:
-    """Pre-compute local package identities while remote sandboxes are booting."""
-    sources: dict[str, None] = dict.fromkeys([_package_dir(ServerBase)])
-    for cls in classes:
-        with contextlib.suppress(ToolsetError):
-            sources[_package_dir(cls)] = None
-    for source in sources:
-        src = Path(source)
-        if src.suffix == ".dist-info":
-            await asyncio.to_thread(_installed_package_identity, src)
-        else:
-            artifact = await _cached_package(src)
-            await asyncio.to_thread(_package_identity, *artifact)
-
-
 async def install_in_runtime(
     cls: Callable, agent_runtime: Runtime, *, label: str
 ) -> str:
@@ -379,40 +287,9 @@ async def install_in_runtime(
             for source in sources
             if source not in runtime.backend.cache.mcp_sources
         ]
-        packages = []
         if pending:
-            resolved = []
-            for source in pending:
-                src = Path(source)
-                artifact = None
-                if src.suffix == ".dist-info":
-                    package, digest = await asyncio.to_thread(
-                        _installed_package_identity, src
-                    )
-                else:
-                    artifact = await _cached_package(src)
-                    package, digest = await asyncio.to_thread(
-                        _package_identity, *artifact
-                    )
-                resolved.append((source, src, artifact, package, digest))
-            checks = " && ".join(
-                f"[ -x {shlex.quote(f'{venv}/bin/python')} ]"
-                + "".join(
-                    f' && [ "$(cat {shlex.quote(f"{venv}/.vf-sources/{pkg}")} 2>/dev/null)" = {shlex.quote(dig)} ]'
-                    for _, _, _, pkg, dig in [item]
-                )
-                for item in resolved
-            )
-            probe = await runtime.run(["sh", "-c", checks], {})
-            if probe.exit_code == 0:
-                runtime.backend.cache.mcp_sources.update(pending)
-            else:
-                for source, src, artifact, package, digest in resolved:
-                    name, data = artifact or await _cached_package(src)
-                    packages.append((source, name, data, package, digest))
-        if packages:
             setup = (
-                f"set -e; mkdir -p {root_q} {temp_q} {cache_q} {shlex.quote(f'{venv}/.vf-sources')}; "
+                f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
                 f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
                 'export PATH="$HOME/.local/bin:$PATH"; '
             )
@@ -422,14 +299,11 @@ async def install_in_runtime(
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
             # Drain remote writes and installs before cancellation releases the lock.
-            for source, name, data, package, digest in packages:
+            for source in pending:
+                name, data = await _cached_package(Path(source))
                 remote = f"{root}/{name}"
                 await run_shielded(runtime.write(remote, data))
-                marker_q = shlex.quote(f"{venv}/.vf-sources/{package}")
-                setup += (
-                    f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
-                    f"printf %s {shlex.quote(digest)} > {marker_q}; "
-                )
+                setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
             async with runtime.backend.cache.setup_lock:
                 result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
             if result.exit_code != 0:
@@ -437,7 +311,7 @@ async def install_in_runtime(
                     f"{label} install failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
-            runtime.backend.cache.mcp_sources.update(source for source, *_ in packages)
+            runtime.backend.cache.mcp_sources.update(pending)
         if agent_runtime.user is not None:
             # Root's uv lives in its home; copy it into the venv, open to the agent.
             python_q = shlex.quote(python_dir)
@@ -486,6 +360,7 @@ async def serve_in_runtime(
     server: ServerBase,
     runtime: Runtime,
     *,
+    stack: contextlib.AsyncExitStack,
     exposed: bool,
     listen_all: bool = False,
     state_url: str | None = None,
@@ -546,7 +421,24 @@ async def serve_in_runtime(
     )
     timeout = timeouts.startup
     deadline = loop.time() + (math.inf if timeout is None else timeout)
-    await runtime.run_background(command, env, log)
+    # A rollout's tool server can run in a service or sandbox owned by its caller.
+    # Keep a process handle so closing this server never stops its borrowed runtime.
+    process = await runtime.exec(
+        ["sh", "-c", 'log=$1; shift; exec "$@" > "$log" 2>&1', "mcp", log, *command],
+        env,
+    )
+
+    async def stop_server() -> None:
+        try:
+            async with asyncio.timeout(5):
+                await process.terminate()
+                await process.wait()
+        except TimeoutError:
+            async with asyncio.timeout(5):
+                await process.kill()
+                await process.wait()
+
+    stack.push_async_callback(stop_server)
     if fixed is not None:
         port = fixed
     else:
@@ -654,6 +546,7 @@ async def _serve(
         port = await serve_in_runtime(
             server,
             runtime,
+            stack=stack,
             exposed=host is None,
             listen_all=host is not None,
             state_url=(
@@ -819,6 +712,7 @@ async def serve_tools(
     harness_runtime: Runtime,
     shared: dict[str, SharedToolServer] | None = None,
     *,
+    model_secret: str = "",
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
@@ -854,8 +748,19 @@ async def serve_tools(
                     f"tool server name '{name}' is declared both taskset-scoped (shared) "
                     f"and task-scoped — pick one scope, or give one a distinct TOOL_PREFIX"
                 )
-            urls[name] = await stack.enter_async_context(
-                toolset.serve(
+            if isinstance(toolset, WorkspaceToolset):
+                if not state_base or not model_secret:
+                    raise ToolsetError(
+                        "workspace tool servers require an authenticated execution endpoint"
+                    )
+                endpoint = harness_runtime.host_url(
+                    f"{state_base.rstrip('/')}/execution"
+                )
+                server = toolset.serve_workspace(
+                    harness_runtime, endpoint, model_secret
+                )
+            else:
+                server = toolset.serve(
                     harness_runtime,
                     state_secret=state_secret,
                     state_base=state_base,
@@ -864,6 +769,6 @@ async def serve_tools(
                     hosts=hosts,
                     placements=placements,
                 )
-            )
+            urls[name] = await stack.enter_async_context(server)
             logger.debug("Connected tool server %s", name)
         yield urls

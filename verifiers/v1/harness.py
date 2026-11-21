@@ -7,11 +7,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.deployment import (
-    DOCKER_HARNESS_IMAGE,
-    HARNESS_DOCKERFILE,
-    HARNESS_IMAGE,
-)
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
 from verifiers.v1.errors import (
     MODEL_TRANSPORT_ERROR_EXIT_CODE,
@@ -50,8 +45,6 @@ ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 
 
 class Harness(ABC, Generic[ConfigT]):
-    HARNESS_IMAGE: ClassVar[str] = HARNESS_IMAGE
-    """Container image for the split harness sandbox (`VM A`), reused across harnesses."""
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
     SUPPORTS_MCP: ClassVar[bool] = False
@@ -127,109 +120,6 @@ class Harness(ABC, Generic[ConfigT]):
             )
         return system, prompt
 
-    @classmethod
-    async def prefetch_image(
-        cls,
-        runtime_type: str = "prime",
-        *,
-        image: str | None = None,
-    ) -> str:
-        """Ensure this harness's container image is already built or pulled."""
-        target = image or cls.HARNESS_IMAGE
-        if runtime_type == "docker":
-            import tempfile
-
-            from verifiers.v1.runtimes.backends.docker import cli
-
-            docker_ref = DOCKER_HARNESS_IMAGE if target == HARNESS_IMAGE else target
-            if (await cli("docker", "image", "inspect", docker_ref)).exit_code == 0:
-                return docker_ref
-            if docker_ref == DOCKER_HARNESS_IMAGE:
-                with tempfile.TemporaryDirectory(prefix="vf-harness-") as directory:
-                    built = await cli(
-                        "docker",
-                        "build",
-                        "--tag",
-                        docker_ref,
-                        "--file",
-                        "-",
-                        directory,
-                        input=HARNESS_DOCKERFILE.encode(),
-                    )
-                if built.exit_code != 0:
-                    raise SandboxError(
-                        f"docker harness image build failed: {built.stderr.strip()}"
-                    )
-                return docker_ref
-            pulled = await cli("docker", "pull", docker_ref)
-            if pulled.exit_code != 0:
-                raise SandboxError(
-                    f"docker pull {docker_ref!r} failed: {pulled.stderr.strip()}"
-                )
-            return docker_ref
-        if runtime_type == "prime":
-            import io
-            import tarfile
-
-            import httpx
-            from prime_sandboxes import AsyncImageClient
-            from prime_sandboxes.models import BuildImageRequest
-
-            if target == HARNESS_IMAGE:
-                # Built from HARNESS_DOCKERFILE as a public Prime VM image on amd64 + arm64.
-                return target
-            async with AsyncImageClient() as client:
-                for platform in (True, False):
-                    items = (await client.list(search=target, platform=platform)).data
-                    for item in items:
-                        if (
-                            item.display_ref == target
-                            and item.artifact_type == "VM_SANDBOX"
-                            and item.status == "COMPLETED"
-                        ):
-                            return target
-                if target.startswith("prime/"):
-                    _, _, name_tag = target.rpartition("/")
-                    img_name, _, img_tag = name_tag.partition(":")
-                    req = BuildImageRequest(
-                        image_name=img_name,
-                        image_tag=img_tag or "latest",
-                        visibility="PUBLIC",
-                        team_id=client.client.config.team_id,
-                    )
-                    build = await client.initiate_build(req)
-                    buf = io.BytesIO()
-                    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-                        raw = HARNESS_DOCKERFILE.encode()
-                        info = tarfile.TarInfo("Dockerfile")
-                        info.size = len(raw)
-                        tf.addfile(info, io.BytesIO(raw))
-                    async with httpx.AsyncClient(timeout=120) as hc:
-                        resp = await hc.put(
-                            build.upload_url,
-                            content=buf.getvalue(),
-                            headers={"Content-Type": "application/octet-stream"},
-                        )
-                        resp.raise_for_status()
-                    await client.start_build(build.build_id)
-                    build_id = build.build_id
-                else:
-                    build = await client.transfer_image(target)
-                    build_id = getattr(build, "build_id", None)
-                if build_id:
-                    while True:
-                        status = await client.get_build_status(build_id)
-                        if status.get("status") == "COMPLETED":
-                            return getattr(build, "full_image_path", target)
-                        if status.get("status") in {"FAILED", "CANCELLED"}:
-                            raise SandboxError(
-                                f"prime image build {target!r} failed: "
-                                f"{status.get('errorMessage', '')}"
-                            )
-                        await asyncio.sleep(5)
-            return target
-        return target
-
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness through `runtime` before its execution timeout starts."""
 
@@ -248,10 +138,10 @@ class Harness(ABC, Generic[ConfigT]):
         """Refuse native modes whose execution cannot satisfy the active policy."""
 
     async def setup_execution(
-        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+        self, runtime: Runtime, connection: ExecutionConnection
     ) -> None:
         """Concurrently with `setup(runtime)` in the harness sandbox, prepare native
-        workers in `workspace` and register them with the shared execution connection.
+        workers in `connection.runtime` and register them with the shared execution connection.
         The connection owns worker streams and cleanup on every runtime."""
         # Adapters bind through remote_tools(); native workers override this hook.
 
@@ -523,9 +413,6 @@ class HarnessSession:
         self.data = data
         self.tool_interception_url = tool_interception_url
         self._closed = False
-
-    async def warm(self) -> None:
-        """Pre-start any rollout-scoped runner process while policy setup completes."""
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         """Deliver a user message during a running turn, if supported by the harness."""

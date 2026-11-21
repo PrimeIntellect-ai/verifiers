@@ -61,12 +61,16 @@ async def provision_backend(
     config: RuntimeConfig,
     name: str | None = None,
     env: dict[str, str] | None = None,
+    *,
+    workspace: bool = False,
 ) -> AsyncIterator[RuntimeBackend]:
     """Provision a box from `config` and tear it down on exit.
 
     `start()` sits inside the `try`: a failed start may already hold a paid sandbox, so
     it has to reach `stop()` (which is safe on a partially-started runtime)."""
     backend = make_backend(config, name)
+    if workspace and isinstance(backend, DockerBackend):
+        backend.filter_workspace = True
     backend.env = dict(env or {})
     try:
         await backend.start()
@@ -82,7 +86,7 @@ async def provision_runtime(
     env: dict[str, str] | None = None,
 ) -> AsyncIterator[Runtime]:
     """Lend an execution view; the context owns provisioning and cleanup."""
-    async with provision_backend(config, name, env) as backend:
+    async with provision_backend(config, name, env, workspace=True) as backend:
         yield backend.bind()
 
 

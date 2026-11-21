@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.runtimes.base import RuntimeProcess
-from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE
 from verifiers.v1.types import ToolCall, ToolMessage
 
 # Embedded in Python harness programs so their native environment adapters use
@@ -163,9 +162,7 @@ def remote_shell_tools(runtime: Runtime, *, persistent: bool = False):
     return execute
 
 
-REMOTE_RUNTIME_SOURCE = (
-    CLIENT_SOURCE
-    + r"""
+REMOTE_RUNTIME_SOURCE = r"""
 import argparse
 import asyncio
 import base64
@@ -186,28 +183,11 @@ parser.add_argument("--worker", required=True)
 parser.add_argument("--protocol", choices=("raw", "rlm", "prime", "codex"), default="raw")
 parser.add_argument("--tool-url", default="")
 parser.add_argument("--mcp-configs", default="")
-parser.add_argument("--endpoint-file", default="")
 args = parser.parse_args()
 mcp_configs = json.loads(args.mcp_configs) if args.mcp_configs else {}
 process_id = uuid.uuid4().hex
 execution_url, execution_secret = args.url, args.secret
 execution_opener = urllib.request.build_opener()
-execution_client = None
-handed_off = False
-if args.endpoint_file:
-    claimed = f"{args.endpoint_file}.{os.getpid()}.claim"
-    try:
-        os.replace(args.endpoint_file, claimed)
-        try:
-            with open(claimed, "rb") as handle:
-                transport = json.load(handle)
-        finally:
-            os.remove(claimed)
-        handed_off = True
-        execution_client = LanStream(transport)
-        process_id = transport["process_id"]
-    except FileNotFoundError:
-        pass
 failed = threading.Event()
 stdout_lock = threading.Lock()
 history_receipts = {}
@@ -386,11 +366,8 @@ def rlm_input(packet):
     return None
 
 def rpc(operation, **values):
-    global execution_client, process_id, handed_off
     message = {"operation": operation, "process_id": process_id,
                "request_id": uuid.uuid4().hex, **values}
-    if execution_client is not None:
-        return execution_client.request(message)
     body = json.dumps(message).encode()
     for attempt in range(3):
         request = urllib.request.Request(execution_url, data=body, headers={
@@ -399,23 +376,13 @@ def rpc(operation, **values):
         })
         try:
             with execution_opener.open(request, timeout=3600) as response:
-                result = json.load(response)
-            break
+                return json.load(response)
         except urllib.error.HTTPError as error:
             raise RuntimeError(f"execution bridge returned HTTP {error.code}") from error
         except (OSError, urllib.error.URLError):
             if attempt == 2:
                 raise
             time.sleep(0.2 * (attempt + 1))
-
-    if operation == "open" and (transport := result.get("transport")):
-        if handed_off:
-            raise RuntimeError("Only the host registry may select the execution transport")
-        handed_off = True
-        execution_client = LanStream(transport)
-        process_id = transport["process_id"]
-        return rpc("open", **values)
-    return result
 
 def copy_input():
     try:
@@ -500,11 +467,8 @@ finally:
         rpc("kill")
     except Exception:
         pass
-    if execution_client is not None:
-        execution_client.close()
 raise SystemExit(code)
 """
-)
 
 
 async def prepare_remote_bridge(
@@ -518,31 +482,9 @@ async def prepare_remote_bridge(
     mcp_configs: dict[str, dict] | None = None,
     python: str | None = None,
 ) -> list[str]:
-    """Configure the stdlib execution client in A; only its host registry chooses B's command.
-
-    Registration selects the deployment's process transport. Policy calls retain
-    their evaluator URL and capability even when process traffic uses the LAN.
-    """
-    import uuid as _uuid
-
-    python_task = (
-        None if python is not None else asyncio.create_task(runtime.resolve_python())
-    )
-    endpoint_file = ""
-    bridge = getattr(runtime, "_execution_bridge", None)
-    if bridge is not None and worker in bridge.commands:
-        for rt in (runtime, bridge.runtime):
-            await rt.wait_lan_ready()
-        endpoint = await bridge.prewarm(worker)
-        if endpoint is not None:
-            endpoint_file = runtime.temp_path(
-                f"vf-lan-{worker}-{_uuid.uuid4().hex}.json"
-            )
-            await runtime.write(endpoint_file, json.dumps(endpoint).encode())
-    resolved_python = python if python is not None else await python_task
-    assert resolved_python is not None
+    """Connect the harness to a workspace process registered by the evaluator."""
     args = [
-        resolved_python,
+        python or await runtime.resolve_python(),
         "-P",
         "-s",
         "-u",
@@ -556,6 +498,4 @@ async def prepare_remote_bridge(
     ]
     if mcp_configs:
         args.append(f"--mcp-configs={json.dumps(mcp_configs)}")
-    if endpoint_file:
-        args.append(f"--endpoint-file={endpoint_file}")
     return args

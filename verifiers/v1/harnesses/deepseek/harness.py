@@ -8,7 +8,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
+from verifiers.v1.harnesses.utils.remote import native_remote_tools
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -39,14 +39,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        return RemoteToolsSpec(
-            NativeRemoteTools,
-            {
-                "harness": "deepseek",
-                "disabled_tools": list(self.config.disabled_tools or ()),
-            },
-            native_tools=native_tool_names("deepseek"),
-        )
+        return native_remote_tools("deepseek", self.config.disabled_tools)
 
     async def setup(self, runtime: Runtime) -> None:
         directory = DEEPSEEK_DIR.format(version=self.config.version)

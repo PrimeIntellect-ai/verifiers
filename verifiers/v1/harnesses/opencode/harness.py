@@ -7,7 +7,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
+from verifiers.v1.harnesses.utils.remote import native_remote_tools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
@@ -43,14 +43,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        return RemoteToolsSpec(
-            NativeRemoteTools,
-            {
-                "harness": "opencode",
-                "disabled_tools": list(self.config.disabled_tools or ()),
-            },
-            native_tools=native_tool_names("opencode"),
-        )
+        return native_remote_tools("opencode", self.config.disabled_tools)
 
     def can_gate_tool(self, call: ToolCall) -> bool:
         # OpenCode builds its Code Mode wrapper after registry transforms.

@@ -85,14 +85,9 @@ class RecordingRuntime:
                 runtime=workspace,
                 commands={},
                 register=lambda *args, **kwargs: None,
-                prewarm=self._prewarm,
             )
         else:
             self._execution_bridge = None
-
-    @staticmethod
-    async def _prewarm(worker: str):
-        return None
 
     temp_path = vf.Runtime.temp_path
 

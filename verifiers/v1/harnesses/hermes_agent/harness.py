@@ -59,11 +59,10 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        assert runtime._execution_bridge is not None
         directory = HERMES_DIR.format(version=self.config.version)
         # Install only tool code in B; no model credentials or A configuration.
         await ensure_installed(
-            runtime._execution_bridge.runtime,
+            runtime,
             directory=directory,
             ready=f"test -f {directory}/.ready",
             install=INSTALL,

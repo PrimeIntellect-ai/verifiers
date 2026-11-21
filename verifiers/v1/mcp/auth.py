@@ -11,9 +11,10 @@ class MCPURL(str):
     alone never grants access to the endpoint.
     """
 
-    def __new__(cls, url: str, secret: str):
+    def __new__(cls, url: str, secret: str, *, harness_local: bool = False):
         value = super().__new__(cls, url)
         value.mcp_secret = secret
+        value.harness_local = harness_local
         return value
 
 

@@ -18,8 +18,8 @@ from verifiers.v1.runtimes.backends import prime
 from verifiers.v1.runtimes.strategies import (
     _ContainerDeployment,
     _deployment_strategy,
-    _HostSplitDeployment,
     _PrivateNetworkDeployment,
+    _SplitDeployment,
     _WorkspaceOnlyDeployment,
 )
 
@@ -67,7 +67,7 @@ def test_the_deployment_joins_tool_vms_over_a_private_network():
     )
     assert isinstance(
         _deployment_strategy(None, monkey_prime, None, {}, has_harness=True),
-        _PrivateNetworkDeployment,
+        _SplitDeployment,
     )
     assert isinstance(
         _deployment_strategy(None, monkey_prime, None, {}),
@@ -75,7 +75,7 @@ def test_the_deployment_joins_tool_vms_over_a_private_network():
     )
     assert isinstance(
         _deployment_strategy(None, DockerBackend, None, {}, has_harness=True),
-        _HostSplitDeployment,
+        _SplitDeployment,
     )
     spec = vf.ComposeSpec("task")
     assert isinstance(
@@ -87,7 +87,7 @@ def test_the_private_network_needs_a_prime_workspace():
     workspace = SimpleNamespace(config=DockerConfig())
 
     async def enter():
-        async with private_network.private_network(workspace, {"atlas": ATLAS}, None):
+        async with private_network.private_network(workspace, {"atlas": ATLAS}):
             pass
 
     with pytest.raises(TypeError, match="needs the workspace on Prime, not docker"):
@@ -125,7 +125,7 @@ def boot(monkeypatch, members):
     workspace = PrimeBackend(PrimeConfig(allow=[]), name="ws")
 
     async def enter():
-        async with private_network.private_network(workspace, members, workspace.start):
+        async with private_network.private_network(workspace, members):
             pass
 
     with pytest.raises(RuntimeError, match="booted"):
@@ -174,7 +174,8 @@ def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
 
     strategy = _PrivateNetworkDeployment()
     deployment = SimpleNamespace(
-        target_backends={"main": backend("main"), "forth": backend("forth")}
+        harness_backend=None,
+        target_backends={"main": backend("main"), "forth": backend("forth")},
     )
     # The harness reaches the model and a remote tool server; the tool VM needs neither.
     routes = ["https://tunnel.example/v1", "https://tools.example/mcp"]
@@ -201,7 +202,9 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
 
     strategy = _PrivateNetworkDeployment()
     strategy._services = SimpleNamespace(aclose=aclose)
-    deployment = SimpleNamespace(execution_backend=SimpleNamespace(stop=stop))
+    deployment = SimpleNamespace(
+        harness_backend=None, execution_backend=SimpleNamespace(stop=stop)
+    )
 
     # As Compose stops its workspace, before finalize_services reads the targets.
     asyncio.run(strategy.stop_execution(deployment))
@@ -210,7 +213,7 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
     # A failed tool VM or network release neither skips the workspace's nor raises.
     events.clear()
     asyncio.run(strategy.prepare_verifier(deployment))
-    assert events == ["workspace stopped", "tool VMs released"]
+    assert events == ["tool VMs released"]
 
 
 def served_url(monkeypatch, server, **kwargs):
@@ -266,388 +269,31 @@ def test_a_restricted_runtime_without_a_private_network_is_refused(monkeypatch):
         served_url(monkeypatch, toolset("forth", runtime=FORTH))
 
 
-def test_reuse_harness_pools_across_rollouts_and_detaches_each_lan(monkeypatch):
-    from verifiers.v1.runtimes.harness_pool import harness_pool_scope
-
-    events = []
-    net_seq = 0
-    sb_seq = 0
-
-    class PoolLanClient:
-        async def create_lan_network(self, name, rules):
-            nonlocal net_seq
-            net_seq += 1
-            return SimpleNamespace(id=f"net{net_seq}")
-
-        async def remove_lan_member(self, network_id, sandbox_id):
-            events.append(("detach", network_id, sandbox_id))
-
-        async def delete_lan_network(self, network_id):
-            events.append(("delete_net", network_id))
-
-    @asynccontextmanager
-    async def leased_client():
-        yield PoolLanClient()
-
-    async def start(self):
-        nonlocal sb_seq
-        sb_seq += 1
-        self.info.id = f"sb-{self.name}-{sb_seq}"
-        self._client = PoolLanClient()
-        self._created_workdirs.add(self.config.workdir)
-        events.append(("start", self.name, self.info.id))
-
-    async def teardown(self):
-        if self._client is not None:
-            self._client = None
-            events.append(("stop", self.name, self.info.id))
-
-    monkeypatch.setattr(private_network, "leased_client", leased_client)
+async def test_borrowed_workspace_restores_each_rollouts_network(monkeypatch):
     monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
-    monkeypatch.setattr(PrimeBackend, "start", start)
-    monkeypatch.setattr(PrimeBackend, "teardown", teardown)
-    monkeypatch.setattr(
-        prime,
-        "join_lan",
-        lambda backend, network_id, tags: asyncio.sleep(0),
-    )
+    backend = PrimeBackend(PrimeConfig())
+    applied = []
 
-    cfg = vf.DeploymentConfig()
+    async def prepare(routes, network=None):
+        applied.append(network.block if network else [])
 
-    async def run_two():
-        async with harness_pool_scope():
-            for idx in (1, 2):
-                ws = PrimeBackend(PrimeConfig(), name=f"ws{idx}")
-                dep = ws.deploy(config=cfg, harness_config=PrimeConfig())
-                await dep.start()
-                h_id = dep.harness_backend.info.id
-                await dep.close()
-                events.append(("rollout_done", idx, h_id))
-
-    asyncio.run(run_two())
-    harness_starts = [e for e in events if e[0] == "start" and "harness" in e[1]]
-    assert len(harness_starts) == 1
-    harness_id = harness_starts[0][2]
-    assert ("rollout_done", 1, harness_id) in events
-    assert ("rollout_done", 2, harness_id) in events
-    assert ("detach", "net1", harness_id) in events
-    assert ("detach", "net2", harness_id) in events
-    assert events[-1] == ("stop", "ws1-harness", harness_id)
-
-
-def test_set_network_skips_open_reset_when_only_control_hosts_are_blocked():
-    calls = []
-
-    class FakeBackend:
-        name = "ws"
-        network_restricted = True
-
-        def __init__(self, block, control_hosts):
-            self.config = PrimeConfig(allow=["*"], block=block)
-            self._control_blocked_hosts = frozenset(control_hosts)
-
-        async def prepare_execution(self, routes, network=None):
-            calls.append((routes, network))
-
-    open_ws = vf.Runtime(
-        FakeBackend(["t-0.tunnel.pinfra.io"], ["t-0.tunnel.pinfra.io"])
-    )
-    asyncio.run(open_ws.set_network(vf.NetworkPolicyConfig()))
-    assert calls == []
-
-    restricted_ws = vf.Runtime(
-        FakeBackend(
-            ["t-0.tunnel.pinfra.io", "pypi.org"],
-            ["t-0.tunnel.pinfra.io"],
-        )
-    )
-    asyncio.run(restricted_ws.set_network(vf.NetworkPolicyConfig()))
-    assert calls == [(None, None)]
-
-
-def test_multiplex_shares_harness_vm_across_concurrent_rollouts_with_isolated_workdirs(
-    monkeypatch,
-):
-    from verifiers.v1.runtimes.harness_pool import harness_pool_scope
-
-    events = []
-    net_seq = 0
-    sb_seq = 0
-
-    class MuxLanClient:
-        async def create_lan_network(self, name, rules):
-            nonlocal net_seq
-            net_seq += 1
-            return SimpleNamespace(id=f"net{net_seq}")
-
-        async def remove_lan_member(self, network_id, sandbox_id):
-            events.append(("detach", network_id, sandbox_id))
-
-        async def delete_lan_network(self, network_id):
-            events.append(("delete_net", network_id))
-
-    @asynccontextmanager
-    async def leased_client():
-        yield MuxLanClient()
-
-    async def start(self):
-        nonlocal sb_seq
-        sb_seq += 1
-        await asyncio.sleep(0.01)
-        self.info.id = f"sb-{self.name}-{sb_seq}"
-        self._client = MuxLanClient()
-        self._created_workdirs.add(self.config.workdir)
-        events.append(("start", self.name, self.info.id))
-
-    async def run_cmd(self, runtime, argv, env):
-        events.append(("mkdir", self.info.id, runtime.workdir or self.config.workdir))
-        return vf.ProgramResult(exit_code=0, stdout="", stderr="")
-
-    async def teardown(self):
-        if self._client is not None:
-            self._client = None
-            events.append(("stop", self.name, self.info.id))
-
-    monkeypatch.setattr(private_network, "leased_client", leased_client)
-    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
-    monkeypatch.setattr(PrimeBackend, "start", start)
-    monkeypatch.setattr(PrimeBackend, "run", run_cmd)
-    monkeypatch.setattr(PrimeBackend, "teardown", teardown)
-    monkeypatch.setattr(
-        prime,
-        "join_lan",
-        lambda backend, network_id, tags: asyncio.sleep(0),
-    )
-
-    cfg = vf.DeploymentConfig(multiplex=2)
-    barrier = None
-
-    async def one_rollout(idx: int, workdir: str):
-        ws = PrimeBackend(PrimeConfig(workdir=workdir), name=f"ws{idx}")
-        dep = ws.deploy(config=cfg, harness_config=PrimeConfig())
-        await dep.start()
-        assert dep._harness_runtime.info.workdir == workdir
-        assert dep.harness_backend.config.workdir == "/app"
-        await barrier.wait()
-        h_id = dep.harness_backend.info.id
-        await dep.close()
-        return h_id
-
-    async def run_four_concurrent():
-        nonlocal barrier
-        barrier = asyncio.Barrier(4)
-        async with harness_pool_scope():
-            ids = await asyncio.gather(
-                one_rollout(1, "/app"),
-                one_rollout(2, "/workspace"),
-                one_rollout(3, "/srv/task"),
-                one_rollout(4, "/app"),
-            )
-            # While pool scope is still open, neither shared harness VM was stopped yet.
-            harness_stops_mid = [
-                e for e in events if e[0] == "stop" and "harness" in e[1]
-            ]
-            assert harness_stops_mid == []
-            return ids
-
-    assigned = asyncio.run(run_four_concurrent())
-    # 4 concurrent rollouts with multiplex=2 pack onto exactly 2 harness VMs (2 slots each).
-    harness_starts = [e for e in events if e[0] == "start" and "harness" in e[1]]
-    assert len(harness_starts) == 2
-    assert len(set(assigned)) == 2
-    for hid in set(assigned):
-        assert assigned.count(hid) == 2
-    # Both pooled harness VMs stop cleanly on scope exit.
-    harness_stops = [e for e in events if e[0] == "stop" and "harness" in e[1]]
-    assert len(harness_stops) == 2
-
-
-def test_harness_pool_auto_checkpoints_first_vm_for_scale_out_and_cleans_up(
-    monkeypatch,
-):
-    from verifiers.v1.runtimes.harness_pool import harness_pool_scope
-
-    events = []
-    sb_seq = 0
-
-    class AutoCpClient:
-        async def create_lan_network(self, name, rules):
-            return SimpleNamespace(id="net1")
-
-        async def remove_lan_member(self, network_id, sandbox_id):
-            pass
-
-        async def delete_lan_network(self, network_id):
-            pass
-
-        async def checkpoint(self, sandbox_id, ttl_seconds=None):
-            events.append(("checkpoint", sandbox_id))
-            return SimpleNamespace(id=f"auto-cp-{sandbox_id}")
-
-        async def wait_for_checkpoint(self, checkpoint_id, timeout_seconds=300):
-            events.append(("wait_cp", checkpoint_id))
-
-        async def delete_checkpoint(self, checkpoint_id):
-            events.append(("delete_cp", checkpoint_id))
-
-    @asynccontextmanager
-    async def leased_client():
-        yield AutoCpClient()
-
-    async def start(self):
-        nonlocal sb_seq
-        sb_seq += 1
-        self.info.id = f"sb-{sb_seq}"
-        self._client = AutoCpClient()
-        self._created_workdirs.add(self.config.workdir)
-        events.append(("start", self.name, self.info.id, self.config.checkpoint))
-
-    async def teardown(self):
-        if self._client is not None:
-            self._client = None
-            events.append(("stop", self.info.id))
-
-    monkeypatch.setattr(private_network, "leased_client", leased_client)
-    monkeypatch.setattr(prime, "leased_client", leased_client)
-    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
-    monkeypatch.setattr(PrimeBackend, "start", start)
-    monkeypatch.setattr(PrimeBackend, "teardown", teardown)
-    monkeypatch.setattr(
-        prime,
-        "join_lan",
-        lambda backend, network_id, tags: asyncio.sleep(0),
-    )
-
-    cfg = vf.DeploymentConfig(multiplex=1)
-
-    async def run_scale_out():
-        async with harness_pool_scope() as pool:
-            ws1 = PrimeBackend(PrimeConfig(), name="ws1")
-            dep1 = ws1.deploy(config=cfg, harness_config=PrimeConfig())
-            await dep1.start()
-            dep1._harness_lease.notify_setup_complete()
-            while pool._auto_checkpoint_tasks:
-                await asyncio.sleep(0.01)
-
-            # While dep1 still holds VM A #1 (multiplex=1), dep2 scales out to VM A #2
-            # using the auto-minted checkpoint from VM A #1!
-            ws2 = PrimeBackend(PrimeConfig(), name="ws2")
-            dep2 = ws2.deploy(config=cfg, harness_config=PrimeConfig())
-            await dep2.start()
-            await dep1.close()
-            await dep2.close()
-
-    asyncio.run(run_scale_out())
-    harness_starts = [
-        (sid, cp)
-        for kind, name, sid, cp in (e for e in events if e[0] == "start")
-        if "harness" in name
+    monkeypatch.setattr(backend, "prepare_execution", prepare)
+    policy = backend.config
+    async with backend.workspace_network(
+        policy, ["https://outer.example/v1"], borrowed=True
+    ):
+        async with backend.workspace_network(
+            policy, ["https://judge.example/v1"], borrowed=True
+        ):
+            assert backend.config.block == []
+            assert set(backend.info.block) == {"outer.example", "judge.example"}
+            await backend.bind().set_network(vf.NetworkPolicyConfig())
+        assert backend.info.block == ["outer.example"]
+    assert backend.info.block == []
+    assert applied == [
+        ["outer.example"],
+        ["judge.example", "outer.example"],
+        ["judge.example", "outer.example"],
+        ["outer.example"],
+        [],
     ]
-    assert harness_starts == [
-        ("sb-1", None),
-        ("sb-3", "auto-cp-sb-1"),
-    ]
-    assert ("delete_cp", "auto-cp-sb-1") in events
-
-
-def test_harness_pool_evicts_expired_auto_checkpoint_and_cleans_cancelled_mint(
-    monkeypatch,
-):
-    from verifiers.v1.runtimes.harness_pool import HarnessPool, harness_pool_scope
-
-    events = []
-    sb_seq = 0
-    now = 1000.0
-    wait_started = asyncio.Event()
-
-    class ClockCpClient:
-        async def create_lan_network(self, name, rules):
-            return SimpleNamespace(id="net1")
-
-        async def remove_lan_member(self, network_id, sandbox_id):
-            pass
-
-        async def delete_lan_network(self, network_id):
-            pass
-
-        async def checkpoint(self, sandbox_id, ttl_seconds=None):
-            events.append(("checkpoint", sandbox_id))
-            return SimpleNamespace(id=f"cp-{sandbox_id}")
-
-        async def wait_for_checkpoint(self, checkpoint_id, timeout_seconds=300):
-            if checkpoint_id == "cp-sb-5":
-                wait_started.set()
-                await asyncio.sleep(60)
-            events.append(("wait_cp", checkpoint_id))
-
-        async def delete_checkpoint(self, checkpoint_id):
-            events.append(("delete_cp", checkpoint_id))
-
-    @asynccontextmanager
-    async def leased_client():
-        yield ClockCpClient()
-
-    async def start(self):
-        nonlocal sb_seq
-        sb_seq += 1
-        self.info.id = f"sb-{sb_seq}"
-        self._client = ClockCpClient()
-        self._created_workdirs.add(self.config.workdir)
-        events.append(("start", self.name, self.info.id, self.config.checkpoint))
-
-    async def teardown(self):
-        if self._client is not None:
-            self._client = None
-
-    monkeypatch.setattr(private_network, "leased_client", leased_client)
-    monkeypatch.setattr(prime, "leased_client", leased_client)
-    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
-    monkeypatch.setattr(PrimeBackend, "start", start)
-    monkeypatch.setattr(PrimeBackend, "teardown", teardown)
-    monkeypatch.setattr(prime, "join_lan", lambda *_: asyncio.sleep(0))
-
-    cfg = vf.DeploymentConfig(multiplex=1)
-
-    async def run_expiry_and_cancel():
-        nonlocal now
-        pool1 = HarnessPool()
-        pool1._clock = lambda: now
-        async with harness_pool_scope(pool1):
-            ws1 = PrimeBackend(PrimeConfig(), name="ws1")
-            dep1 = ws1.deploy(config=cfg, harness_config=PrimeConfig())
-            await dep1.start()
-            dep1._harness_lease.notify_setup_complete()
-            while pool1._auto_checkpoint_tasks:
-                await asyncio.sleep(0.01)
-
-            # Advance past usable TTL: scale-out falls back to cold boot (`checkpoint=None`).
-            now += 3601.0
-            ws2 = PrimeBackend(PrimeConfig(), name="ws2")
-            dep2 = ws2.deploy(config=cfg, harness_config=PrimeConfig())
-            await dep2.start()
-            await dep1.close()
-            await dep2.close()
-        await pool1.aclose()
-
-        # Start a new pool whose mint is cancelled mid-wait on scope exit; cp is still deleted.
-        async with harness_pool_scope():
-            ws3 = PrimeBackend(PrimeConfig(image="other:1"), name="ws3")
-            dep3 = ws3.deploy(config=cfg, harness_config=PrimeConfig())
-            await dep3.start()
-            dep3._harness_lease.notify_setup_complete()
-            await asyncio.wait_for(wait_started.wait(), timeout=2.0)
-            await dep3.close()
-
-    asyncio.run(run_expiry_and_cancel())
-    harness_starts = [
-        (sid, cp)
-        for kind, name, sid, cp in (e for e in events if e[0] == "start")
-        if "harness" in name
-    ]
-    assert harness_starts == [
-        ("sb-1", None),
-        ("sb-3", None),
-        ("sb-5", None),
-    ]
-    assert ("delete_cp", "cp-sb-1") in events
-    assert ("delete_cp", "cp-sb-5") in events

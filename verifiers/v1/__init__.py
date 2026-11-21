@@ -37,7 +37,6 @@ if TYPE_CHECKING:
         TrainClientConfig,
     )
     from verifiers.v1.configs.deployment import (
-        HARNESS_DOCKERFILE,
         HARNESS_IMAGE,
         DeploymentConfig,
     )
@@ -243,7 +242,6 @@ _NAME_TO_MODULE = {
     "DecoratedFunctionConfig": "verifiers.v1.configs.task",
     "Deployment": "verifiers.v1.runtimes.deployment",
     "DeploymentConfig": "verifiers.v1.configs.deployment",
-    "HARNESS_DOCKERFILE": "verifiers.v1.configs.deployment",
     "HARNESS_IMAGE": "verifiers.v1.configs.deployment",
     "DockerConfig": "verifiers.v1.configs.runtime",
     "Env": "verifiers.v1.env",
@@ -597,7 +595,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ComposeSpec",
     "Deployment",
     "DeploymentConfig",
-    "HARNESS_DOCKERFILE",
     "HARNESS_IMAGE",
     "ExecutionConnection",
     "ServicesSpec",

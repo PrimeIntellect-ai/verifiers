@@ -50,167 +50,6 @@ _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 _EXPOSE_TAG = "vf-exposed"
 
 
-async def _join_lan_fast(
-    client: Any, network_id: str, sandbox_id: str, tags: list[str] | None
-) -> None:
-    """Enroll `sandbox_id` in `network_id` and poll sync without the SDK's 2s floor."""
-    lease = client._operation_leases.acquire(sandbox_id)
-    try:
-        await client.add_lan_member(network_id, sandbox_id, tags)
-        deadline = time.monotonic() + 120.0
-        delay = 0.15
-        while True:
-            await asyncio.sleep(delay)
-            network = await client.get_lan_network(network_id)
-            member = next(
-                (m for m in network.members or () if m.sandbox_id == sandbox_id), None
-            )
-            if member is None:
-                raise RuntimeError(
-                    f"Sandbox {sandbox_id} left LAN network {network_id}"
-                )
-            if member.synced and network.synced:
-                return
-            if time.monotonic() > deadline:
-                raise TimeoutError(
-                    f"Sandbox {sandbox_id} joined LAN network {network_id}, but the "
-                    "membership and rules were not synced within 120s"
-                )
-            delay = min(delay * 1.6, 1.0)
-    finally:
-        lease.release()
-
-
-async def join_lan(backend: PrimeBackend, network_id: str, tags: list[str]) -> None:
-    if backend.info.id is None:
-        return
-    await _join_lan_fast(backend._client, network_id, backend.info.id, tags)
-
-
-async def _resolve_and_join_lan(backend: PrimeBackend) -> None:
-    if backend.lan is None and backend._lan_pending is not None:
-        network_task, tags = backend._lan_pending
-        network_id = await asyncio.shield(network_task)
-        backend.lan = (network_id, tags)
-        backend._lan_pending = None
-    if backend.lan is None or backend.info.id is None:
-        return
-    network_id, tags = backend.lan
-    await join_lan(backend, network_id, tags)
-
-
-async def _wait_and_init_sandbox(
-    backend: PrimeBackend,
-    init_cmd: str,
-    *,
-    max_attempts: int = 900,
-    image_build_timeout_seconds: int = 3000,
-) -> tuple[Any, asyncio.Task[None] | None]:
-    """Wait for `backend` to reach RUNNING, start LAN enrollment, and run `init_cmd`."""
-    from prime_sandboxes.sandbox import (
-        _creation_timeout_seconds,
-        _is_retryable_reachability_error,
-        _is_waiting_for_image_build,
-        _raise_not_running_error,
-        _reachability_timeout_error,
-    )
-
-    client = backend._client
-    sandbox_id = backend.info.id
-    assert sandbox_id is not None
-    timeout_seconds = _creation_timeout_seconds(max_attempts)
-    deadline = time.monotonic() + timeout_seconds
-    image_build_deadline: float | None = None
-    poll_index = 0
-    reachability_phase = False
-    last_reachability_error: BaseException | None = None
-    lan_task: asyncio.Task[None] | None = None
-
-    try:
-        while time.monotonic() < deadline:
-            if not reachability_phase:
-                sandbox = await client._sandbox_status_batcher.get(sandbox_id)
-                if sandbox.status == "RUNNING":
-                    reachability_phase = True
-                    deadline = time.monotonic() + timeout_seconds
-                    poll_index = 0
-                    if backend.lan is not None or backend._lan_pending is not None:
-                        lan_task = asyncio.create_task(_resolve_and_join_lan(backend))
-                elif sandbox.status in ("ERROR", "TERMINATED", "TIMEOUT"):
-                    _raise_not_running_error(
-                        sandbox.sandbox_id,
-                        {
-                            "status": sandbox.status,
-                            "error_type": sandbox.error_type,
-                            "error_message": sandbox.error_message,
-                        },
-                    )
-                elif _is_waiting_for_image_build(sandbox):
-                    if image_build_deadline is None:
-                        image_build_deadline = (
-                            time.monotonic() + image_build_timeout_seconds
-                        )
-                    if time.monotonic() >= image_build_deadline:
-                        from prime_sandboxes import SandboxNotRunningError
-
-                        raise SandboxNotRunningError(
-                            sandbox_id,
-                            message="Timeout waiting for the VM image build",
-                        )
-                    await asyncio.sleep(10)
-                    deadline = time.monotonic() + timeout_seconds
-                    poll_index = 0
-                    continue
-                else:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    delay = (
-                        0.4
-                        if poll_index < 12
-                        else min(0.4 * (1.4 ** (poll_index - 11)), 5.0)
-                    )
-                    await asyncio.sleep(min(delay, remaining))
-                    poll_index += 1
-                    continue
-
-            lease = client._poll_leases.acquire(sandbox_id)
-            try:
-                try:
-                    response = await client.execute_command(
-                        sandbox_id, init_cmd, timeout=30
-                    )
-                    return response, lan_task
-                finally:
-                    lease.release()
-            except Exception as error:
-                if not _is_retryable_reachability_error(error):
-                    raise
-                last_reachability_error = error
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                await asyncio.sleep(min(0.3, remaining))
-
-        if reachability_phase:
-            error = _reachability_timeout_error(
-                sandbox_id, timeout_seconds, last_reachability_error
-            )
-            raise error from last_reachability_error
-        from prime_sandboxes import SandboxNotRunningError
-
-        raise SandboxNotRunningError(
-            sandbox_id,
-            message=f"Sandbox did not reach RUNNING within {timeout_seconds:g}s",
-        )
-    except BaseException:
-        if lan_task is not None:
-            if not lan_task.done():
-                lan_task.cancel()
-            await asyncio.gather(lan_task, return_exceptions=True)
-        raise
-
-
 BASE_LABELS: list[str] = []
 
 
@@ -275,26 +114,46 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
     a first-use auto-build ran while this sandbox waited to start."""
 
 
+@contextlib.contextmanager
+def _process_errors():
+    from prime_sandboxes import APIError
+
+    try:
+        yield
+    except (APIError, ConnectionError) as error:
+        raise SandboxError(f"prime process I/O failed: {error}") from error
+
+
 class PrimeProcess(RuntimeProcess):
     def __init__(self, process) -> None:
         self._process = process
-        self.stdout: AsyncIterator[bytes] = process.stdout
-        self.stderr: AsyncIterator[bytes] = process.stderr
+        self.stdout = self._stream(process.stdout)
+        self.stderr = self._stream(process.stderr)
+
+    @staticmethod
+    async def _stream(stream: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+        with _process_errors():
+            async for chunk in stream:
+                yield chunk
 
     async def write(self, data: bytes) -> None:
-        await self._process.write_stdin(data)
+        with _process_errors():
+            await self._process.write_stdin(data)
 
     async def wait(self) -> int:
-        return await self._process.wait()
+        with _process_errors():
+            return await self._process.wait()
 
     async def poll(self) -> int | None:
         return self._process.returncode
 
     async def terminate(self) -> None:
-        await self._process.terminate()
+        with _process_errors():
+            await self._process.terminate()
 
     async def kill(self) -> None:
-        await self._process.kill()
+        with _process_errors():
+            await self._process.kill()
 
     async def abandon(self) -> None:
         self._process._remote_exited = True
@@ -322,22 +181,12 @@ class PrimeBackend(RuntimeBackend):
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
-        self._lan_pending: tuple[asyncio.Task[str], list[str]] | None = None
-        self._lan_sync_task: asyncio.Task[None] | None = None
         self._egress_enforced: bool = False
-        self._created_workdirs: set[str] = set()
         # Exposure state: a LAN network created on the first `expose`, separate from
         # `lan`, and the ports its `internet` rule publishes.
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
-
-    async def wait_lan_ready(self) -> None:
-        if self._lan_sync_task is not None:
-            try:
-                await asyncio.shield(self._lan_sync_task)
-            except Exception as e:
-                raise SandboxError(f"prime LAN enrollment failed: {e}") from e
 
     @property
     def published_port(self) -> int:
@@ -384,6 +233,8 @@ class PrimeBackend(RuntimeBackend):
                 "docker_image": self.config.image,
                 "disk_size_gb": self.config.disk,
             }
+        if self.lan is not None:
+            options["lan_network_id"], options["lan_tags"] = self.lan
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
@@ -434,6 +285,7 @@ class PrimeBackend(RuntimeBackend):
                     self.config.image,
                     self.info.id,
                 )
+            await self._client.wait_for_creation(self.info.id, max_attempts=900)
             init_cmd = (
                 f"mkdir -p {shlex.quote(self.config.workdir)} && "
                 '({ getent hosts "$(cat /proc/sys/kernel/hostname)" >/dev/null || '
@@ -441,18 +293,20 @@ class PrimeBackend(RuntimeBackend):
                 'printf "VF_ARCH=%s\\nVF_PYTHON=%s\\n" '
                 '"$(uname -m)" "$(command -v python3 || command -v python || true)"'
             )
-            init_response, self._lan_sync_task = await _wait_and_init_sandbox(
-                self, init_cmd, max_attempts=900
+            init_response = await self._client.execute_command(
+                self.info.id, init_cmd, timeout=30
             )
-            if init_response.exit_code == 0:
-                self._created_workdirs.add(self.config.workdir)
-                for line in init_response.stdout.splitlines():
-                    if line.startswith("VF_ARCH="):
-                        self.cache.arch = line.removeprefix("VF_ARCH=").strip() or None
-                    elif line.startswith("VF_PYTHON="):
-                        self.cache.system_python = (
-                            line.removeprefix("VF_PYTHON=").strip() or None
-                        )
+            if init_response.exit_code:
+                raise SandboxError(
+                    f"could not initialize workspace {self.config.workdir!r} - {clip(init_response.stderr)}"
+                )
+            for line in init_response.stdout.splitlines():
+                if line.startswith("VF_ARCH="):
+                    self.cache.arch = line.removeprefix("VF_ARCH=").strip() or None
+                elif line.startswith("VF_PYTHON="):
+                    self.cache.system_python = (
+                        line.removeprefix("VF_PYTHON=").strip() or None
+                    )
             logger.debug(
                 "Started prime runtime %s in %s image=%s",
                 self.info.id,
@@ -468,6 +322,23 @@ class PrimeBackend(RuntimeBackend):
     async def lost(self) -> RuntimeLoss | None:
         if self._client is None or self.info.id is None or self.stopped:
             return None
+        # The provider may still report a powered-off guest as running. Give it a
+        # bounded window to confirm a loss only when the guest no longer responds.
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(60):
+                loss = await self._reported_loss()
+                if loss is None:
+                    with contextlib.suppress(TimeoutError):
+                        async with asyncio.timeout(5):
+                            if await self.bind().alive():
+                                return None
+                while loss is None:
+                    await asyncio.sleep(2)
+                    loss = await self._reported_loss()
+                return loss
+        return None
+
+    async def _reported_loss(self) -> RuntimeLoss | None:
         try:
             async with asyncio.timeout(10):
                 sandbox = await self._client.get(self.info.id)
@@ -509,8 +380,10 @@ class PrimeBackend(RuntimeBackend):
     ) -> None:
         """Apply the host policy, or `network`, after setup and wait until the platform
         enforces it."""
-        if not self.network_restricted and not (
-            routes is None and self._egress_enforced
+        if (
+            network is None
+            and not self.network_restricted
+            and not (routes is None and self._egress_enforced)
         ):
             return
         config = network or self.config
@@ -524,13 +397,9 @@ class PrimeBackend(RuntimeBackend):
                     )
                 )
                 if config.allow == ["*"]:
-                    control_hosts = getattr(self, "_control_blocked_hosts", frozenset())
-                    deny = [
-                        b
-                        for b in config.block
-                        if not (b in control_hosts and b in hosts)
-                    ]
-                    policy = {"deny": deny} if deny else {"allow": ["*"]}
+                    policy = (
+                        {"deny": config.block} if config.block else {"allow": ["*"]}
+                    )
                 else:
                     entries = list(dict.fromkeys([*hosts, *config.allow]))
                     validate_egress_lists(entries, None)
@@ -564,9 +433,6 @@ class PrimeBackend(RuntimeBackend):
             policy.get("deny"),
         )
 
-    def _workdir_for(self, runtime: Runtime) -> str:
-        return runtime.workdir or self.config.workdir
-
     async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
@@ -584,7 +450,7 @@ class PrimeBackend(RuntimeBackend):
                 self.info.id,
                 "exec "
                 + shlex.join(["sh", "-c", 'exec "$@" < /dev/null', "sh", *argv]),
-                working_dir=self._workdir_for(runtime),
+                working_dir=self.config.workdir,
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
@@ -612,7 +478,7 @@ class PrimeBackend(RuntimeBackend):
             process = await self._client.open_process(
                 self.info.id,
                 shlex.join(argv),
-                working_dir=self._workdir_for(runtime),
+                working_dir=self.config.workdir,
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
@@ -646,8 +512,7 @@ class PrimeBackend(RuntimeBackend):
                         await self._client.set_lan_rules(self._expose_network_id, rules)
                     # Joins (an idempotent PUT, so a retry re-adds a failed join) and
                     # waits until the platform has pushed the membership and rules.
-                    await _join_lan_fast(
-                        self._client,
+                    await self._client._join_lan(
                         self._expose_network_id,
                         self.info.id,
                         [_EXPOSE_TAG],
@@ -666,7 +531,7 @@ class PrimeBackend(RuntimeBackend):
             await self._client.start_background_job(
                 self.info.id,
                 command,
-                working_dir=self._workdir_for(runtime),
+                working_dir=self.config.workdir,
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
@@ -685,7 +550,7 @@ class PrimeBackend(RuntimeBackend):
                 process = await self._client.open_process(
                     self.info.id,
                     f"{reader} -- {shlex.quote(path)}",
-                    working_dir=self._workdir_for(runtime),
+                    working_dir=self.config.workdir,
                     env=runtime.process_env({}),
                     user=runtime.user,
                 )
@@ -710,7 +575,7 @@ class PrimeBackend(RuntimeBackend):
                 raise SandboxError(f"read {path!r}: {exc}") from exc
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
-        workdir = self._workdir_for(runtime)
+        workdir = self.config.workdir
         target = path if path.startswith("/") else f"{workdir.rstrip('/')}/{path}"
         try:
             with tempfile.TemporaryDirectory() as directory:
@@ -723,7 +588,7 @@ class PrimeBackend(RuntimeBackend):
     async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
-        workdir = self._workdir_for(runtime)
+        workdir = self.config.workdir
         target = path if path.startswith("/") else f"{workdir.rstrip('/')}/{path}"
         if runtime.user is None:
             try:
@@ -764,11 +629,6 @@ class PrimeBackend(RuntimeBackend):
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
         # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
-        if self._lan_sync_task is not None:
-            if not self._lan_sync_task.done():
-                self._lan_sync_task.cancel()
-            await asyncio.gather(self._lan_sync_task, return_exceptions=True)
-            self._lan_sync_task = None
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return

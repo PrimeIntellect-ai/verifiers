@@ -1,132 +1,25 @@
 """Split harness execution and the proc, file, and control-plane boundary."""
 
 import asyncio
-import json
 import os
 import secrets
+import shlex
 import shutil
 from contextlib import asynccontextmanager
 
 import pytest
-from aiohttp import web
-from conftest import _eval_config
-from grid import HARNESSES, grid
+from conftest import _eval_config, scripted_chat_reply, serve_scripted_model
 
 from verifiers.v1.cli.run import run_episodes
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.harnesses.bash.harness import BashHarness, BashHarnessConfig
+from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.types import ToolMessage
 from verifiers.v1.utils.prime import load_prime_config
 
-
-@pytest.mark.parametrize(
-    "harness,harness_runtime",
-    grid([*HARNESSES, {"id": "kimi-code", "dialect": "responses"}, "terminus-2"]),
-    indirect=True,
-)
-async def test_split_harness_workspace(run, harness, harness_runtime, monkeypatch):
-    deployments = []
-    local_files = []
-    original_start = Deployment.start
-    original_close = Deployment.close
-
-    async def capture_start(self):
-        await original_start(self)
-        deployments.append(self)
-
-    async def inspect_then_close(self):
-        try:
-            if self in deployments:
-                result = await self.harness_backend.bind().run(
-                    ["sh", "-c", "test ! -e answer.txt"], {}
-                )
-                local_files.append(result.exit_code == 0)
-        finally:
-            await original_close(self)
-
-    monkeypatch.setattr(Deployment, "start", capture_start)
-    monkeypatch.setattr(Deployment, "close", inspect_then_close)
-    (episode,) = await run(
-        "echo" if harness.id == "null" else "echo-agentic",
-        harness=harness,
-        runtime=harness_runtime,
-        env={"agent": {"deployment": {"harness": {"cpu": 2, "memory": 4}}}},
-        max_turns=10,
-        max_tokens=8192,
-        rollout_timeout=300,
-    )
-    (trace,) = episode.traces
-    assert trace.ok, [error.message for error in trace.errors]
-    assert trace.reward == 1.0
-    assert local_files and all(local_files), "Tool also wrote into the harness sandbox"
-    for deployment in deployments:
-        assert deployment.harness_backend is not deployment.execution_backend
-        assert (
-            deployment.harness_backend.info.id != deployment.execution_backend.info.id
-        )
-        await deployment.execution_backend.verify_stopped()
-
-
-def _probe_command(control_url: str) -> str:
-    return r"""python3 - <<'PY'
-import glob, json, os, re, urllib.error, urllib.request
-
-found = set()
-pattern = re.compile(rb'VF_SPLIT_(?:ENV|MEMORY)_SENTINEL_[0-9a-f]{32}')
-def scan(data):
-    found.update(match.decode() for match in pattern.findall(data))
-
-def read(path, offset=0):
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-        try:
-            os.lseek(fd, offset, os.SEEK_SET)
-            scan(os.read(fd, 32768))
-        finally:
-            os.close(fd)
-    except (OSError, ValueError):
-        pass
-
-for pid in glob.glob('/proc/[0-9]*'):
-    for leaf in ('environ', 'cmdline', 'mem'):
-        read(f'{pid}/{leaf}')
-    for fd in glob.glob(f'{pid}/fd/*')[:64]:
-        try:
-            scan(os.readlink(fd).encode())
-        except OSError:
-            pass
-        read(fd)
-    try:
-        with open(f'{pid}/maps') as maps:
-            for line in list(maps)[:64]:
-                if 'r' in line.split()[1]:
-                    read(f'{pid}/mem', int(line.split('-')[0], 16))
-    except (OSError, IndexError, ValueError):
-        pass
-
-count = 0
-for root in ('/app', '/tmp', '/run', '/root'):
-    for directory, _, files in os.walk(root):
-        for name in files:
-            read(os.path.join(directory, name))
-            count += 1
-            if count >= 200:
-                break
-        if count >= 200:
-            break
-    if count >= 200:
-        break
-
-try:
-    urllib.request.urlopen(CONTROL_URL, timeout=3).read(32)
-    control = 'reachable'
-except urllib.error.HTTPError:
-    control = 'reachable'
-except (OSError, urllib.error.URLError):
-    control = 'blocked'
-print('PROBE=' + json.dumps({'found': sorted(found), 'control': control}))
-PY""".replace("CONTROL_URL", repr(f"{control_url.rstrip('/')}/v1/models"))
+# The boot ID identifies a VM, and the PID namespace identifies containers on one kernel.
+_NAMESPACE = "cat /proc/sys/kernel/random/boot_id; readlink /proc/self/ns/pid"
 
 
 @pytest.mark.parametrize("provider", ["docker", "prime"])
@@ -146,10 +39,10 @@ async def test_split_bash_boundary(tmp_path, monkeypatch, provider):
         pytest.skip("Prime sandbox credentials unavailable")
 
     env_sentinel = f"VF_SPLIT_ENV_SENTINEL_{secrets.token_hex(16)}"
-    memory_sentinel = f"VF_SPLIT_MEMORY_SENTINEL_{secrets.token_hex(16)}"
+    marker = f"/tmp/vf-harness-{secrets.token_hex(12)}"
     control_urls: list[str] = []
     backends = []
-    workers = []
+    harness_namespaces = []
     dialect = ChatDialect()
 
     original_start = Deployment.start
@@ -162,26 +55,14 @@ async def test_split_bash_boundary(tmp_path, monkeypatch, provider):
 
     original_setup = BashHarness.setup
 
-    async def setup_with_memory(self, runtime):
+    async def setup_with_marker(self, runtime):
         await original_setup(self, runtime)
-        worker = await runtime.exec(
-            [
-                "python3",
-                "-u",
-                "-c",
-                (
-                    "import sys,time; secret=bytearray(sys.stdin.buffer.readline()); "
-                    "print('READY',flush=True); time.sleep(600)"
-                ),
-            ],
-            {},
-        )
-        await worker.write((memory_sentinel + "\n").encode())
-        async with asyncio.timeout(10):
-            assert b"READY" in await anext(worker.stdout)
-        workers.append(worker)
+        await runtime.write(marker, b"harness marker")
+        namespace = await runtime.run(["sh", "-ec", _NAMESPACE], {})
+        assert namespace.exit_code == 0
+        harness_namespaces.append(namespace.stdout.strip())
 
-    monkeypatch.setattr(BashHarness, "setup", setup_with_memory)
+    monkeypatch.setattr(BashHarness, "setup", setup_with_marker)
 
     import verifiers.v1.rollout as rollout_module
 
@@ -190,13 +71,12 @@ async def test_split_bash_boundary(tmp_path, monkeypatch, provider):
     @asynccontextmanager
     async def capture_interception(*args, **kwargs):
         async with original_serve(*args, **kwargs) as slot:
-            control_urls.append(slot[0])
+            control_urls.append(args[1].host_url(slot[0]).rstrip("/") + HEALTH_PATH)
             yield slot
 
     monkeypatch.setattr(rollout_module, "serve_interception", capture_interception)
 
-    async def answer(request):
-        body = await request.json()
+    def answer(path, body):
         turn = sum(message.get("role") == "tool" for message in body["messages"])
         if turn == 0:
             name, arguments = "bash", {"command": "touch blocked.txt"}
@@ -208,63 +88,55 @@ async def test_split_bash_boundary(tmp_path, monkeypatch, provider):
                 {"path": "work.txt", "old_str": "before", "new_str": "after"},
             )
         elif turn == 3:
-            name, arguments = "bash", {"command": _probe_command(control_urls[-1])}
+            # Only request the evaluator's public health endpoint. The workspace
+            # must be unable to reach it through the harness's callback route.
+            probe = (
+                "import sys, urllib.error, urllib.request\n"
+                "try:\n"
+                "    urllib.request.urlopen(sys.argv[1], timeout=3)\n"
+                "except urllib.error.HTTPError as error:\n"
+                "    if error.code != 403: raise\n"
+                "except OSError:\n"
+                "    pass\n"
+                "else:\n"
+                "    raise SystemExit('unexpected access to harness callback')"
+            )
+            name, arguments = (
+                "bash",
+                {
+                    "command": (
+                        f'set -e; test ! -e {shlex.quote(marker)}; test -z "${{VF_SPLIT_ENV_SENTINEL:-}}"; '
+                        f"python3 -c {shlex.quote(probe)} {shlex.quote(control_urls[-1])}; "
+                        f"echo WORKSPACE_NAMESPACE; {_NAMESPACE}"
+                    )
+                },
+            )
         else:
             name = ""
             arguments = {}
-        message = {"role": "assistant", "content": "done" if not name else None}
-        if name:
-            message["tool_calls"] = [
-                {
-                    "id": f"split-{turn}",
-                    "type": "function",
-                    "function": {"name": name, "arguments": json.dumps(arguments)},
-                }
-            ]
-        raw = {
-            "id": f"chatcmpl-split-{turn}",
-            "object": "chat.completion",
-            "created": 0,
-            "model": body["model"],
-            "choices": [
-                {
-                    "index": 0,
-                    "message": message,
-                    "finish_reason": "tool_calls" if name else "stop",
-                }
-            ],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        }
-        if not dialect.streaming(body):
-            return web.json_response(raw)
-        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
-        await response.prepare(request)
-        for event in dialect.stream_events(raw):
-            await response.write(event)
-        await response.write_eof()
-        return response
+        return dialect, scripted_chat_reply(
+            body["model"],
+            content="done",
+            tool=name,
+            arguments=arguments,
+            call_id=f"split-{turn}",
+        )
 
-    app = web.Application()
-    app.router.add_post("/{tail:.*}", answer)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
-    await site.start()
-    port = site._server.sockets[0].getsockname()[1]
-    try:
+    async with serve_scripted_model(answer) as client:
         config = _eval_config(
             "split-sandbox",
             harness=BashHarnessConfig(
                 id="bash", env={"VF_SPLIT_ENV_SENTINEL": env_sentinel}
             ),
-            runtime={"type": provider},
-            client={"base_url": f"http://127.0.0.1:{port}/v1"},
+            runtime={
+                "type": provider,
+                **({"image": "python:3.13-slim"} if provider == "docker" else {}),
+            },
+            client=client,
             max_turns=6,
         )
         config.output_dir = tmp_path
         (episode,) = await run_episodes(config)
-    finally:
-        await runner.cleanup()
 
     (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
@@ -276,11 +148,18 @@ async def test_split_bash_boundary(tmp_path, monkeypatch, provider):
         f"split-{i}" for i in range(4)
     ]
     assert results[0].content == "POLICY_BLOCKED"
-    assert "PROBE=" in results[-1].content
-    report = json.loads(results[-1].content.split("PROBE=", 1)[1].strip())
-    assert report == {"found": [], "control": "blocked"}
-    assert env_sentinel not in str(results) and memory_sentinel not in str(results)
-    assert len(backends) == 2 and backends[0] is not backends[1]
-    assert workers
+    assert "WORKSPACE_NAMESPACE" in results[-1].content
+    workspace_namespace = results[-1].content.split("WORKSPACE_NAMESPACE", 1)[1].strip()
+    assert len(workspace_namespace.splitlines()) == 2
+    assert len(harness_namespaces[-1].splitlines()) == 2
+    assert workspace_namespace != harness_namespaces[-1]
+    assert env_sentinel not in str(results)
+    harness_backend, workspace_backend = backends[-2:]
+    assert trace.agent.harness_runtime.id != trace.agent.runtime.id
+    if provider == "docker":
+        from verifiers.v1.configs.deployment import DOCKER_HARNESS_IMAGE
+
+        assert harness_backend.info.image == DOCKER_HARNESS_IMAGE
+        assert workspace_backend.info.image == "python:3.13-slim"
     for backend in backends:
         await backend.verify_stopped()

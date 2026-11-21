@@ -46,7 +46,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         )
 
     async def setup_execution(
-        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+        self, runtime: Runtime, connection: ExecutionConnection
     ) -> None:
         # Harbor installs tmux during agent.setup(), after the execution
         # network is locked. Provision the system tool in trusted setup.

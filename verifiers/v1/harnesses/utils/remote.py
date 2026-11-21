@@ -17,6 +17,7 @@ from typing import Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from verifiers.v1.errors import HarnessError, SandboxError
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import RuntimeProcess
 from verifiers.v1.types import (
@@ -194,6 +195,16 @@ _NATIVE_NAMES: dict[str, frozenset[str]] = {
 
 def native_tool_names(harness: str) -> frozenset[str]:
     return _NATIVE_NAMES[harness]
+
+
+def native_remote_tools(
+    harness: str, disabled_tools: list[str] | None
+) -> RemoteToolsSpec:
+    return RemoteToolsSpec(
+        NativeRemoteTools,
+        {"harness": harness, "disabled_tools": disabled_tools or []},
+        native_tools=native_tool_names(harness),
+    )
 
 
 # The worker receives validated JSON as an argv element, never shell source. It
