@@ -7,9 +7,10 @@ import tomli_w
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote import native_remote_tools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -20,15 +21,14 @@ logger = get_logger(__name__)
 
 KIMI_DIR = "/var/tmp/vf-kimi-code"
 KIMI_BIN = f"{KIMI_DIR}/node_modules/.bin/kimi"
-KIMI_HOME = ".vf-kimi-code"
-ACP_COMMAND = [f"{NODE_BIN_DIR}/node", KIMI_BIN, "acp"]
+KIMI_HOME = "/tmp/vf-kimi-code"
+ACP_COMMAND = ["node", KIMI_BIN, "acp"]
 
 # From npm rather than Kimi's installer: code.kimi.com sits behind a WAF that drops
 # traffic from some sandbox providers' datacenter ranges (prime's among them).
 INSTALL = r"""
 set -e
 packages=/var/tmp/vf-kimi-code
-export PATH="/var/tmp/vf-node/bin:$PATH"
 if [ "$(cat "$packages/.version" 2>/dev/null)" != "$AGENT_KIMI_VERSION" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
         "@moonshot-ai/kimi-code@$AGENT_KIMI_VERSION" >/dev/null
@@ -56,12 +56,19 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
+        return native_remote_tools(runtime, "kimi_code", self.config.disabled_tools)
+
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         logger.debug("Ensuring Kimi Code %s is installed", self.config.version)
         await ensure_installed(
             runtime,
             directory=KIMI_DIR,
+            ready=(
+                f'[ -x "{KIMI_BIN}" ] && '
+                f'[ "$(cat "{KIMI_DIR}/.version" 2>/dev/null)" = '
+                f'"{self.config.version}" ]'
+            ),
             install=INSTALL,
             env={"AGENT_KIMI_VERSION": self.config.version},
             label="Kimi Code",

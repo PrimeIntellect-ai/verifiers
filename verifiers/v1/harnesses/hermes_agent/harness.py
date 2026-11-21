@@ -7,8 +7,11 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
+from verifiers.v1.harnesses.hermes_agent.remote import _TOOLS as _HERMES_TOOLS
+from verifiers.v1.harnesses.hermes_agent.remote import HermesRemoteTools
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import strip_text
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
@@ -20,9 +23,15 @@ HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}"
 INSTALL = f"""
 set -e
 {_ENSURE_UV}
-command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
-curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$AGENT_HERMES_VERSION.tar.gz" \\
-    | tar -xz --strip-components=1 -C "$AGENT_HERMES_DIR"
+archive=$(mktemp)
+trap 'rm -f "$archive"' EXIT
+$(command -v python3 || command -v python) -c '
+import shutil, sys, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={{"User-Agent": "verifiers"}})
+with urllib.request.urlopen(req, timeout=90) as r, open(sys.argv[2], "wb") as f:
+    shutil.copyfileobj(r, f)
+' "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/$AGENT_HERMES_VERSION" "$archive"
+tar -xzf "$archive" --strip-components=1 -C "$AGENT_HERMES_DIR"
 # Replay one reasoning key: strict providers reject Hermes' duplicated aliases on custom routes.
 # Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/message_sanitization.py#L733
 sed -i '/^_REASONING_CARRIER_ROUTES: tuple = (/a\\
@@ -47,6 +56,37 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
+        directory = HERMES_DIR.format(version=self.config.version)
+        # Install only tool code in B; no model credentials or A configuration.
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"test -f {directory}/.ready",
+            install=INSTALL,
+            env={
+                "AGENT_HERMES_DIR": directory,
+                "AGENT_HERMES_VERSION": self.config.version,
+            },
+            label="Hermes execution tools",
+            shell=("bash", "-o", "pipefail", "-c"),
+        )
+        home = "/tmp/verifiers-hermes-tools"
+        await runtime.write(f"{home}/config.yaml", b"{}")
+        return RemoteToolsSpec(
+            HermesRemoteTools,
+            {"python": f"{directory}/.venv/bin/python", "home": home},
+            native_tools=_HERMES_TOOLS,
+        )
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        config.env["VF_TOOL_GATE_URL"] = url
+        config.env["VF_TOOL_GATE_SECRET"] = secret
+        config.env["VF_NATIVE_TOOLS"] = json.dumps(sorted(_HERMES_TOOLS))
 
     # Hermes strips stored assistant text and pads missing reasoning with " " on
     # routes requiring reasoning replay. Recheck on version bumps:
@@ -115,6 +155,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             "approvals": {"mode": "off"},
             # Session titles are UI metadata, not part of the agent conversation.
             "auxiliary": {"title_generation": {"enabled": False}},
+            # Keep MCP and built-in tools eager on the wire so sampled tool names
+            # match the execution gate directly instead of wrapping in `tool_call`.
+            "tools": {"tool_search": {"enabled": "off"}},
             "providers": {"openai": provider},
             # The gateway owns MCP connections and snapshots tools before the first turn.
             "mcp_discovery_timeout": self.config.tool_timeout,

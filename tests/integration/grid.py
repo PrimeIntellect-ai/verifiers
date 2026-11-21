@@ -10,8 +10,8 @@ from a capability the code declares, never from a list of names, so the grid fol
 the code.
 
 A harness without a capability the behavior needs is collected as a skip with its
-reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
-`SUPPORTS_RESUME` or a native session).
+reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`,
+resume support via `SUPPORTS_RESUME` or a native session).
 
 A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
 `NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime

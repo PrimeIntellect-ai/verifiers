@@ -17,7 +17,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Message, Messages
+from verifiers.v1.types import Message, Messages, ToolCall
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -27,8 +27,11 @@ from verifiers.v1.utils.decorators import (
 from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
+
     # Annotation-only: `Trace` appears in signatures only, so this module stays
     # importable below the trace record.
+    from verifiers.v1.runtimes.deployment import ExecutionConnection
     from verifiers.v1.trace import Trace
 
 logger = get_logger(__name__)
@@ -120,42 +123,88 @@ class Harness(ABC, Generic[ConfigT]):
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness through `runtime` before its execution timeout starts."""
 
+    async def remote_tools(
+        self, runtime: Runtime, data: TaskData
+    ) -> RemoteToolsSpec | None:
+        """Prepare an adapter to run in A against B. Native workers return None and register
+        their workspace commands with the connection in setup_execution()."""
+        return None
+
+    def can_gate_tool(self, call: ToolCall) -> bool:
+        """Whether this native call can consume a policy replacement at its gate."""
+        return self.SUPPORTS_TOOL_INTERCEPTION
+
+    def check_tool_call(self, call: ToolCall, *, intercepted: bool) -> None:
+        """Refuse native modes whose execution cannot satisfy the active policy."""
+
+    async def setup_execution(
+        self, runtime: Runtime, connection: ExecutionConnection
+    ) -> None:
+        """Concurrently with `setup(runtime)` in the harness sandbox, prepare native
+        workers in `connection.runtime` and register them with the shared execution connection.
+        The connection owns worker streams and cleanup on every runtime."""
+        # Adapters bind through remote_tools(); native workers override this hook.
+
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.
-        Runtime roots are copied in place; host skill folders are uploaded."""
+        Runtime roots are copied in place (or bridged from the workspace);
+        host skill folders are uploaded."""
+        bridge = getattr(runtime, "_execution_bridge", None)
         for skill in self.config.skills:
             target_dir = skill_destination(skill, dest)
             if isinstance(skill, dict):
-                result = await runtime.run(
+                if bridge is None:
+                    copied = await runtime.run(
+                        [
+                            "sh",
+                            "-e",
+                            "-c",
+                            '[ -d "$1" ] && mkdir -p -- "$2" && tar -C "$1" -cf - . | tar -xpf - -C "$2"',
+                            "vf-skills",
+                            skill["runtime"],
+                            target_dir,
+                        ],
+                        {},
+                    )
+                    if copied.exit_code:
+                        raise RuntimeError(
+                            f"installing runtime skills from {skill['runtime']!r} failed: {copied.stderr}"
+                        )
+                    continue
+                archived = await bridge.runtime.run(
                     [
                         "sh",
                         "-e",
                         "-c",
-                        r"""
-[ -d "$1" ]
-source=$(CDPATH= cd -- "$1/." && pwd -P)
-mkdir -p -- "$2"
-target=$(CDPATH= cd -- "$2/." && pwd -P)
-[ "$source" != "$target" ] || exit 0
-# A source such as "." must not copy the destination back into itself.
-exclude=$(printf '%s' "./${target#"${source%/}/"}" | sed 's/[][\\*?]/\\&/g')
-# POSIX sh returns only the extractor's status; fd 3 also reports producer failure.
-copy_failed=$(
-    exec 3>&1
-    { tar -C "$source" --exclude="$exclude" -cf - . || printf failed >&3; } |
-        tar -xpf - -C "$target"
-)
-[ -z "$copy_failed" ]
-""",
+                        '[ -d "$1" ] && tar -C "$1" -cf - . | base64',
                         "vf-skills",
                         skill["runtime"],
+                    ],
+                    {},
+                )
+                if archived.exit_code:
+                    raise RuntimeError(
+                        f"installing runtime skills from {skill['runtime']!r} failed: {archived.stderr}"
+                    )
+                archive_path = runtime.temp_path(
+                    f"vf-skills-{os.urandom(8).hex()}.tar.b64"
+                )
+                await runtime.write(archive_path, archived.stdout.encode())
+                extracted = await runtime.run(
+                    [
+                        "sh",
+                        "-e",
+                        "-c",
+                        'mkdir -p -- "$2" && base64 -d < "$1" | tar -xpf - -C "$2"; rm -f -- "$1"',
+                        "vf-skills",
+                        archive_path,
                         target_dir,
                     ],
                     {},
                 )
-                if result.exit_code:
+                if extracted.exit_code:
                     raise RuntimeError(
-                        f"installing runtime skills from {skill['runtime']!r} failed: {result.stderr}"
+                        f"installing runtime skills from {skill['runtime']!r} failed: {extracted.stderr}"
                     )
                 continue
             # Resolve so `.`/`..` entries get their real folder name (and can't

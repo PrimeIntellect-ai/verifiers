@@ -10,17 +10,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     _ENSURE_UV,
-    _INSTALL_CURL,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
 )
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.bridge import ExecutionBridge
 
 
 @dataclass(frozen=True, eq=False)
@@ -36,6 +38,7 @@ class Runtime:
     env: Mapping[str, str] = field(default_factory=dict)
     user: str | None = None
     home: str | None = None
+    _execution_bridge: ExecutionBridge | None = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -95,21 +98,25 @@ class Runtime:
         on the whole runtime rather than only this view; return once the provider
         enforces it. Framework routes are not added. A runtime that started without a
         policy can only stay open."""
-        if not network.network_restricted:
-            await self.backend.prepare_execution(None)
-            return
-        config = self.backend.config
-        if not self.backend.network_restricted or not isinstance(
-            config, NetworkPolicyConfig
-        ):
-            raise SandboxError(
-                f"runtime {self.name!r} started without a network policy, so it cannot "
-                "take one"
+        async with self.backend._workspace_network_lock:
+            if self.backend._workspace_routes:
+                await self.backend._apply_workspace_network(network)
+                return
+            if not network.network_restricted:
+                await self.backend.prepare_execution(None)
+                return
+            config = self.backend.config
+            if not self.backend.network_restricted or not isinstance(
+                config, NetworkPolicyConfig
+            ):
+                raise SandboxError(
+                    f"runtime {self.name!r} started without a network policy, so it cannot "
+                    "take one"
+                )
+            policy = type(config).model_validate(
+                {**config.model_dump(), "allow": network.allow, "block": network.block}
             )
-        policy = type(config).model_validate(
-            {**config.model_dump(), "allow": network.allow, "block": network.block}
-        )
-        await self.backend.prepare_execution([], policy)
+            await self.backend.prepare_execution([], policy)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run `argv` to completion and collect its output."""
@@ -149,13 +156,56 @@ class Runtime:
 
         Without TMPDIR, an established ``default`` path is retained. Callers choose
         it from task configuration so setup, execution and cleanup agree across views.
-        The selected directory still needs to exist and be writable in the view;
-        this never adds a filesystem-policy exception.
+        The selected directory still needs to exist and be writable in the view.
         """
         directory = (env or {}).get("TMPDIR") or self.env.get("TMPDIR")
         if not directory and default is not None:
             return default
+        if (
+            not directory
+            and getattr(self, "type", None) == "subprocess"
+            and getattr(getattr(self, "backend", None), "info", None) is not None
+            and self.backend.info.id
+        ):
+            directory = self.backend.info.id
         return str(PurePosixPath(directory or "/tmp").joinpath(*parts))
+
+    async def resolve_python(self) -> str:
+        """Locate a Python 3 interpreter in this runtime without bootstrapping `uv`."""
+        if self.backend.cache.system_python:
+            return self.backend.cache.system_python
+        async with self.backend.cache.setup_lock:
+            if self.backend.cache.system_python:
+                return self.backend.cache.system_python
+            probe = await self.with_user(None).run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        'printf "%s\\n%s\\n" "$(uname -m)" '
+                        '"$(command -v python3 || command -v python || true)"'
+                    ),
+                ],
+                {},
+            )
+            lines = probe.stdout.splitlines()
+            if lines and lines[0].strip() and not self.backend.cache.arch:
+                self.backend.cache.arch = lines[0].strip()
+            python = lines[1].strip() if len(lines) > 1 else ""
+            if not python:
+                raise SandboxError(
+                    f"no Python 3 interpreter available in runtime {self.name!r}"
+                )
+            self.backend.cache.system_python = python
+            return python
+
+    def _script_directory(self) -> str:
+        directory = self.backend.scripts_dir
+        if self.user is not None:
+            directory += f"-{self.user}"
+        if self.home is not None:
+            directory += "-" + hashlib.sha256(self.home.encode()).hexdigest()[:16]
+        return directory
 
     async def prepare_uv_script(
         self,
@@ -172,42 +222,75 @@ class Runtime:
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         # Each user needs its own writable script dir and uv environment.
-        directory = (
-            self.backend.scripts_dir
-            if self.user is None
-            else f"{self.backend.scripts_dir}-{self.user}"
-        )
+        directory = self._script_directory()
         path = f"{directory}/{digest}.py"
+        ready_path = f"{path}.ready"
         if path not in self.backend.cache.uv_interpreters:
-            async with self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()):
-                if self.user is not None and not self.backend.cache.curl_ready:
-                    # Only root can install a downloader for the user's uv bootstrap.
-                    curl = await self.with_user(None).run(
-                        ["sh", "-c", _INSTALL_CURL], {}
-                    )
-                    self.backend.cache.curl_ready = curl.exit_code == 0
+            async with (
+                self.backend.cache.setup_lock,
+                self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()),
+            ):
                 if path not in self.backend.cache.uv_interpreters:
-                    tmp = f"{path}.{uuid.uuid4().hex}.tmp"
-                    await self.write(tmp, data)
-                    command = (
-                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
-                        f"&& {{ {_ENSURE_UV}; }} "
-                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        f"&& uv python find --script {shlex.quote(path)} --no-config"
+                    path_q = shlex.quote(path)
+                    ready_q = shlex.quote(ready_path)
+                    # Check whether a prepared image or checkpoint already synced this script.
+                    probe = await self.run(
+                        [
+                            "sh",
+                            "-c",
+                            (
+                                f"[ -f {path_q} ] && [ -r {ready_q} ] "
+                                f'&& py=$(cat {ready_q}) && [ -x "$py" ] '
+                                '&& printf "%s\\n" "$py"'
+                            ),
+                        ],
+                        {},
                     )
-                    # Bootstrap dependencies before task networking is restricted;
-                    # keep task offline settings on the returned program's processes.
-                    result = await self.run(
-                        ["sh", "-c", command], {**(env or {}), "UV_OFFLINE": "false"}
-                    )
-                    if result.exit_code != 0:
-                        raise RuntimeError(
-                            "failed to prepare uv script: "
-                            f"{result.stderr.strip()[-2000:]}"
+                    if probe.exit_code == 0 and probe.stdout.strip():
+                        self.backend.cache.uv_interpreters[path] = (
+                            probe.stdout.strip().splitlines()[-1]
                         )
-                    self.backend.cache.uv_interpreters[path] = (
-                        result.stdout.strip().splitlines()[-1]
-                    )
+                    else:
+                        tmp = f"{path}.{uuid.uuid4().hex}.tmp"
+                        await self.write(tmp, data)
+                        share_py = (
+                            {
+                                "UV_PYTHON_INSTALL_DIR": f"{directory}/python",
+                                "UV_CACHE_DIR": f"{directory}/uv-cache",
+                            }
+                            if self.user is None
+                            else {}
+                        )
+                        chmod_cmd = (
+                            f" && chmod -R a+rX {shlex.quote(directory)}"
+                            if self.user is None
+                            else ""
+                        )
+                        command = (
+                            f"mv -f {shlex.quote(tmp)} {path_q} "
+                            f"&& {{ {_ENSURE_UV}; }} "
+                            f"&& uv sync --script {path_q} -q --no-config "
+                            f"&& python=$(uv python find --script {path_q} --no-config) "
+                            f'&& venv=$(dirname "$(dirname "$python")") '
+                            '&& chmod -R a+rX "$venv"'
+                            f"{chmod_cmd} "
+                            f'&& printf "%s" "$python" > {ready_q} '
+                            '&& printf "%s\\n" "$python"'
+                        )
+                        # Bootstrap dependencies before task networking is restricted;
+                        # keep task offline settings on the returned program's processes.
+                        result = await self.run(
+                            ["sh", "-c", command],
+                            {**share_py, **(env or {}), "UV_OFFLINE": "false"},
+                        )
+                        if result.exit_code != 0:
+                            raise RuntimeError(
+                                "failed to prepare uv script: "
+                                f"{result.stderr.strip()[-2000:]}"
+                            )
+                        self.backend.cache.uv_interpreters[path] = (
+                            result.stdout.strip().splitlines()[-1]
+                        )
         interpreter = self.backend.cache.uv_interpreters[path]
         if not activate:
             return [interpreter, path]

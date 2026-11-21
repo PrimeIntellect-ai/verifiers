@@ -1,24 +1,17 @@
-# /// script
-# requires-python = ">=3.10,<3.15"
-# dependencies = ["agent-client-protocol==0.12.1", "httpx"]
-# ///
 """Run harness segments through an ACP agent."""
 
 import asyncio
 import json
 import os
-import signal
 import sys
-import traceback
 from contextlib import AsyncExitStack, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from acp import (
     PROTOCOL_VERSION,
     Client,
-    RequestError,
     image_block,
     spawn_agent_process,
     text_block,
@@ -34,8 +27,6 @@ from acp.schema import (
     RequestPermissionResponse,
     TextContentBlock,
 )
-
-MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -53,7 +44,10 @@ class ToolGate:
         self.url = url
         self.client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {secret}"},
-            timeout=httpx.Timeout(120, connect=5),
+            # The host may execute a remote tool before answering. Its tool and
+            # rollout deadlines own that work; timing out here could let A
+            # continue while the denied-looking command still runs in B.
+            timeout=httpx.Timeout(None, connect=5),
         )
 
     async def decision(self, tool_call_id: str, arguments: Any) -> str:
@@ -87,6 +81,7 @@ class VerifiersACPClient(Client):
         self.stop_reason: str | None = None
         self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
+        self.tool_inputs: dict[tuple[str, str], Any] = {}
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -94,6 +89,7 @@ class VerifiersACPClient(Client):
         self.stop_reason = None
         self.response_metadata = {}
         self.update_metadata = []
+        self.tool_inputs = {}
 
     def turn_result(self) -> ACPTurn:
         return ACPTurn(
@@ -104,6 +100,26 @@ class VerifiersACPClient(Client):
         )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        tool_call_id = getattr(update, "tool_call_id", None)
+        raw_input = getattr(update, "raw_input", None)
+        if tool_call_id is not None and raw_input is not None:
+            self.tool_inputs[session_id, tool_call_id] = raw_input
+        elif tool_call_id is not None and getattr(update, "status", None) in {
+            "pending",
+            "in_progress",
+        }:
+            # Kimi requests permission before its final rawInput update. Its
+            # streaming updates replace one text block with cumulative JSON.
+            content = getattr(update, "content", None) or []
+            if len(content) == 1 and isinstance(
+                block := getattr(content[0], "content", None), TextContentBlock
+            ):
+                with suppress(json.JSONDecodeError):
+                    arguments = json.loads(block.text)
+                    if isinstance(arguments, dict):
+                        self.tool_inputs.setdefault(
+                            (session_id, tool_call_id), arguments
+                        )
         metadata = dict(kwargs)
         if isinstance(field_meta := getattr(update, "field_meta", None), dict):
             metadata.update(field_meta)
@@ -128,9 +144,13 @@ class VerifiersACPClient(Client):
         """Ask the rollout before execution: deny rejects one call; stop cancels the turn."""
         kinds = ("allow_once", "allow_always")
         if self.gate is not None:
-            decision = await self.gate.decision(
-                tool_call.tool_call_id, tool_call.raw_input
-            )
+            # Kimi and DeepSeek send argument-bearing tool updates first, then
+            # an ID-only permission request. Preserve an explicitly supplied
+            # request input; only fill the omitted field from this session.
+            arguments = tool_call.raw_input
+            if arguments is None:
+                arguments = self.tool_inputs.get((session_id, tool_call.tool_call_id))
+            decision = await self.gate.decision(tool_call.tool_call_id, arguments)
             if decision == "stop":
                 self.stop_reason = "cancelled"
                 if self.prompt_task is not None:
@@ -232,8 +252,9 @@ async def prompt(
 class ACPSession:
     """One live ACP process, connection, and session shared by several turns."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, env: dict[str, str] | None = None) -> None:
         self.client = VerifiersACPClient()
+        self._env = env
         self._reset()
 
     def _reset(self) -> None:
@@ -246,13 +267,16 @@ class ACPSession:
 
     async def start(self, config: dict) -> None:
         command = config["command"]
+        proc_env = {**os.environ, **(self._env or {})}
+        cwd = config.get("cwd") or os.getcwd()
         try:
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
                     *command[1:],
-                    env=os.environ.copy(),
+                    cwd=cwd,
+                    env=proc_env,
                     transport_kwargs={"stderr": None},
                 )
             )
@@ -263,12 +287,15 @@ class ACPSession:
                     config["client_capabilities"]
                 ),
             )
+            required = config.get("required_agent_metadata")
+            if required and required not in (initialized.field_meta or {}):
+                raise ValueError(f"ACP agent does not advertise {required}")
             self.capabilities = initialized.agent_capabilities
             self.supports_steering = (initialized.field_meta or {}).get(
                 "steering", {}
             ).get("supported") is True
             session = await self.connection.new_session(
-                cwd=os.getcwd(),
+                cwd=config.get("cwd") or os.getcwd(),
                 mcp_servers=mcp_servers(config),
                 **config["session_meta"],
             )
@@ -276,6 +303,14 @@ class ACPSession:
                 await self.connection.ext_method(
                     "session/rename", {"sessionId": session.session_id, "title": title}
                 )
+            if ready_file := config.get("ready_file"):
+                deadline = asyncio.get_running_loop().time() + 30
+                while not os.path.isfile(ready_file):
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise RuntimeError(
+                            "Native tool gate did not activate before the first prompt"
+                        )
+                    await asyncio.sleep(0.05)
         except BaseException:
             with suppress(BaseException):
                 await self.stack.aclose()
@@ -316,10 +351,10 @@ class ACPSession:
             params["messageId"] = message_id
         return await self.connection.ext_method("session/steering", params)
 
-    async def close(self) -> dict[str, Any]:
+    async def close(self, *, graceful: bool = True) -> dict[str, Any]:
         response_metadata: dict[str, Any] = {}
         try:
-            if self.connection is not None and self.session_id is not None:
+            if graceful and self.connection is not None and self.session_id is not None:
                 session_capabilities = (
                     self.capabilities and self.capabilities.session_capabilities
                 )
@@ -338,101 +373,3 @@ class ACPSession:
                     self.client.gate = None
                 self._reset()
         return response_metadata
-
-
-async def read_packet(stream: asyncio.StreamReader) -> dict | None:
-    try:
-        header = await stream.readexactly(8)
-    except asyncio.IncompleteReadError as error:
-        if not error.partial:
-            return None
-        raise EOFError("ACP session packet ended early") from error
-    size = int.from_bytes(header, "big")
-    if size > MAX_PACKET_BYTES:
-        raise ValueError(f"ACP session packet is too large: {size} bytes")
-    try:
-        return json.loads((await stream.readexactly(size)).decode())
-    except asyncio.IncompleteReadError as error:
-        raise EOFError("ACP session packet ended early") from error
-
-
-def write_packet(stream: Any, value: dict) -> None:
-    data = json.dumps(value, ensure_ascii=False).encode()
-    if len(data) > MAX_PACKET_BYTES:
-        raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
-    stream.write(len(data).to_bytes(8, "big"))
-    stream.write(data)
-    stream.flush()
-
-
-async def serve_stream() -> None:
-    session = ACPSession()
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await asyncio.get_running_loop().connect_read_pipe(
-        lambda: protocol, sys.stdin.buffer
-    )
-    tasks: set[asyncio.Task] = set()
-    prompt_lock = asyncio.Lock()
-
-    async def handle(request: dict) -> None:
-        operation = request.get("operation")
-        try:
-            if operation == "prompt":
-                async with prompt_lock:
-                    result = asdict(await session.run(request["config"]))
-            elif operation == "steer":
-                result = await session.steer(
-                    request["message"], request.get("message_id")
-                )
-            elif operation == "shutdown":
-                result = {"response_metadata": await session.close()}
-            else:
-                raise ValueError(f"unknown ACP session operation: {operation!r}")
-            response = {"ok": True, "result": result}
-        except Exception as error:  # noqa: BLE001 - serialize protocol failures
-            traceback.print_exc()
-            response = {
-                "ok": False,
-                "error": f"{type(error).__name__}: {error}",
-                "error_type": type(error).__name__,
-            }
-            if isinstance(error, RequestError) and isinstance(error.data, dict):
-                response["error"] = error.data.get("details") or str(error)
-                response["error_data"] = error.data
-            if operation == "prompt":
-                response["result"] = asdict(session.client.turn_result())
-        response["id"] = request.get("id")
-        write_packet(sys.stdout.buffer, response)
-
-    try:
-        while request := await read_packet(reader):
-            if request.get("operation") == "shutdown":
-                if tasks:
-                    await asyncio.gather(*tasks)
-                await handle(request)
-                break
-            task = asyncio.create_task(handle(request))
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-    finally:
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await session.close()
-
-
-async def main() -> None:
-    task = asyncio.current_task()
-    loop = asyncio.get_running_loop()
-    if task is not None:
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            with suppress(NotImplementedError):
-                loop.add_signal_handler(sig, task.cancel)
-    with suppress(asyncio.CancelledError):
-        await serve_stream()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

@@ -7,8 +7,14 @@ from pydantic import PositiveInt, model_validator
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.utils.install import remove_dir
+from verifiers.v1.harnesses.utils.remote_runtime import (
+    REMOTE_TOOL_CLIENT_SOURCE,
+    prepare_remote_bridge,
+)
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -33,9 +39,17 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     def _source(self) -> str:
-        return PROGRAM_SOURCE.replace("{version}", self.config.version)
+        return PROGRAM_SOURCE.replace("{version}", self.config.version).replace(
+            "# REMOTE_TOOL_CLIENT", REMOTE_TOOL_CLIENT_SOURCE
+        )
+
+    async def setup_execution(
+        self, runtime: Runtime, connection: ExecutionConnection
+    ) -> None:
+        await connection.runtime.prepare_uv_script(self._source(), {})
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(self._source(), self.config.resolved_env)
@@ -64,8 +78,41 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
         program = await runtime.prepare_uv_script(
             self._source(), self.config.resolved_env, activate=False
         )
+        if runtime._execution_bridge is None:
+            raise HarnessError("Stirrup requires an execution bridge")
+        bridge = runtime._execution_bridge
+        cwd = bridge.runtime.info.workdir
+        created = await runtime.run(["mkdir", "-p", "--", cwd], {})
+        if created.exit_code:
+            raise HarnessError(
+                "could not prepare the Stirrup supervisor working directory"
+            )
+        await self.install_skills(bridge.runtime, skills_dir)
+        worker_program = await bridge.runtime.prepare_uv_script(
+            self._source(), {}, activate=False
+        )
+        worker = f"stirrup-{trace.id}"
+        bridge.register(
+            worker,
+            [
+                *worker_program,
+                "--execution-worker",
+                f"--skills-dir={skills_dir}",
+                "--disabled-tools=" + json.dumps(self.config.disabled_tools or []),
+            ],
+            {},
+        )
+        root = endpoint.removesuffix("/v1").rstrip("/")
+        command = await prepare_remote_bridge(
+            runtime, f"{root}/execution", secret, worker
+        )
+        remote_args = [
+            "--execution-command=" + json.dumps(command),
+            f"--tool-interception-url={root}/tool",
+        ]
         return ACPConfig(
             env=self.config.resolved_env,
+            cwd=cwd,
             command=[
                 *program,
                 f"--base-url={endpoint}",
@@ -76,6 +123,7 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
                 f"--skills-dir={skills_dir}",
                 f"--tool-timeout={self.config.tool_timeout}",
                 "--disabled-tools=" + json.dumps(self.config.disabled_tools or []),
+                *remote_args,
                 *system_prompt_args,
             ],
             prompt=prompt,

@@ -33,16 +33,25 @@ EXPECTED = {
 # refused connection, a proxy refusal, a DNS failure, or a timeout means it was not.
 PROBE = f"""
 import json, urllib.error, urllib.request
-report = {{}}
-for name, url in {{"blocked": "https://{BLOCKED}", "allowed": "https://{ALLOWED}/simple/"}}.items():
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+def probe(url):
     try:
-        urllib.request.urlopen(url, timeout=15)
-        report[name] = "ok"
+        with urllib.request.urlopen(url, timeout=15):
+            return "ok"
     except urllib.error.HTTPError:
-        report[name] = "ok"
-    except Exception:
-        report[name] = "denied"
-open({REPORT!r}, "w").write(json.dumps(report))
+        return "ok"
+    except OSError:
+        return "denied"
+
+pending = Path({REPORT!r} + ".pending")
+pending.touch()
+urls = {{"blocked": "https://{BLOCKED}", "allowed": "https://{ALLOWED}/simple/"}}
+with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+    report = dict(zip(urls, pool.map(probe, urls.values())))
+pending.write_text(json.dumps(report))
+pending.replace({REPORT!r})
 print(json.dumps(report))
 """
 
@@ -53,7 +62,11 @@ class NetworkPolicyTask(vf.Task):
 
     @vf.reward(weight=1.0)
     async def policy_held(self, trace: vf.Trace, runtime: Runtime) -> float:
-        result = await runtime.run(["cat", REPORT], {})
+        # A shell can return a job handle while its two requests are still in flight.
+        collect = 'while [ -e "$1.pending" ]; do sleep 0.2; done; cat "$1"'
+        result = await runtime.run(
+            ["timeout", "45", "sh", "-c", collect, "sh", REPORT], {}
+        )
         report = json.loads(result.stdout) if result.exit_code == 0 else None
         trace.info["network_report"] = report
         return float(report == EXPECTED[self.data.name])
@@ -68,10 +81,13 @@ class NetworkPolicyTaskset(vf.Taskset[NetworkPolicyTask, vf.TasksetConfig]):
             "allow": {"network": vf.NetworkPolicyConfig(allow=[ALLOWED])},
         }
         prompt = (
-            f"Use your shell tool now to run `python3 {PROBE_PATH}` exactly once. "
-            "Wait for the command to finish, then reply with exactly what it printed. "
-            "The network policy is already enforced, so do not inspect or change the network or "
-            "firewall, and do not run any other command."
+            "Verify the active network policy with the supplied read-only test. It makes "
+            "ordinary HTTPS requests and records denied connections as test results. "
+            "Leave the policy in place and run the test once in the foreground. "
+            f"If you have a shell, run `python3 {PROBE_PATH}`. If your tool is a Python REPL, run "
+            f"`import subprocess; print(subprocess.check_output(['python3', '{PROBE_PATH}'], text=True))`. "
+            "If your tool returns a running job, wait for that same job to exit. "
+            "Reply with the printed JSON once the command has finished."
         )
         return [
             NetworkPolicyTask(

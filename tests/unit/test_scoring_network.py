@@ -2,6 +2,7 @@
 the runtime's own rules (in `grade_submission`, the agent's), and what the runtime asks
 its provider for."""
 
+import asyncio
 from typing import cast
 
 import pytest
@@ -51,6 +52,8 @@ class Backend:
         self.config = config
         self.network_restricted = restricted
         self.calls = []
+        self._workspace_network_lock = asyncio.Lock()
+        self._workspace_routes = {}
 
     async def prepare_execution(self, routes, network=None):
         self.calls.append((routes, None if network is None else network.allow))

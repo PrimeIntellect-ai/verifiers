@@ -4,15 +4,16 @@ A Prime VM's egress policy covers the whole VM, so a tool server whose egress or
 isolation differs from the workspace's, such as one that calls public APIs beside a
 workspace with none, or one that runs agent-submitted code with none, runs on a Prime
 runtime of its own (`ToolsetConfig.runtime`). Independent tool VMs accept connections
-only from the workspace; task-declared services can also call each other and the
-workspace. The harness reaches a server at its VM's LAN name,
+from the workspace and harness. Task-declared services follow their network rules. The harness reaches a server at its VM's LAN name,
 `<sandbox-id>.sandbox.internal`, which the LAN's DNS keeps current.
 """
+
+from __future__ import annotations
 
 import asyncio
 import contextlib
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers.v1.runtimes import (
@@ -28,6 +29,8 @@ from verifiers.v1.utils.logging import get_logger
 logger = get_logger(__name__)
 
 WORKSPACE_TAG = "vf-workspace"
+HARNESS_TAG = "vf-harness"
+TASK_TAG = "vf-task"
 
 
 def tool_vms(
@@ -64,24 +67,40 @@ def _tag(index: int) -> str:
     return f"vf-tool-{index}"
 
 
-async def _keepalive(runtime, every: float) -> None:
-    while True:
-        await asyncio.sleep(every)
-        with contextlib.suppress(Exception):
-            await runtime.run(["true"], {})
+@asynccontextmanager
+async def keepalive(backend: PrimeBackend):
+    """Keep a VM active while its tools or servers see only relay traffic."""
+    idle = backend.config.idle_timeout
+    if idle is None:
+        yield
+        return
+
+    async def pulse() -> None:
+        while not backend.stopped:
+            await asyncio.sleep(max(10.0, idle / 3))
+            if not backend.stopped:
+                with contextlib.suppress(Exception):
+                    await backend.bind().run(["true"], {})
+
+    task = asyncio.create_task(pulse())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @asynccontextmanager
 async def private_network(
     workspace: RuntimeBackend,
     members: Mapping[str, PrimeConfig],
-    start_workspace: Callable[[], Awaitable[object]],
     *,
     interconnect: bool = False,
     networks: Mapping[str, list[str]] | None = None,
+    harness: PrimeBackend | None = None,
+    harness_peers: Collection[str] = (),
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
-    """Boot the workspace's VM and one VM per member together, each joining a LAN
-    network of the rollout's own as it boots."""
+    """Own one rollout's workspace, services and optional harness on a private LAN."""
     if not isinstance(workspace, PrimeBackend):
         raise TypeError(
             "tool servers on Prime runtimes of their own join the workspace over a "
@@ -95,14 +114,6 @@ async def private_network(
         "main": [WORKSPACE_TAG],
         **{name: [tag] for name, tag in tags.items()},
     }
-    rules = (
-        [LanRule(from_="*", to="*")]
-        if interconnect
-        else [
-            LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
-            for tag in tags.values()
-        ]
-    )
     if networks is not None:
         rules = []
         for index, names in enumerate(networks.values()):
@@ -110,61 +121,74 @@ async def private_network(
             rules.append(LanRule(from_=f"tag:{tag}", to=f"tag:{tag}"))
             for name in names:
                 memberships[name].append(tag)
+    elif interconnect:
+        # Task services and the workspace, not the harness, reach each other.
+        rules = [LanRule(from_=f"tag:{TASK_TAG}", to=f"tag:{TASK_TAG}")]
+        for member_tags in memberships.values():
+            member_tags.append(TASK_TAG)
+    else:
+        rules = [
+            LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
+            for tag in tags.values()
+        ]
+    if harness is not None:
+        # MCP servers are the harness's only direct LAN consumers. Model tools reach
+        # the workspace through the host relay.
+        destinations = (
+            tags[name] for name in tags if not interconnect or name in harness_peers
+        )
+        rules.extend(
+            LanRule(from_=f"tag:{HARNESS_TAG}", to=f"tag:{tag}") for tag in destinations
+        )
+        if "main" in harness_peers:
+            rules.append(LanRule(from_=f"tag:{HARNESS_TAG}", to=f"tag:{WORKSPACE_TAG}"))
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(leased_client())
-        # Install connectivity before boot: Compose peers must share a network;
-        # independent tool servers accept only workspace connections.
-        network = await client.create_lan_network(
-            f"vf-{uuid.uuid4().hex[:16]}",
-            rules=rules,
-        )
+        name = f"vf-{uuid.uuid4().hex[:16]}"
 
-        async def delete_network() -> None:
+        async def delete_network(network_id: str) -> None:
             try:
-                await client.delete_lan_network(network.id)
+                await client.delete_lan_network(network_id)
             except Exception:
                 logger.warning(
-                    "LAN network %s deletion failed", network.id, exc_info=True
+                    "Failed to delete private LAN %s", network_id, exc_info=True
                 )
 
-        stack.push_async_callback(lambda: run_shielded(delete_network()))
-        # Failed startup unwinds this stack before the deployment's workspace owner.
-        stack.push_async_callback(workspace.stop)
+        async def create_network() -> str:
+            network = await client.create_lan_network(name, rules=rules)
+            stack.push_async_callback(delete_network, network.id)
+            return network.id
 
-        backends: dict[str, RuntimeBackend] = {}
+        network_id = await run_shielded(create_network())
+        backends = {
+            name: make_backend(cfg, f"{workspace.name}-{tags[name]}")
+            for name, cfg in members.items()
+        }
+        targets = [
+            (workspace, memberships["main"]),
+            *((vm, memberships[name]) for name, vm in backends.items()),
+        ]
+        if harness is not None:
+            targets.append((harness, [HARNESS_TAG]))
 
-        async def stop(task: asyncio.Task) -> None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        async def stop_vms() -> None:
+            await asyncio.gather(
+                *(vm.stop() for vm, _ in targets), return_exceptions=True
+            )
 
-        async def provision(name: str, config: PrimeConfig) -> None:
-            backend = make_backend(config, f"{workspace.name}-{tags[name]}")
-            assert isinstance(backend, PrimeBackend)
-            backend.lan = (network.id, memberships[name])
-            # Pushed before `start()`: a failed start may already hold a paid sandbox.
-            stack.push_async_callback(backend.stop)
-            await backend.start()  # running, and joined to the network
-            backends[name] = backend
-            # LAN traffic is not activity to the platform, and a server's VM sees no
-            # commands of its own: keep it inside its idle timeout until it is released.
-            if config.idle_timeout is not None:
-                every = max(10.0, config.idle_timeout / 3)
-                stack.push_async_callback(
-                    stop, asyncio.create_task(_keepalive(backend.bind(), every))
-                )
-
-        workspace.lan = (network.id, memberships["main"])
+        # Own every VM before startup so a cancelled or failed create still unwinds.
+        stack.push_async_callback(stop_vms)
         try:
             async with asyncio.TaskGroup() as group:
-                group.create_task(start_workspace())
-                for name, config in members.items():
-                    group.create_task(provision(name, config))
+                for backend, member_tags in targets:
+                    assert isinstance(backend, PrimeBackend)
+                    backend.lan = (network_id, member_tags)
+                    group.create_task(backend.start())
         except ExceptionGroup as failed:
-            raise failed.exceptions[0]  # one VM's failure, typed for retries
-        logger.debug(
-            "Joined LAN network %s from %s to %s",
-            network.id,
-            workspace.info.id,
-            {name: backend.info.id for name, backend in backends.items()},
-        )
+            raise failed.exceptions[0]
+        for backend in backends.values():
+            await stack.enter_async_context(keepalive(backend))
+        if harness is not None:
+            await stack.enter_async_context(keepalive(workspace))
+        logger.debug("Joined private LAN %s with %d VMs", network_id, len(targets))
         yield backends

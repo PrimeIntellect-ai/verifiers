@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TYPE_CHECKING
 
 from pydantic import Field, model_validator
@@ -83,3 +83,12 @@ class Toolset(ServerBase[ConfigT, StateT]):
                 name=getattr(fn, "tool_name", None) or fn.__name__,
                 description=(fn.__doc__ or "").strip() or None,
             )
+
+
+class WorkspaceToolset(Toolset[ConfigT, StateT]):
+    """A task-local MCP server whose declared command runs in the workspace."""
+
+    def serve_workspace(
+        self, harness: Runtime, endpoint: str, secret: str
+    ) -> AbstractAsyncContextManager[str]:
+        raise NotImplementedError

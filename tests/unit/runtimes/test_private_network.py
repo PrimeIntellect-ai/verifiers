@@ -16,10 +16,11 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.runtimes.backends import prime
 from verifiers.v1.runtimes.strategies import (
-    _ColocatedDeployment,
     _ContainerDeployment,
     _deployment_strategy,
     _PrivateNetworkDeployment,
+    _SplitDeployment,
+    _WorkspaceOnlyDeployment,
 )
 
 ATLAS = PrimeConfig(image="atlas:1", cpu=4, memory=10)  # open egress by default
@@ -59,12 +60,22 @@ def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
 
 
 def test_the_deployment_joins_tool_vms_over_a_private_network():
+    monkey_prime = PrimeBackend.__new__(PrimeBackend)
     assert isinstance(
-        _deployment_strategy(None, PrimeBackend, None, {"atlas": ATLAS}),
+        _deployment_strategy(None, monkey_prime, None, {"atlas": ATLAS}),
         _PrivateNetworkDeployment,
     )
     assert isinstance(
-        _deployment_strategy(None, PrimeBackend, None, {}), _ColocatedDeployment
+        _deployment_strategy(None, monkey_prime, None, {}, has_harness=True),
+        _SplitDeployment,
+    )
+    assert isinstance(
+        _deployment_strategy(None, monkey_prime, None, {}),
+        _WorkspaceOnlyDeployment,
+    )
+    assert isinstance(
+        _deployment_strategy(None, DockerBackend, None, {}, has_harness=True),
+        _SplitDeployment,
     )
     spec = vf.ComposeSpec("task")
     assert isinstance(
@@ -76,7 +87,7 @@ def test_the_private_network_needs_a_prime_workspace():
     workspace = SimpleNamespace(config=DockerConfig())
 
     async def enter():
-        async with private_network.private_network(workspace, {"atlas": ATLAS}, None):
+        async with private_network.private_network(workspace, {"atlas": ATLAS}):
             pass
 
     with pytest.raises(TypeError, match="needs the workspace on Prime, not docker"):
@@ -114,7 +125,7 @@ def boot(monkeypatch, members):
     workspace = PrimeBackend(PrimeConfig(allow=[]), name="ws")
 
     async def enter():
-        async with private_network.private_network(workspace, members, workspace.start):
+        async with private_network.private_network(workspace, members):
             pass
 
     with pytest.raises(RuntimeError, match="booted"):
@@ -163,7 +174,8 @@ def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
 
     strategy = _PrivateNetworkDeployment()
     deployment = SimpleNamespace(
-        target_backends={"main": backend("main"), "forth": backend("forth")}
+        harness_backend=None,
+        target_backends={"main": backend("main"), "forth": backend("forth")},
     )
     # The harness reaches the model and a remote tool server; the tool VM needs neither.
     routes = ["https://tunnel.example/v1", "https://tools.example/mcp"]
@@ -190,7 +202,9 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
 
     strategy = _PrivateNetworkDeployment()
     strategy._services = SimpleNamespace(aclose=aclose)
-    deployment = SimpleNamespace(execution_backend=SimpleNamespace(stop=stop))
+    deployment = SimpleNamespace(
+        harness_backend=None, execution_backend=SimpleNamespace(stop=stop)
+    )
 
     # As Compose stops its workspace, before finalize_services reads the targets.
     asyncio.run(strategy.stop_execution(deployment))
@@ -199,7 +213,7 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
     # A failed tool VM or network release neither skips the workspace's nor raises.
     events.clear()
     asyncio.run(strategy.prepare_verifier(deployment))
-    assert events == ["workspace stopped", "tool VMs released"]
+    assert events == ["tool VMs released"]
 
 
 def served_url(monkeypatch, server, **kwargs):
@@ -253,3 +267,33 @@ def test_an_explicit_service_needs_a_task_service_spec(monkeypatch, service):
 def test_a_restricted_runtime_without_a_private_network_is_refused(monkeypatch):
     with pytest.raises(ToolsetError, match="joins the rollout's private network"):
         served_url(monkeypatch, toolset("forth", runtime=FORTH))
+
+
+async def test_borrowed_workspace_restores_each_rollouts_network(monkeypatch):
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    backend = PrimeBackend(PrimeConfig())
+    applied = []
+
+    async def prepare(routes, network=None):
+        applied.append(network.block if network else [])
+
+    monkeypatch.setattr(backend, "prepare_execution", prepare)
+    policy = backend.config
+    async with backend.workspace_network(
+        policy, ["https://outer.example/v1"], borrowed=True
+    ):
+        async with backend.workspace_network(
+            policy, ["https://judge.example/v1"], borrowed=True
+        ):
+            assert backend.config.block == []
+            assert set(backend.info.block) == {"outer.example", "judge.example"}
+            await backend.bind().set_network(vf.NetworkPolicyConfig())
+        assert backend.info.block == ["outer.example"]
+    assert backend.info.block == []
+    assert applied == [
+        ["outer.example"],
+        ["judge.example", "outer.example"],
+        ["judge.example", "outer.example"],
+        ["outer.example"],
+        [],
+    ]

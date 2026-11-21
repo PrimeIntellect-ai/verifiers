@@ -6,22 +6,23 @@ from pathlib import Path
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote import native_remote_tools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Message
+from verifiers.v1.types import Message, ToolCall
 
 OPENCODE_DIR = "/var/tmp/vf-opencode"
 STATE_ROOT = "/tmp/vf-opencode-runs"
 KEY_VAR = "VF_OPENCODE_API_KEY"
 MCP_READY = (Path(__file__).resolve().parent / "mcp-ready.js").read_bytes()
+TOOL_GATE = (Path(__file__).resolve().parent / "gate.js").read_bytes()
 
 INSTALL = r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
 npm install --prefix "$AGENT_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
     "@opencode/cli@$AGENT_OPENCODE_VERSION" >/dev/null
 """
@@ -39,6 +40,40 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
+        return native_remote_tools(runtime, "opencode", self.config.disabled_tools)
+
+    def can_gate_tool(self, call: ToolCall) -> bool:
+        # OpenCode builds its Code Mode wrapper after registry transforms.
+        return call.name != "execute"
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        plugin_dir = f"{config.env['XDG_CONFIG_HOME']}/tool-gate"
+        config.ready_file = f"{plugin_dir}/ready"
+        await runtime.write(f"{plugin_dir}/index.js", TOOL_GATE)
+        settings = json.loads(config.env["OPENCODE_CONFIG_CONTENT"])
+        # Upstream exposes Code Mode's catalog as direct tools when execute is
+        # disabled. Each such tool then passes the replacement executor in A;
+        # no model-authored JavaScript is evaluated by A's Code Mode runtime.
+        settings["permissions"].append(
+            {"action": "execute", "resource": "*", "effect": "deny"}
+        )
+        settings.setdefault("plugins", []).append(
+            {
+                "package": plugin_dir,
+                "options": {
+                    "url": url,
+                    "secret": secret,
+                    "nativeTools": sorted(native_tool_names("opencode")),
+                    "readyFile": config.ready_file,
+                },
+            }
+        )
+        config.env["OPENCODE_CONFIG_CONTENT"] = json.dumps(settings)
 
     # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
     # Recheck on version bumps:
@@ -49,7 +84,6 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         return message
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         directory = f"{OPENCODE_DIR}/{self.config.version}"
         await ensure_installed(
             runtime,

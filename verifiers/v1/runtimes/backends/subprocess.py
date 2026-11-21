@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import platform
 import shutil
 import signal
 import stat
+import sys
 import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -94,6 +96,8 @@ class SubprocessBackend(RuntimeBackend):
         super().__init__(name)
         self.cache.uv_interpreters = _UV_INTERPRETERS
         self.cache.uv_locks = _UV_LOCKS
+        self.cache.system_python = sys.executable
+        self.cache.arch = platform.machine()
         self.config = config
         self.info = SubprocessRuntimeInfo(**config.model_dump())
         self.workdir: Path | None = None

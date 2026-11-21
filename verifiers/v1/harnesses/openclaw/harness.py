@@ -1,32 +1,37 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
 import json
+from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.harnesses.openclaw.remote import OpenClawRemoteTools
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote import native_tool_names
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
+GATE_SOURCE = (Path(__file__).parent / "gate.mjs").read_text()
 
-# OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
+# OpenClaw exceeds the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
-OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
+OPENCLAW_BIN = f"{OPENCLAW_DIR}/node_modules/.bin/openclaw"
 SETUP = r"""
 set -e
+rm -f "$AGENT_OPENCLAW_DIR/.ready"
 if [ ! -x "$VF_OPENCLAW_BIN" ]; then
-    command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
-    curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh \
-        | bash -s -- --prefix "$AGENT_OPENCLAW_DIR" --version "$AGENT_OPENCLAW_VERSION" --no-onboard
+    npm install --prefix "$AGENT_OPENCLAW_DIR" --no-audit --no-fund --omit=dev \
+        "openclaw@$AGENT_OPENCLAW_VERSION" >/dev/null
 fi
-set -- $(find "$AGENT_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.mjs')
+set -- $(find "$AGENT_OPENCLAW_DIR/node_modules/openclaw/dist" -type f -name 'session-accessor.sqlite-transcript-store-*.mjs')
 [ "$#" -eq 1 ] || { echo "could not locate OpenClaw's transcript sanitizer for replay patch" >&2; exit 1; }
-"$AGENT_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
+node - "$1" <<'NODE'
 const fs = require("node:fs");
 const file = process.argv[2];
 const stat = fs.statSync(file);
@@ -62,6 +67,7 @@ if (patched !== source) {
     }
 }
 NODE
+touch "$AGENT_OPENCLAW_DIR/.ready"
 """
 
 # OpenClaw rejects a model it cannot resolve as the primary model, which makes setting
@@ -92,16 +98,16 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 143' HUP INT TERM
-root=${VF_OPENCLAW_BIN%/bin/openclaw}
 gateway_attempt=0
 while [ "$gateway_attempt" -lt 5 ]; do
-    port=$("$root/tools/node/bin/node" -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
+    [ -z "${AGENT_OPENCLAW_GATE_READY:-}" ] || rm -f "$AGENT_OPENCLAW_GATE_READY"
+    port=$(node -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
     export OPENCLAW_GATEWAY_PORT="$port"
     # OpenClaw respawns Node; separate groups let the trap reap both process trees.
     setsid "$VF_OPENCLAW_BIN" gateway run </dev/null >"$OPENCLAW_STATE_DIR/gateway.log" &
     gateway_pid=$!
     attempt=0
-    while ! curl -fsS "http://127.0.0.1:$port/readyz" >/dev/null 2>&1; do
+    while ! node -e 'fetch("http://127.0.0.1:"+process.argv[1]+"/readyz").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' "$port" >/dev/null 2>&1; do
         if ! kill -0 "$gateway_pid" 2>/dev/null; then
             wait "$gateway_pid" 2>/dev/null || true
             gateway_pid=
@@ -119,6 +125,18 @@ done
 if [ -z "$gateway_pid" ]; then
     tail -100 "$OPENCLAW_STATE_DIR/gateway.log" >&2
     exit 1
+fi
+if [ -n "${AGENT_OPENCLAW_GATE_READY:-}" ]; then
+    attempt=0
+    while [ ! -f "$AGENT_OPENCLAW_GATE_READY" ]; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -gt 30 ] || ! kill -0 "$gateway_pid" 2>/dev/null; then
+            echo "OpenClaw execution gate did not register" >&2
+            tail -100 "$OPENCLAW_STATE_DIR/gateway.log" >&2
+            exit 1
+        fi
+        sleep 1
+    done
 fi
 setsid "$VF_OPENCLAW_BIN" acp --verbose --session "agent:main:acp-bridge:$OPENCLAW_GATEWAY_TOKEN" --no-prefix-cwd <&3 >&1 &
 acp_pid=$!
@@ -140,6 +158,14 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
+        return RemoteToolsSpec(
+            OpenClawRemoteTools,
+            {"disabled_tools": self.config.disabled_tools or []},
+            native_tools=native_tool_names("openclaw") | {"exec", "process"},
+        )
 
     def __init__(self, config: OpenClawHarnessConfig) -> None:
         super().__init__(config)
@@ -154,6 +180,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         await ensure_installed(
             runtime,
             directory=directory,
+            ready=f'[ -f "{directory}/.ready" ] && [ -x "{binary}" ]',
             install=SETUP,
             env={
                 **self.config.resolved_env,
@@ -162,9 +189,50 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "AGENT_OPENCLAW_VERSION": self.config.version,
             },
             label="OpenClaw",
-            shell=("bash", "-o", "pipefail", "-c"),
         )
         await super().setup(runtime)
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        directory = f"{config.env['OPENCLAW_STATE_DIR']}/execution-gate"
+        ready = f"{directory}/ready"
+        native = sorted(native_tool_names("openclaw") | {"exec", "process"})
+        await runtime.write(
+            f"{directory}/index.mjs",
+            GATE_SOURCE.replace("__URL__", json.dumps(url))
+            .replace("__SECRET__", json.dumps(secret))
+            .replace("__NATIVE_TOOLS__", json.dumps(native))
+            .replace("__READY__", json.dumps(ready))
+            .encode(),
+        )
+        await runtime.write(
+            f"{directory}/package.json",
+            json.dumps(
+                {
+                    "name": "execution-gate",
+                    "type": "module",
+                    "openclaw": {"extensions": ["./index.mjs"]},
+                }
+            ).encode(),
+        )
+        await runtime.write(
+            f"{directory}/openclaw.plugin.json",
+            json.dumps(
+                {
+                    "id": "execution-gate",
+                    "activation": {"onStartup": True},
+                    "configSchema": {"type": "object", "additionalProperties": False},
+                }
+            ).encode(),
+        )
+        path = config.env["OPENCLAW_CONFIG_PATH"]
+        settings = json.loads(await runtime.read(path))
+        plugins = settings.setdefault("plugins", {})
+        plugins.setdefault("load", {}).setdefault("paths", []).append(directory)
+        plugins.setdefault("entries", {})["execution-gate"] = {"enabled": True}
+        await runtime.write(path, json.dumps(settings).encode())
+        config.env["AGENT_OPENCLAW_GATE_READY"] = ready
 
     async def _in_catalog(self, runtime: Runtime, model: str, state_dir: str) -> bool:
         """Whether OpenClaw's model catalog knows `model`, checked once per model."""
@@ -195,7 +263,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         provider, _, model_id = ctx.model.partition("/")
-        state_dir = f".vf-openclaw/{trace.id}"
+        state_dir = f"/tmp/vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
         skills_dir = f"{state_dir}/skills"
         provider_config = {
@@ -208,6 +276,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             # OpenClaw's chat completions default for them rewrites replayed turns.
             provider_config["api"] = "openai-responses"
             provider_config["models"] = [{"id": model_id, "name": model_id}]
+        mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
         config = {
             "gateway": {
                 "mode": "local",
@@ -224,6 +293,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                     "skipBootstrap": True,
                     "sandbox": {"mode": "off"},
                     "model": {"primary": ctx.model},
+                    "models": {ctx.model: {"codeMode": False}},
                     "utilityModel": "",  # Disable background recap model calls.
                 }
             },
@@ -232,6 +302,20 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "fs": {"workspaceOnly": True},
                 "exec": {"host": "gateway", "mode": "full"},
                 "deny": self.config.disabled_tools or [],
+                # This adapter preserves the native coding surface and any configured MCP
+                # servers. Code Mode uses the same "exec" name for JavaScript, and requires a
+                # different nested-result transport; keep the shell surface explicit here.
+                "allow": [
+                    "read",
+                    "write",
+                    "edit",
+                    "exec",
+                    "process",
+                    "bundle-mcp",
+                    "group:plugins",
+                ],
+                "codeMode": False,
+                "toolSearch": False,
             },
             "models": {
                 "providers": {provider: provider_config},
@@ -240,6 +324,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "servers": {
                     name: {
                         "url": url,
+                        "headers": mcp_headers.get(name, {}),
                         "transport": "streamable-http",
                         "connectionTimeoutMs": 60_000,
                         "requestTimeoutMs": int(self.config.tool_timeout * 1000),
@@ -278,5 +363,5 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        state_dir = f".vf-openclaw/{trace.id}"
+        state_dir = f"/tmp/vf-openclaw/{trace.id}"
         await remove_dir(runtime, state_dir, "OpenClaw state")

@@ -7,8 +7,9 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote import native_remote_tools
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -18,7 +19,6 @@ USAGE_COMPAT = (Path(__file__).parent / "usage.mjs").read_bytes()
 GATE = (Path(__file__).parent / "gate.mjs").read_bytes()
 INSTALL = r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
 npm install --prefix "$AGENT_DEEPSEEK_DIR" --no-audit --no-fund \
     "@deepseek-ai/dsh@$AGENT_DEEPSEEK_VERSION" >/dev/null
 touch "$AGENT_DEEPSEEK_DIR/.ready"
@@ -38,8 +38,10 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
+        return native_remote_tools(runtime, "deepseek", self.config.disabled_tools)
+
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         directory = DEEPSEEK_DIR.format(version=self.config.version)
         await ensure_installed(
             runtime,
@@ -112,7 +114,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
         await runtime.write(usage_path, USAGE_COMPAT)
         return ACPConfig(
             command=[
-                f"{NODE_BIN_DIR}/node",
+                "node",
                 "--import",
                 usage_path,
                 f"{DEEPSEEK_DIR.format(version=self.config.version)}/node_modules/@deepseek-ai/dsh/lib/bin.js",

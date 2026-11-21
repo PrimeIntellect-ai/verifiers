@@ -2,15 +2,18 @@
 
 import hashlib
 import json
+import shlex
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
@@ -31,6 +34,22 @@ LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
+_SPLIT_KERNEL_SHIM = r"""
+import rlm, rlm.mcp as _mcp, rlm.repl as _repl
+
+_mcp.list_tools = lambda server: rlm.host_request("mcp.tools", {"server": server})
+_mcp.call_tool = lambda server, tool, arguments=None: rlm.host_request(
+    "mcp.call", {"server": server, "tool": tool, "arguments": arguments}
+)
+_mcp.describe_tool = lambda connection_id, tool: rlm.host_request(
+    "mcp.describe", {"server": connection_id, "tool": tool}
+)
+_mcp.search_tools = lambda query, connection_id=None, limit=20: rlm.host_request(
+    "mcp.search", {"query": query, "server": connection_id, "limit": limit}
+)
+_repl.main()
+"""
+
 
 INSTALL = (
     "set -e\n"
@@ -46,32 +65,34 @@ if [ ! -x "$prefix/bin/prime-agent" ]; then
         Darwin-arm64) platform=darwin-arm64; sha=6eb082c66f5259b953c38f21c72055d11942fa61372718a5eab25603247bd49c ;;
         *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
     esac
-    command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
     release_url="$AGENT_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
     tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
     download_dir="$(mktemp -d "$AGENT_PRIME_AGENT_DIR/install.XXXXXX")"
     trap 'rm -rf "$download_dir"' EXIT
-    curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
-    printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
-    if command -v sha256sum >/dev/null; then
-        (cd "$download_dir" && sha256sum -c SHA256SUMS)
-    else
-        (cd "$download_dir" && shasum -a 256 -c SHA256SUMS)
-    fi
     mkdir "$download_dir/bin"
-    tar -xzf "$download_dir/$tarball" -C "$download_dir/bin"
+    $(command -v python3 || command -v python) -c '
+import hashlib, io, sys, tarfile, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={"User-Agent": "verifiers"})
+data = urllib.request.urlopen(req, timeout=60).read()
+assert hashlib.sha256(data).hexdigest() == sys.argv[2], "prime-agent checksum mismatch"
+with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+    tf.extractall(sys.argv[3])
+' "$release_url/$tarball" "$sha" "$download_dir/bin"
     [ "$("$download_dir/bin/prime-agent" --version)" = "$PRIME_AGENT_RELEASE_VERSION" ]
     mkdir -p "$prefix"
     mv "$download_dir/bin" "$prefix/bin"
 fi
 # Let the released binary validate the kernel cache and prepare its Python runtime.
-"$prefix/bin/prime-agent" --prime-agent-bootstrap
+# Set HOME inside the shared install dir so uv's managed Python (when bootstrap clears
+# UV_PYTHON_INSTALL_DIR) lands under $AGENT_PRIME_AGENT_DIR instead of /root (0700).
+HOME="$AGENT_PRIME_AGENT_DIR/home" "$prefix/bin/prime-agent" --prime-agent-bootstrap
 # Bootstrap installs only the runtime; sessions also import the bundled Python skills.
 set --
 for pyproject in "$prefix/bin/skills/"*/pyproject.toml; do
     set -- "$@" --editable "${pyproject%/pyproject.toml}"
 done
 uv pip install --python "$PRIME_AGENT_KERNEL_VENV/bin/python" "$@"
+chmod -R a+rX "$AGENT_PRIME_AGENT_DIR"
 touch "$prefix/.ready"
 """
 )
@@ -154,7 +175,28 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             lifecycle[LIFECYCLE_META_NAMESPACE] = statuses
         statuses.append(status)
 
+    async def setup_execution(
+        self, runtime: Runtime, connection: ExecutionConnection
+    ) -> None:
+        await self._install(connection.runtime, {})
+        connection.register(
+            "prime_agent",
+            [
+                f"{self._kernel_venv()}/bin/python",
+                "-P",
+                "-s",
+                "-u",
+                "-c",
+                _SPLIT_KERNEL_SHIM,
+            ],
+            {},
+        )
+
     async def setup(self, runtime: Runtime) -> None:
+        await self._install(runtime, self.config.resolved_env)
+        await super().setup(runtime)
+
+    async def _install(self, runtime: Runtime, env: dict[str, str]) -> None:
         logger.debug("Ensuring prime-agent %s is installed", self.config.commit)
         ready = f"{PRIME_AGENT_DIR}/{self.config.commit}/.ready"
         await ensure_installed(
@@ -169,7 +211,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             ),
             install=INSTALL,
             env={
-                **self.config.resolved_env,
+                **env,
                 "AGENT_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "AGENT_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
@@ -178,7 +220,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             },
             label="prime-agent",
         )
-        await super().setup(runtime)
 
     async def prepare_acp(
         self,
@@ -215,7 +256,12 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             raise RuntimeError(
                 f"prime-agent state directory failed: {created.stderr.strip()[-500:]}"
             )
+        if runtime._execution_bridge is None:
+            raise RuntimeError("Prime Agent requires an execution bridge")
         await self.install_skills(runtime, skills_dir)
+        if self.config.skills:
+            # Prime Agent puts skill file paths in its system prompt for the kernel to read.
+            await self.install_skills(runtime._execution_bridge.runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
@@ -287,8 +333,60 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 ),
             ]
 
+        env = self._env(trace, secret)
+        cwd = runtime._execution_bridge.runtime.info.workdir
+        # The supervisor launches its interpreter with the session cwd.
+        # Keep only the directory in A; all task content lives in B.
+        created = await runtime.run(["mkdir", "-p", cwd], {})
+        if created.exit_code:
+            raise RuntimeError("could not prepare Prime Agent supervisor cwd")
+        mcp_configs = None
+        bridge_mcp_urls = mcp_urls
+        if mcp_urls:
+            mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
+            mcp_configs = {
+                name: {
+                    "type": "http",
+                    "url": str(url),
+                    "headers": mcp_headers.get(name, {}),
+                    "credentialSource": "acp",
+                }
+                for name, url in mcp_urls.items()
+            }
+            # Forward MCP configs directly to the split bridge in A instead of B.
+            bridge_mcp_urls = {}
+        command = await prepare_remote_bridge(
+            runtime,
+            f"{endpoint.removesuffix('/v1')}/execution",
+            secret,
+            "prime_agent",
+            protocol="prime",
+            mcp_configs=mcp_configs,
+            python=f"{self._kernel_venv()}/bin/python",
+        )
+        # The pinned supervisor uses this interpreter for trusted import
+        # probes and starts every user cell with `-m rlm.repl`.
+        # Only probes use A's installed Python; the persistent kernel is B.
+        wrapper = f"{root}/kernel-python"
+        source = (
+            "#!/bin/sh\nset -eu\n"
+            'prev=""\n'
+            'for arg in "$@"; do\n'
+            '  if [ "$prev" = "-m" ] && [ "$arg" = "rlm.repl" ]; then\n'
+            f"    exec {shlex.join(command)}\n"
+            "  fi\n"
+            '  prev="$arg"\n'
+            "done\n"
+            f'exec {shlex.quote(self._kernel_venv() + "/bin/python")} "$@"\n'
+        )
+        await runtime.write(wrapper, source.encode())
+        result = await runtime.run(["chmod", "700", wrapper], {})
+        if result.exit_code:
+            raise RuntimeError("could not install Prime Agent execution bridge")
+        env["PRIME_AGENT_KERNEL_PYTHON"] = wrapper
         return ACPConfig(
-            env=self._env(trace, secret),
+            env=env,
+            cwd=cwd,
             # Expand the sandbox's PATH while keeping every agent argument literal.
             command=[
                 "/bin/sh",
@@ -299,6 +397,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 *args,
             ],
             prompt=prompt,
+            mcp_urls=bridge_mcp_urls,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

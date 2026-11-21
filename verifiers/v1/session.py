@@ -33,6 +33,7 @@ from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
+from verifiers.v1.runtimes.bridge import ExecutionBridge
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -53,7 +54,7 @@ from verifiers.v1.utils.logging import (
 
 logger = get_logger(__name__)
 
-MCPProxy = Callable[[str], AbstractAsyncContextManager[str]]
+MCPProxy = Callable[[str, str], AbstractAsyncContextManager[str]]
 ToolResultKey = tuple[int | str, str]
 
 
@@ -187,6 +188,7 @@ class RolloutSession:
     server-owned client for its route's endpoint config (one per distinct config) at
     `register` and again when the route changes, so every rollout it multiplexes shares one
     keepalive connection pool instead of opening its own."""
+    state_service_secrets: frozenset[str] = field(default_factory=frozenset, repr=False)
     proxy_mcp: MCPProxy | None = field(default=None, repr=False)
     """Register a host MCP backend on this session's interception server while serving."""
     error: "RolloutError | None" = None
@@ -209,17 +211,31 @@ class RolloutSession:
     )
     """The pre-execution verdict per proposed call occurrence: None to run it, else the result
     the policy put in its place — that call must not execute."""
+    remote_tool_handler: Callable[[ToolCall], Awaitable[ToolMessage]] | None = None
+    execution_bridge: ExecutionBridge | None = None
+    tool_gate_can_deny: Callable[[ToolCall], bool] | None = None
+    check_tool_call: Callable | None = None
+    # Retries for one call await the same task. Independent calls can run in parallel.
+    _tool_receipts: dict[ToolResultKey, tuple[ToolCall, asyncio.Task[dict]]] = field(
+        default_factory=dict
+    )
     pinned_tool_results: dict[ToolResultKey, ToolMessage] = field(default_factory=dict)
-    """The results the model must see, by conversation prefix and call id: rewrites and results it
-    substituted for blocked calls. The harness keeps its own copy of each in its history and
-    re-sends it forever, so every request has these re-applied before the graph is matched —
-    the trace holds the pinned version, and a differing copy would fork it at that node."""
+    """The results the model must see, by issuing turn (or prefix) and call id: rewrites and
+    results it substituted for blocked calls. The harness keeps its own copy of each in its
+    history and re-sends it forever, so every request has these re-applied before the graph is
+    matched — the trace holds the pinned version, and a differing copy would fork it at that node."""
     gated_tools: set[ToolResultKey] = field(default_factory=set)
     """Calls the harness's gate asked about before executing."""
     tool_dialects: dict[int, DialectName] = field(default_factory=dict)
     """Wire dialect of each issuing node, used when its harness asks the tool gate."""
     tool_issuers: dict[tuple[str, str], set[int]] = field(default_factory=dict)
     """Sampled nodes that issued a call ID under a replay-equivalent prefix."""
+    tool_call_replays: dict[tuple[str, str], list[tuple[object, ToolCall]]] = field(
+        default_factory=dict
+    )
+    """Native argument forms observed at the gate, scoped to their conversation prefix.
+    Remote adapters execute the sampled call; replay must retain that call too."""
+    _tool_prefixes: dict[int, list[str]] = field(default_factory=dict)
     prepared_users: Counter[str] = field(default_factory=Counter)
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
@@ -242,18 +258,49 @@ class RolloutSession:
     def stopped(self) -> bool:
         return self.trace.stop_condition is not None
 
-    def tool_result_keys(
+    def _prefix_hash(self, messages: Sequence, dialect: DialectName | None) -> str:
+        digest = hashlib.blake2b(digest_size=16)
+        for message in messages:
+            digest.update(
+                graph.replay_message_hash(self.trace, message, dialect).encode()
+            )
+        return digest.hexdigest()
+
+    def _tool_messages(
         self,
         request: Request,
         dialect: DialectName | None = None,
         known_path: Sequence[int] = (),
-    ) -> dict[int, ToolResultKey]:
-        """Use the sampled node and call ID for a model-issued tool. A harness-supplied
+    ):
+        """Use the sampled node and call ID for a model-issued tool, restoring any
+        native argument normalization observed at the split gate. A harness-supplied
         call outside the sampled graph uses its conversation prefix instead."""
         prefix = hashlib.blake2b(digest_size=16)
         calls: dict[str, ToolResultKey] = {}
-        keys: dict[int, ToolResultKey] = {}
         for position, message in enumerate(request.messages):
+            if (
+                isinstance(message, AssistantMessage)
+                and message.tool_calls
+                and self.tool_call_replays
+            ):
+                p_hex = prefix.hexdigest()
+                restored = []
+                for call in message.tool_calls:
+                    aliases = self.tool_call_replays.get((p_hex, call.id), ())
+                    restored.append(
+                        next(
+                            (
+                                original
+                                for arguments, original in aliases
+                                if original.name == call.name
+                                and same_arguments(call, arguments)
+                            ),
+                            call,
+                        )
+                    )
+                if restored != message.tool_calls:
+                    message = message.model_copy(update={"tool_calls": restored})
+            key: ToolResultKey | None = None
             if isinstance(message, ToolMessage) and message.tool_call_id in calls:
                 key = calls[message.tool_call_id]
                 issuer, call_id = key
@@ -266,24 +313,37 @@ class RolloutSession:
                             f"Ambiguous issuing turn for tool call {call_id!r}"
                         )
                     key = (next(iter(issuers)), call_id)
-                keys[position] = key
-                message = self.pinned_tool_results.get(key, message)
+            yield position, message, key
+            canonical = (
+                self.pinned_tool_results.get(key, message)
+                if key is not None
+                else message
+            )
             prefix.update(
-                graph.replay_message_hash(self.trace, message, dialect).encode()
+                graph.replay_message_hash(self.trace, canonical, dialect).encode()
             )
             if isinstance(message, AssistantMessage) and message.tool_calls:
                 prefix_hash = prefix.hexdigest()
                 for call in message.tool_calls:
-                    alias = (prefix_hash, call.id)
                     if (
                         position < len(known_path)
                         and self.trace.nodes[known_path[position]].sampled
                     ):
-                        issuer = known_path[position]
-                        calls[call.id] = (issuer, call.id)
+                        calls[call.id] = (known_path[position], call.id)
                     else:
-                        calls[call.id] = alias
-        return keys
+                        calls[call.id] = (prefix_hash, call.id)
+
+    def tool_result_keys(
+        self,
+        request: Request,
+        dialect: DialectName | None = None,
+        known_path: Sequence[int] = (),
+    ) -> dict[int, ToolResultKey]:
+        return {
+            position: key
+            for position, _, key in self._tool_messages(request, dialect, known_path)
+            if key is not None
+        }
 
     def pin_tool_results(
         self,
@@ -294,23 +354,24 @@ class RolloutSession:
         """Re-impose the pinned results on the harness's request. A result for a blocked call
         the harness never gated means the call ran anyway: the transcript would no longer
         describe the sandbox, so that fails the rollout instead of being papered over."""
-        if not self.pinned_tool_results:
+        if not self.pinned_tool_results and not self.tool_call_replays:
             return request
         messages = list(request.messages)
         changed = False
-        for position, key in self.tool_result_keys(
-            request, dialect, known_path
-        ).items():
-            pinned = self.pinned_tool_results.get(key)
-            if pinned is None:
-                continue
-            if self.tool_decisions.get(key) is not None and key not in self.gated_tools:
+        for position, message, key in self._tool_messages(request, dialect, known_path):
+            pinned = self.pinned_tool_results.get(key) if key is not None else None
+            if (
+                key is not None
+                and pinned is not None
+                and self.tool_decisions.get(key) is not None
+                and key not in self.gated_tools
+            ):
                 raise HarnessError(
                     f"tool call {key[1]!r} executed although the policy "
                     "blocked it: the harness never consulted the tool gate"
                 )
-            messages[position] = pinned
-            changed = True
+            messages[position] = pinned if pinned is not None else message
+            changed |= messages[position] is not request.messages[position]
         return request.model_copy(update={"messages": messages}) if changed else request
 
     async def rewrite_request(
@@ -545,11 +606,11 @@ class RolloutSession:
         harness's gate denies it and the model sees the rewritten result instead. Returns
         the name of the stop that fired, if any."""
         assistant = self.trace.nodes[node].message
-        if not (self.request_interceptors or self.request_stops):
-            return None
         if dialect is not None:
             self.tool_dialects[node] = dialect
-        if not isinstance(assistant, AssistantMessage) or not assistant.tool_calls:
+        if not (
+            self.request_interceptors or self.request_stops or self.remote_tool_handler
+        ) or not (isinstance(assistant, AssistantMessage) and assistant.tool_calls):
             return None
         known_path = graph.path_node_ids(self.trace, node)
         branch = [self.trace.nodes[i].message for i in known_path]
@@ -559,19 +620,24 @@ class RolloutSession:
         histories = [branch]
         if harness_history is not None and harness_history != branch[:-1]:
             histories.append([*harness_history, assistant])
+        alias_prefixes: list[str] = []
         for history in histories:
-            prefix = hashlib.blake2b(digest_size=16)
-            for message in history:
-                prefix.update(
-                    graph.replay_message_hash(self.trace, message, dialect).encode()
-                )
-            prefix_hash = prefix.hexdigest()
+            before_assistant = self._prefix_hash(history[:-1], dialect)
+            if before_assistant not in alias_prefixes:
+                alias_prefixes.append(before_assistant)
+            prefix_hash = self._prefix_hash(history, dialect)
             for call in assistant.tool_calls:
                 self.tool_issuers.setdefault((prefix_hash, call.id), set()).add(node)
+        self._tool_prefixes[node] = alias_prefixes
         for call in assistant.tool_calls:
+            if self.check_tool_call is not None:
+                self.check_tool_call(
+                    call,
+                    intercepted=bool(self.request_interceptors or self.request_stops),
+                )
             probe = ToolMessage(tool_call_id=call.id, content="", name=call.name)
             request = Request(messages=[*branch, probe], tools=tools or None)
-            key = (node, call.id)
+            key: ToolResultKey = (node, call.id)
             if key in self.tool_decisions:
                 raise HarnessError(
                     f"tool call id {call.id!r} was reused in the same assistant turn"
@@ -586,13 +652,59 @@ class RolloutSession:
             assert isinstance(verdict, ToolMessage)
             if verdict == probe:
                 self.tool_decisions[key] = None
-                continue
-            if not self.gates_tools:
-                # The harness would run the call regardless; only ending the rollout keeps
-                # the transcript and the sandbox in agreement.
-                return records[-1].handler
-            self.tool_decisions[key] = verdict
+            else:
+                if not self.gates_tools or (
+                    self.tool_gate_can_deny is not None
+                    and not self.tool_gate_can_deny(call)
+                ):
+                    return records[-1].handler
+                self.tool_decisions[key] = verdict
+        if self.remote_tool_handler is not None and not self.gates_tools:
+            raise HarnessError("split tool execution requires a harness tool gate")
         return None
+
+    def _record_replay_alias(
+        self, alias_prefixes: Sequence[str], call: ToolCall, arguments: object
+    ) -> None:
+        if not same_arguments(call, arguments):
+            for alias_prefix in alias_prefixes:
+                aliases = self.tool_call_replays.setdefault((alias_prefix, call.id), [])
+                if not any(observed == arguments for observed, _ in aliases):
+                    aliases.append((arguments, call))
+
+    def _pin_tool_verdict(
+        self, key: ToolResultKey, call: ToolCall, verdict: ToolMessage
+    ) -> ToolMessage:
+        if verdict.tool_call_id != call.id or verdict.name != call.name:
+            raise HarnessError("remote tool handler returned the wrong call")
+        self.tool_decisions[key] = verdict
+        self.pinned_tool_results[key] = verdict
+        return verdict
+
+    async def _tool_once(
+        self,
+        leaf: int,
+        call: ToolCall,
+        decide: Callable[[int, ToolCall], Awaitable[dict]],
+    ) -> dict:
+        key = (leaf, call.id)
+        receipt = self._tool_receipts.get(key)
+        if receipt is None:
+            task = asyncio.create_task(decide(leaf, call))
+            self.adopt(task)
+            self._tool_receipts[key] = (call, task)
+        else:
+            previous, task = receipt
+            if previous != call:
+                raise HarnessError("tool call id was reused with different arguments")
+        return await asyncio.shield(task)
+
+    async def _execute_sampled_tool(self, leaf: int, call: ToolCall) -> dict:
+        assert self.remote_tool_handler is not None
+        verdict = self._pin_tool_verdict(
+            (leaf, call.id), call, await self.remote_tool_handler(call)
+        )
+        return {"action": "deny", "message": verdict.model_dump(exclude_none=True)}
 
     async def decide_tool(
         self, tool_call_id: str, name: str | None = None, arguments: object = None
@@ -644,42 +756,127 @@ class RolloutSession:
             ] or matches
         if len(matches) == 1:
             leaf, call = matches[0]
-            key = (leaf, call.id)
+            deferred = getattr(self.remote_tool_handler, "defer_until_gate", False)
+            if (
+                self.remote_tool_handler is not None
+                and not deferred
+                and name is not None
+                and name != call.name
+            ):
+                raise HarnessError("split tool gate call differs from the sampled call")
+            if self.remote_tool_handler is not None and not deferred:
+                self._record_replay_alias(
+                    self._tool_prefixes.get(leaf, ()), call, arguments
+                )
+            key: ToolResultKey = (leaf, call.id)
             self.gated_tools.add(key)
             verdict = self.tool_decisions.get(key)
-        elif matches or not name or len(leaves) != 1:
+            native_tools: frozenset[str] | None = getattr(
+                self.remote_tool_handler, "native_tools", None
+            )
+            is_native = native_tools is None or call.name in native_tools
+            if deferred and verdict is None:
+                return await self._decide_native_tool(
+                    leaf, tool_call_id, name or call.name, arguments
+                )
+            if self.remote_tool_handler is not None and verdict is None and is_native:
+                if key not in self.tool_decisions:
+                    raise HarnessError("split tool gate has no policy decision")
+                return await self._tool_once(leaf, call, self._execute_sampled_tool)
+        elif matches or not name:
             raise HarnessError(
                 f"tool gate asked about {tool_call_id!r}, which matches "
                 f"{len(matches)} proposed calls"
             )
         else:
-            known_path = graph.path_node_ids(self.trace, leaves[0][0])
-            *branch, assistant = [self.trace.nodes[i].message for i in known_path]
-            assert isinstance(assistant, AssistantMessage)
-            call = ToolCall(id=tool_call_id, name=name, arguments=json.dumps(arguments))
+            deferred = getattr(self.remote_tool_handler, "defer_until_gate", False)
+            if self.remote_tool_handler is not None and not deferred:
+                raise HarnessError("split tool gate received an unsampled call")
+            native_worker = self.execution_bridge is not None
+            native_leaves = (
+                graph.leaves(self.trace)
+                if deferred or native_worker
+                else [leaf for leaf, _ in leaves]
+            )
+            if len(native_leaves) > 1 or (
+                not native_leaves and not (deferred or native_worker)
+            ):
+                raise HarnessError(
+                    "native tool gate requires one active conversation branch"
+                )
+            return await self._decide_native_tool(
+                native_leaves[0] if native_leaves else -1, tool_call_id, name, arguments
+            )
+        if verdict is None:
+            return {"action": "allow"}
+        return {"action": "deny", "message": verdict.model_dump(exclude_none=True)}
+
+    async def _decide_native_tool(
+        self, leaf: int, tool_call_id: str, name: str, arguments: object
+    ) -> dict:
+        """Judge native commands after their harness has resolved arguments.
+
+        Some environments also issue setup commands before the first model turn.
+        These use the same policy boundary and retry receipts as sampled calls.
+        """
+        call = ToolCall(
+            id=tool_call_id, name=name, arguments=json.dumps(arguments, sort_keys=True)
+        )
+        return await self._tool_once(leaf, call, self._judge_native_tool)
+
+    async def _judge_native_tool(self, leaf: int, call: ToolCall) -> dict:
+        known_path = graph.path_node_ids(self.trace, leaf) if leaf >= 0 else []
+        branch = [self.trace.nodes[i].message for i in known_path]
+        tools = (
+            self.trace.nodes[known_path[0]].tools if known_path else self.trace.tools
+        )
+        if branch and isinstance(branch[-1], AssistantMessage):
+            assistant = branch.pop()
+            known_path = known_path[:-1]
             assistant = assistant.model_copy(
-                update={"tool_calls": [*(assistant.tool_calls or []), call]}
+                update={
+                    "tool_calls": [
+                        *(
+                            previous
+                            for previous in assistant.tool_calls or []
+                            if previous.id != call.id
+                        ),
+                        call,
+                    ]
+                }
             )
-            probe = ToolMessage(tool_call_id=call.id, content="", name=name)
-            request, records, stopped = await self.rewrite_request(
-                Request(
-                    messages=[*branch, assistant, probe],
-                    tools=self.trace.nodes[known_path[0]].tools or None,
-                ),
-                dialect=self.tool_dialects.get(leaves[0][0]),
-                known_path=known_path[:-1],
-            )
-            self.trace.request_rewrites.extend(records)
-            if stopped is not None:
-                self.trace.stop(stopped)
-                return {"action": "stop", "reason": stopped}
+        else:
+            assistant = AssistantMessage(content="", tool_calls=[call])
+        probe = ToolMessage(tool_call_id=call.id, content="", name=call.name)
+        request, records, stopped = await self.rewrite_request(
+            Request(messages=[*branch, assistant, probe], tools=tools or None),
+            dialect=self.tool_dialects.get(leaf),
+            known_path=known_path,
+        )
+        self.trace.request_rewrites.extend(records)
+        if stopped is not None:
+            self.trace.stop(stopped)
+            decision = {"action": "stop", "reason": stopped}
+        else:
             verdict = request.messages[-1]
             assert isinstance(verdict, ToolMessage)
             if verdict == probe:
                 verdict = None
-        if verdict is None:
-            return {"action": "allow"}
-        return {"action": "deny", "message": verdict.model_dump(exclude_none=True)}
+                if self.remote_tool_handler is not None:
+                    verdict = await self.remote_tool_handler(call)
+                    if verdict.tool_call_id != call.id or verdict.name != call.name:
+                        raise HarnessError(
+                            "remote tool handler returned the wrong native call"
+                        )
+            decision = (
+                {"action": "allow"}
+                if verdict is None
+                else {
+                    "action": "deny",
+                    "message": verdict.model_dump(exclude_none=True),
+                }
+            )
+        return decision
 
     @cached_property
     def state_adapter(self) -> TypeAdapter:

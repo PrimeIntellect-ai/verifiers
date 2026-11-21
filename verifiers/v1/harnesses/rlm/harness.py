@@ -1,6 +1,7 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import hashlib
+import re
 import secrets
 import shlex
 from typing import Any, Literal
@@ -20,21 +21,62 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.logging import get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 
 BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
-RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
+RLM_TARBALL_URL = "https://codeload.github.com/PrimeIntellect-ai/nano-rlm/tar.gz"
 RLM_CACHE_DIR = "/tmp/vf-rlm"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
+
+_WORKER_CONNECTION = r"""
+import contextlib
+import os
+import socket
+import sys
+import threading
+
+from rlm.config import TcpExecutionConfig
+from rlm.execution_transport import TcpTransport
+
+transport = TcpTransport(TcpExecutionConfig(
+    host="127.0.0.1", port=int(sys.argv[1]),
+    token=os.environ.pop("RLM_EXECUTION_TOKEN"),
+))
+transport.connect()
+connection = transport.connection
+
+def forward_input():
+    try:
+        while data := os.read(sys.stdin.fileno(), 65536):
+            connection.sendall(data)
+    except OSError:
+        pass  # the execution session has closed
+    finally:
+        with contextlib.suppress(OSError):
+            connection.shutdown(socket.SHUT_WR)
+
+threading.Thread(target=forward_input, daemon=True).start()
+try:
+    while data := connection.recv(65536):
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+finally:
+    transport.close()
+"""
+"""Workspace-side stdio for one native execution session. The loopback listener
+serves execution sessions while detached jobs remain available for grading."""
 
 
 class _SessionSnapshot(BaseModel):
@@ -145,43 +187,56 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     _skills_install_dir: str | None = None
 
-    async def setup(self, runtime: Runtime) -> None:
-        if self.config.skills:
-            # Editable skill packages and uv's tool environment must belong to this run.
+    def _ensure_skills_dir(self, runtime: Runtime) -> None:
+        if self.config.skills and self._skills_install_dir is None:
             self._skills_install_dir = runtime.temp_path(
                 f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
             )
+
+    async def setup(self, runtime: Runtime) -> None:
+        self._ensure_skills_dir(runtime)
+        await self._install(runtime, self.config.resolved_env)
+        await super().setup(runtime)
+
+    async def _install(self, runtime: Runtime, install_env: dict[str, str]) -> None:
+        if self.config.skills:
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
-        # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
         home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
-        # install.sh fetches curl/uv itself; add git only when the image lacks it.
+        archive_url = f"{RLM_TARBALL_URL}/{self.config.version}"
         install = (
-            f"rm -f {shlex.quote(ready)} && "
-            "(command -v git >/dev/null 2>&1 || "
-            "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
-            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
-            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
-            # The editable install needs the files, not the history; agents searching
-            # their workspace for a repository must not find the harness's own.
-            f"rm -rf {shlex.quote(checkout + '/.git')} && "
-            # Unmanaged: install.sh's uv installer then writes no receipt under root's
-            # $HOME/.config/uv, which a task image can point at the agent's workspace.
-            f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
-            f"UV_UNMANAGED_INSTALL={shlex.quote(directory + '/bin')} "
-            f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
+            "set -e\n"
+            f"{_ENSURE_UV}\n"
+            f"rm -f {shlex.quote(ready)} && rm -rf {shlex.quote(checkout)} && mkdir -p {shlex.quote(checkout)}\n"
+            "$(command -v python3 || command -v python) -c '"
+            "import io, sys, tarfile, urllib.request; "
+            'req = urllib.request.Request(sys.argv[1], headers={"User-Agent": "verifiers"}); '
+            'tf = tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(req, timeout=60).read()), mode="r:gz"); '
+            '[setattr(m, "name", m.name.partition("/")[2]) or (m.name and tf.extract(m, sys.argv[2])) for m in tf]'
+            f"' {shlex.quote(archive_url)} {shlex.quote(checkout)}\n"
+            f"SKILL_ARGS=''\n"
+            f"if [ -n {shlex.quote(home or '')} ] && [ -d {shlex.quote((home or '') + '/skills')} ]; then\n"
+            f"  for sd in {shlex.quote((home or '') + '/skills')}/*/; do\n"
+            '    [ -f "$sd/pyproject.toml" ] || continue\n'
+            "    sn=$(grep '^name' \"$sd/pyproject.toml\" | head -1 | sed 's/.*\"\\(.*\\)\".*/\\1/')\n"
+            '    SKILL_ARGS="$SKILL_ARGS --with-editable $sd --with-executables-from $sn"\n'
+            "  done\n"
+            "fi\n"
+            f"{home_env}UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
             f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
-            f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "
-            f"touch {shlex.quote(ready)})"
+            'uv tool install --python "$(command -v python3 || command -v python)" '
+            f"--editable {shlex.quote(checkout)} $SKILL_ARGS $RLM_EXTRA_UV_ARGS\n"
+            f"touch {shlex.quote(ready)}"
         )
         logger.debug("Ensuring rlm %s is installed", self.config.version)
-        env = self.config.resolved_env.copy()
+        env = install_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
         await ensure_installed(
@@ -192,7 +247,40 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             env=env,
             label="rlm",
         )
-        await super().setup(runtime)
+
+    async def setup_execution(
+        self, runtime: Runtime, connection: ExecutionConnection
+    ) -> None:
+        # The native listener lives only inside B. A always uses the gated execution
+        # connection; keeping the listener apart from that session lets detached
+        # jobs survive until grading on every runtime.
+        self._ensure_skills_dir(runtime)
+        await self._install(connection.runtime, {})
+        token = secrets.token_urlsafe(32)
+        python = f"{self._install_dir()}/tools/rlm/bin/python"
+        home = self._skills_home()
+        port = await connection.serve(
+            connection.runtime,
+            [
+                python,
+                "-m",
+                "rlm.execution",
+                "--listen",
+                "127.0.0.1",
+                "--port",
+                "0",
+            ],
+            {"RLM_EXECUTION_TOKEN": token, **({"RLM_HOME": home} if home else {})},
+            re.compile(r"^listening on \S+:(\d+)$", re.MULTILINE),
+            # A session that closes stops what is still attached to its kernel; a
+            # daemon the agent started outlives the harness.
+            keep_detached=True,
+        )
+        connection.register(
+            "rlm",
+            [python, "-u", "-c", _WORKER_CONNECTION, str(port)],
+            {"RLM_EXECUTION_TOKEN": token},
+        )
 
     def _runtime_metadata(
         self,
@@ -202,6 +290,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         endpoint: str,
         secret: str,
         system_prompt: str | None,
+        worker_command: list[str],
+        workspace: Runtime,
     ) -> JsonObject:
         compaction = self.config.compaction
         policy_knobs: dict[str, Any] = {
@@ -258,7 +348,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": dict(runtime.env),
+            "kernel_env": dict(workspace.env),
+            "execution_command": worker_command,
+            "execution_cwd": workspace.info.workdir,
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         if (
@@ -291,12 +383,39 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
+        rlm_home = self._home(trace)
+        result = await runtime.run(["mkdir", "-p", f"{rlm_home}/sessions"], {})
+        if result.exit_code:
+            raise RuntimeError(
+                "cannot prepare RLM session directory - "
+                + (clip(result.stderr or result.stdout) or "unknown error")
+            )
+        if runtime._execution_bridge is None:
+            raise RuntimeError("RLM requires an execution bridge")
+        workspace = runtime._execution_bridge.runtime
+        root = endpoint.removesuffix("/v1").rstrip("/")
+        worker_command = await prepare_remote_bridge(
+            runtime,
+            f"{root}/execution",
+            secret,
+            "rlm",
+            protocol="rlm",
+            tool_url=f"{root}/tool",
+        )
         return ACPConfig(
-            env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
+            env={**self.config.resolved_env, "RLM_HOME": rlm_home},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
+            required_agent_metadata="ai.prime.rlm/execution-v1",
             session_meta=self._runtime_metadata(
-                ctx, trace, runtime, endpoint, secret, system_prompt
+                ctx,
+                trace,
+                runtime,
+                endpoint,
+                secret,
+                system_prompt,
+                worker_command,
+                workspace,
             ),
         )
 

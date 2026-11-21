@@ -50,7 +50,9 @@ class ProbeHarness(vf.Harness):
 
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
         trace.info["url"] = mcp_urls["fetch"]
-        return await runtime.run(["python", "-c", PROBE, mcp_urls["fetch"]], {})
+        return await runtime._execution_bridge.runtime.run(
+            ["python", "-c", PROBE, mcp_urls["fetch"]], {}
+        )
 
 
 class ProbeTask(FetchToolTask):

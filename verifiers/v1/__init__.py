@@ -36,7 +36,10 @@ if TYPE_CHECKING:
         EvalClientConfig,
         TrainClientConfig,
     )
-    from verifiers.v1.configs.deployment import DeploymentConfig
+    from verifiers.v1.configs.deployment import (
+        HARNESS_IMAGE,
+        DeploymentConfig,
+    )
     from verifiers.v1.configs.env import (
         EnvConfig,
         SharedEnvConfig,
@@ -110,7 +113,11 @@ if TYPE_CHECKING:
         RuntimeProcess,
     )
     from verifiers.v1.runtimes.compose import ComposeSpec
-    from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
+    from verifiers.v1.runtimes.deployment import (
+        Deployment,
+        ExecutionConnection,
+        ServicesSpec,
+    )
     from verifiers.v1.semantic import (
         ACP_SEMANTIC_EDGES_METADATA_KEY,
         ACPInfo,
@@ -235,6 +242,7 @@ _NAME_TO_MODULE = {
     "DecoratedFunctionConfig": "verifiers.v1.configs.task",
     "Deployment": "verifiers.v1.runtimes.deployment",
     "DeploymentConfig": "verifiers.v1.configs.deployment",
+    "HARNESS_IMAGE": "verifiers.v1.configs.deployment",
     "DockerConfig": "verifiers.v1.configs.runtime",
     "Env": "verifiers.v1.env",
     "EnvConfig": "verifiers.v1.configs.env",
@@ -245,6 +253,7 @@ _NAME_TO_MODULE = {
     "EvalClientConfig": "verifiers.v1.configs.client",
     "EvalRunInfo": "verifiers.v1.trace",
     "EvalWorkInfo": "verifiers.v1.trace",
+    "ExecutionConnection": "verifiers.v1.runtimes.deployment",
     "GroupInfo": "verifiers.v1.episode",
     "Harness": "verifiers.v1.harness",
     "HarnessConfig": "verifiers.v1.configs.harness",
@@ -586,6 +595,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ComposeSpec",
     "Deployment",
     "DeploymentConfig",
+    "HARNESS_IMAGE",
+    "ExecutionConnection",
     "ServicesSpec",
     "ScoringConfig",
 ]

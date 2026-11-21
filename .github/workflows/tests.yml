@@ -11,6 +11,7 @@ on:
       - "**.py"
       - "pyproject.toml"
       - "packages/**"
+      - "images/harness/**"
       - ".github/workflows/tests.yml"
   push:
     branches: [main]
@@ -18,6 +19,7 @@ on:
       - "**.py"
       - "pyproject.toml"
       - "packages/**"
+      - "images/harness/**"
       - ".github/workflows/tests.yml"
 
 env:
@@ -109,6 +111,10 @@ jobs:
             tests: tests/integration/test_native_compose.py
           - behavior: Tool VMs
             tests: tests/integration/test_tool_vms.py
+          - behavior: Split Execution
+            tests: tests/integration/test_split_execution.py
+          - behavior: Sandbox Boundary
+            tests: tests/integration/test_split_sandbox.py
           - behavior: Mounts
             tests: tests/integration/test_mounts.py
           - behavior: Sampling
@@ -177,6 +183,10 @@ jobs:
             ~/.cache/wiki_search
             ~/.cache/chroma
           key: wiki-search-${{ runner.os }}-${{ steps.wiki-corpus.outputs.revision }}-${{ hashFiles('uv.lock', 'environments/wiki_search/wiki_search/servers/wiki.py') }}
+
+      - name: Build harness image for Docker
+        if: matrix.behavior == 'Sandbox Boundary' || matrix.behavior == 'Scoring Network'
+        run: docker build --tag ghcr.io/primeintellect-ai/verifiers-harness:v1 images/harness
 
       - name: Run integration tests
         run: |
