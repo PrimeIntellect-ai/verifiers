@@ -37,10 +37,16 @@ ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 _SPLIT_KERNEL_SHIM = r"""
 import rlm, rlm.mcp as _mcp, rlm.repl as _repl
 
-_mcp.list_tools = lambda s: rlm.host_request("mcp.tools", {"server": s})
-_mcp.call_tool = lambda s, t, a=None: rlm.host_request("mcp.call", {"server": s, "tool": t, "arguments": a or {}})
-_mcp.describe_tool = lambda c, t: rlm.host_request("mcp.describe", {"server": c, "tool": t})
-_mcp.search_tools = lambda q, connection_id=None, limit=20: rlm.host_request("mcp.search", {"query": q, "server": connection_id, "limit": limit})
+_mcp.list_tools = lambda server: rlm.host_request("mcp.tools", {"server": server})
+_mcp.call_tool = lambda server, tool, arguments=None: rlm.host_request(
+    "mcp.call", {"server": server, "tool": tool, "arguments": arguments}
+)
+_mcp.describe_tool = lambda connection_id, tool: rlm.host_request(
+    "mcp.describe", {"server": connection_id, "tool": tool}
+)
+_mcp.search_tools = lambda query, connection_id=None, limit=20: rlm.host_request(
+    "mcp.search", {"query": query, "server": connection_id, "limit": limit}
+)
 _repl.main()
 """
 

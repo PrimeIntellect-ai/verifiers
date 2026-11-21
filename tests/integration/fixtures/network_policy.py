@@ -68,10 +68,13 @@ class NetworkPolicyTaskset(vf.Taskset[NetworkPolicyTask, vf.TasksetConfig]):
             "allow": {"network": vf.NetworkPolicyConfig(allow=[ALLOWED])},
         }
         prompt = (
-            f"Use your shell tool now to run `python3 {PROBE_PATH}` exactly once. "
-            "Wait for the command to finish, then reply with exactly what it printed. "
-            "The network policy is already enforced, so do not inspect or change the network or "
-            "firewall, and do not run any other command."
+            "Verify the active network policy with the supplied read-only test. It makes "
+            "ordinary HTTPS requests and records denied connections as test results. "
+            "Leave the policy in place and run the test once in the foreground. "
+            f"If you have a shell, run `python3 {PROBE_PATH}`. If your tool is a Python REPL, run "
+            f"`import subprocess; print(subprocess.check_output(['python3', '{PROBE_PATH}'], text=True))`. "
+            "If your tool returns a running job, wait for that same job to exit. "
+            "Reply with the printed JSON once the command has finished."
         )
         return [
             NetworkPolicyTask(
