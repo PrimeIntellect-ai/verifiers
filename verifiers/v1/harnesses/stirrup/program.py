@@ -239,10 +239,12 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
             except TimeoutError:
                 pass  # The command is killed below, and the timeout result follows.
             else:
-                completed = True
                 # A process substitution or a short-lived child may still be
                 # writing the command's output: give the pipes a moment to close.
                 await asyncio.wait([stdout.closed, stderr.closed], timeout=OUTPUT_GRACE)
+                # Only now: a cancellation during the grace kills the process
+                # group, so a job the command started does not outlive it.
+                completed = True
                 out, err = stdout.finish(), stderr.finish()
                 if stdout.held_open or stderr.held_open:
                     # Status messages go to stderr, as for a timeout.

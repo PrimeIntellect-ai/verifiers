@@ -282,6 +282,22 @@ async def test_cancelling_twice_kills_the_command_and_closes_its_pipes(shell, le
     assert not running(length)
 
 
+async def test_cancelling_during_the_grace_kills_a_job_the_command_left(
+    program, shell, length
+):
+    fds, threads = open_fds(), threading.active_count()
+    task = asyncio.create_task(shell.run_command(f"echo hi; sleep {length} &"))
+    await asyncio.sleep(program.OUTPUT_GRACE / 2)  # Bash has exited by now.
+    assert running(length) and not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.2)
+    assert not running(length)
+    assert open_fds() == fds
+    assert threading.active_count() == threads
+
+
 @pytest.fixture
 def flood():
     """A word unique to the test, for `yes` to flood a pipe with until it is stopped."""
