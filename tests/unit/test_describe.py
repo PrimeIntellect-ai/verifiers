@@ -246,3 +246,16 @@ def test_a_built_in_tasksets_bundled_env_is_found_in_its_module(
         "solver",
         "critic",
     ]
+
+
+def test_a_harness_package_named_like_a_built_in_resolves_to_the_built_in(
+    package, monkeypatch
+) -> None:
+    monkeypatch.delitem(sys.modules, "bash", raising=False)
+    descriptor = describe(package("QuizHarness", name="bash"))
+
+    # As `harness_class("bash")` resolves it: the built-in shadows the package.
+    assert descriptor["exports"]["harness"] == (
+        "verifiers.v1.harnesses.bash.harness.BashHarness"
+    )
+    assert descriptor["exports"]["taskset"] is None

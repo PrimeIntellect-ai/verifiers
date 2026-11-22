@@ -248,8 +248,8 @@ class _Describer:
         run finds it, and the modules they came from. A run reads a taskset's bundled
         harness and env from the taskset's own module and nowhere else, so for a
         taskset package every kind comes from that module. Otherwise each kind comes
-        from the module its own built-in group resolves the id to (a standalone
-        harness, env or judge package)."""
+        from the module its own built-in group resolves the id to, as the run's
+        loaders resolve a standalone harness, env or judge."""
         exports: dict[str, type] = {}
         modules: list[str] = []
         self._not_found: ModuleNotFoundError | None = None
@@ -257,21 +257,20 @@ class _Describer:
         imported: dict[str, ModuleType | None] = {}
         for kind, (base, _) in KINDS.items():
             # A taskset package's harness, env and judge are its own or none, as a
-            # run reads them: never a built-in that shares its id.
-            groups = ("taskset",) if "taskset" in exports else ("taskset", kind)
-            for group_kind in dict.fromkeys(groups):
-                if group_kind not in imported:
-                    imported[group_kind] = self._import(group_kind)
-                module = imported[group_kind]
-                if module is None:
-                    continue
-                found = self._exported(module, base, kind)
-                if found is None:
-                    continue
-                exports[kind] = found
-                if module.__name__ not in modules:
-                    modules.append(module.__name__)
-                break
+            # run reads them: never a built-in that shares its id. Without a taskset,
+            # each kind resolves through its own group, as `harness_class` does.
+            group_kind = "taskset" if "taskset" in exports else kind
+            if group_kind not in imported:
+                imported[group_kind] = self._import(group_kind)
+            module = imported[group_kind]
+            if module is None:
+                continue
+            found = self._exported(module, base, kind)
+            if found is None:
+                continue
+            exports[kind] = found
+            if module.__name__ not in modules:
+                modules.append(module.__name__)
         if not exports:
             if self._no_exports is not None:
                 raise DescribeError(
