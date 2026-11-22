@@ -4,6 +4,7 @@ pipes."""
 import asyncio
 import importlib.util
 import os
+import re
 import resource
 import subprocess
 import sys
@@ -72,14 +73,19 @@ def shell(program, tmp_path):
 
 @pytest.fixture
 def length():
-    """A sleep length unique to the test, to find and stop its background job."""
-    value = f"{300 + uuid.uuid4().int % 1000 / 1000:.3f}"
+    """A sleep length unique to the test run, to find and stop its background job."""
+    value = f"{1000 + uuid.uuid4().int % 10**8 / 10**6:.6f}"
     yield value
-    subprocess.run(["pkill", "-f", f"sleep {value}"], check=False)
+    subprocess.run(["pkill", "-f", sleep_pattern(value)], check=False)
+
+
+def sleep_pattern(length: str) -> str:
+    # The whole command line: a prefix could match another run's longer length.
+    return f"^sleep {re.escape(length)}$"
 
 
 def running(length: str) -> bool:
-    pgrep = ["pgrep", "-f", f"sleep {length}"]
+    pgrep = ["pgrep", "-f", sleep_pattern(length)]
     return subprocess.run(pgrep, capture_output=True, check=False).returncode == 0
 
 
@@ -341,6 +347,11 @@ async def test_a_character_across_the_middle_of_the_bound_is_kept(program, shell
     assert result.stdout == "a" * n + "\u00e9" + "b" * n
 
 
+async def test_invalid_utf8_is_replaced_not_dropped(shell):
+    result = await shell.run_command("printf 'a\\377b'; printf 'c\\376d' >&2")
+    assert (result.stdout, result.stderr) == ("a\ufffdb", "c\ufffdd")
+
+
 HALF = 1 << 19  # MAX_KEPT_BYTES // 2, checked below.
 
 
@@ -383,6 +394,20 @@ async def test_the_cut_keeps_whole_characters_and_lines(program, output, text):
     for i in range(0, len(output), program.PIPE_READ_SIZE):
         pipe.keep(output[i : i + program.PIPE_READ_SIZE])
     assert pipe.finish(drain=False) == text
+
+
+async def test_finish_stops_reading_a_pipe_still_held_open(program):
+    loop = asyncio.get_running_loop()
+    pipe = program.OutputPipe()
+    fd = pipe.fd
+    held = os.dup(pipe.write_fd)  # As by a process the command left running.
+    pipe.close_write_end()
+    try:
+        pipe.finish(drain=False)
+        assert pipe.held_open
+        assert not loop.remove_reader(fd)  # The loop no longer watches the fd.
+    finally:
+        os.close(held)
 
 
 async def test_a_pipe_holds_a_bounded_amount_of_output(program):
