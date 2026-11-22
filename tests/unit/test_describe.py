@@ -1,6 +1,7 @@
 """`vf-describe`: a package's descriptor, read by importing it and never loading it."""
 
 import json
+import sys
 import textwrap
 import uuid
 
@@ -86,8 +87,8 @@ def package(tmp_path, monkeypatch):
     """Write a package exporting `exports` and return its id."""
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    def write(*exports: str, source: str = PACKAGE) -> str:
-        name = f"quiz_{uuid.uuid4().hex[:8]}"
+    def write(*exports: str, source: str = PACKAGE, name: str = "") -> str:
+        name = name or f"quiz_{uuid.uuid4().hex[:8]}"
         (tmp_path / name).mkdir()
         body = source.replace("{exports}", ", ".join(repr(e) for e in exports))
         (tmp_path / name / "__init__.py").write_text(textwrap.dedent(body))
@@ -156,24 +157,38 @@ def test_a_bundled_harness_and_env_are_described_with_the_roles(package) -> None
     assert harness["config_schema"]["properties"]["id"]
 
 
-def test_a_rewards_weight_plugged_in_the_default_task_config_is_its_weight(
+def test_rewards_plugged_in_the_default_task_config_are_merged_unimported(
     package,
 ) -> None:
     source = PACKAGE.replace(
         "    tools: vf.ToolsetConfig = vf.ToolsetConfig()",
         "    tools: vf.ToolsetConfig = vf.ToolsetConfig()\n"
         "    rewards: dict[str, vf.RewardFunctionConfig] = {\n"
-        '        "formatted": vf.RewardFunctionConfig(weight=0.25)\n'
+        '        "formatted": vf.RewardFunctionConfig(weight=0.25),\n'
+        '        "graded": vf.RewardFunctionConfig(fn="a_module_nobody_has:grade"),\n'
         "    }",
     )
-    rewards = describe(package("QuizTaskset", source=source))["taskset"]["task"][
-        "rewards"
+    descriptor = describe(package("QuizTaskset", source=source))
+    rewards = descriptor["taskset"]["task"]["rewards"]
+
+    # The plugged function is named, never imported: what only it would set is unknown.
+    assert descriptor["errors"] == []
+    assert [(r["name"], r["weight"], r["fn"]) for r in rewards] == [
+        ("correct", 0.5, None),
+        ("formatted", 0.25, None),
+        ("graded", None, "a_module_nobody_has:grade"),
     ]
 
-    assert {(r["name"], r["weight"], r["plugged"]) for r in rewards} == {
-        ("correct", 0.5, False),
-        ("formatted", 0.25, True),
-    }
+
+def test_a_taskset_named_like_a_built_in_harness_takes_none_of_its_exports(
+    package, monkeypatch
+) -> None:
+    monkeypatch.delitem(sys.modules, "bash", raising=False)
+    descriptor = describe(package("QuizTaskset", name="bash"))
+
+    assert descriptor["exports"]["taskset"] == "bash.QuizTaskset"
+    assert descriptor["exports"]["harness"] is None
+    assert descriptor["default_harness"] == "bash"
 
 
 def test_a_package_without_plugin_exports_is_refused(package) -> None:

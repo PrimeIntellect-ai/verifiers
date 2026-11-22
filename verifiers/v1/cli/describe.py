@@ -5,8 +5,9 @@ harness, env and judge classes, their config schemas, capability flags, rewards 
 metrics with their source locations, toolsets, and the env's agent roles with their
 default harnesses. Nothing is loaded: `Taskset.load()` never runs, no runtime starts
 and no model is called. Beyond the import, only the `toolsets()` classmethods run,
-with the taskset's and task's default configs. So a registry or hub indexer can
-describe a package without running it.
+with the taskset's and task's default configs; a reward or metric plugged in the
+default config is named by its `fn` path, never imported. So a registry or hub
+indexer can describe a package without running it.
 
 A package that can't be described exits non-zero with a JSON error on stderr.
 """
@@ -43,7 +44,6 @@ from verifiers.v1.utils.loaders import (
     _import_plugin,
     _plugin_class,
     default_harness_id,
-    load_plugged_fn,
 )
 
 SCHEMA_VERSION = 1
@@ -118,7 +118,7 @@ def _decorated(cls: type, attr: str) -> dict[str, Callable[..., Any]]:
     return {name: fn for name in names if hasattr(fn := getattr(cls, name), attr)}
 
 
-def _signal(name: str, fn: Callable[..., Any], attr: str, plugged: bool) -> dict:
+def _signal(name: str, fn: Callable[..., Any], attr: str) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "name": name,
         "priority": getattr(fn, f"{attr}_priority", 0),
@@ -127,7 +127,37 @@ def _signal(name: str, fn: Callable[..., Any], attr: str, plugged: bool) -> dict
         entry["weight"] = getattr(fn, "_vf_weight", 1.0)
     entry["doc"] = _doc(fn)
     entry["source"] = _source(fn)
-    entry["plugged"] = plugged
+    entry["fn"] = None
+    return entry
+
+
+def _plugged(
+    name: str, spec: Any, attr: str, decorated: dict[str, Any] | None
+) -> dict[str, Any]:
+    """A config-plugged entry, merged as `load_plugged_fn` merges it but without
+    importing its `fn`: a value the config leaves unset that the function itself
+    would set is unknown (None)."""
+    if not spec.fn and decorated is None:
+        raise ValueError(
+            f"{attr} {name!r} plugs no `fn` and the task has no @vf.{attr} "
+            f"method named {name!r} to override"
+        )
+    base = decorated if not spec.fn else None
+    entry: dict[str, Any] = {
+        "name": name,
+        "priority": spec.priority
+        if spec.priority is not None
+        else (base["priority"] if base else None),
+    }
+    if attr == "reward":
+        entry["weight"] = (
+            spec.weight
+            if spec.weight is not None
+            else (base["weight"] if base else None)
+        )
+    entry["doc"] = base["doc"] if base else None
+    entry["source"] = base["source"] if base else None
+    entry["fn"] = spec.fn
     return entry
 
 
@@ -135,15 +165,15 @@ def _signals(
     cls: type, attr: str, plugged: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
     """The `@vf.<attr>` methods of `cls`, merged with `plugged` config entries as
-    `Task.hooks` merges them, sorted by descending priority then name."""
-    merged = {name: (fn, False) for name, fn in _decorated(cls, attr).items()}
+    `Task.hooks` merges them, sorted by descending priority then name. A plugged
+    entry's `fn` is named, never imported."""
+    merged = {
+        name: _signal(name, fn, attr) for name, fn in _decorated(cls, attr).items()
+    }
     for name, spec in (plugged or {}).items():
-        decorated = merged[name][0] if name in merged else None
-        merged[name] = (load_plugged_fn(name, spec, attr, decorated=decorated), True)
-    entries = [
-        _signal(name, fn, attr, is_plugged) for name, (fn, is_plugged) in merged.items()
-    ]
-    entries.sort(key=lambda entry: (-entry["priority"], entry["name"]))
+        merged[name] = _plugged(name, spec, attr, merged.get(name))
+    entries = list(merged.values())
+    entries.sort(key=lambda entry: (-(entry["priority"] or 0), entry["name"]))
     return entries
 
 
@@ -216,16 +246,20 @@ class _Describer:
     def _exports(self) -> tuple[dict[str, type], list[str]]:
         """The one class of each kind the package exports via `__all__`, found where a
         run finds it, and the modules they came from. A run reads a taskset's bundled
-        harness and env from the taskset's own module, so each kind is looked for
-        there first, then in the module its own built-in group resolves the id to (a
-        standalone harness, env or judge package)."""
+        harness and env from the taskset's own module and nowhere else, so for a
+        taskset package every kind comes from that module. Otherwise each kind comes
+        from the module its own built-in group resolves the id to (a standalone
+        harness, env or judge package)."""
         exports: dict[str, type] = {}
         modules: list[str] = []
         self._not_found: ModuleNotFoundError | None = None
         self._no_exports: Exception | None = None
         imported: dict[str, ModuleType | None] = {}
         for kind, (base, _) in KINDS.items():
-            for group_kind in dict.fromkeys(("taskset", kind)):
+            # A taskset package's harness, env and judge are its own or none, as a
+            # run reads them: never a built-in that shares its id.
+            groups = ("taskset",) if "taskset" in exports else ("taskset", kind)
+            for group_kind in dict.fromkeys(groups):
                 if group_kind not in imported:
                     imported[group_kind] = self._import(group_kind)
                 module = imported[group_kind]
