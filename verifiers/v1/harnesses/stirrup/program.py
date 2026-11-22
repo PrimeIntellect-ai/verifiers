@@ -53,6 +53,8 @@ from stirrup.tools.mcp import MCPConfig, MCPToolProvider
 
 COMMAND_CLEANUP_TIMEOUT = 5.0
 PIPE_READ_SIZE = 65536
+BACKGROUND_NOTE = "[a background job still holds this command's output; what it writes later is not shown]"
+"""Ends the stderr of a result whose pipes a job the command left running still holds."""
 
 
 class OutputPipe:
@@ -61,6 +63,7 @@ class OutputPipe:
     def __init__(self):
         self.fd, self.write_fd = os.pipe()
         self.data = bytearray()
+        self.held_open = False
         self.loop = asyncio.get_running_loop()
         self.loop.add_reader(self.fd, self.read)
 
@@ -88,6 +91,7 @@ class OutputPipe:
             if select.select([fd], [], [], 0)[0] and not os.read(fd, PIPE_READ_SIZE):
                 os.close(fd)
             else:
+                self.held_open = True
                 threading.Thread(
                     target=discard_until_eof, args=(fd,), daemon=True
                 ).start()
@@ -154,11 +158,13 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
             # keeps the pipes open after Bash exits.
             await asyncio.wait_for(process.wait(), timeout)
             completed = True
-            return CommandResult(
-                exit_code=process.returncode,
-                stdout=stdout.finish(),
-                stderr=stderr.finish(),
-            )
+            out, err = stdout.finish(), stderr.finish()
+            if stdout.held_open or stderr.held_open:
+                # Status messages go to stderr, as for a timeout.
+                if err and not err.endswith("\n"):
+                    err += "\n"
+                err += BACKGROUND_NOTE
+            return CommandResult(exit_code=process.returncode, stdout=out, stderr=err)
         except TimeoutError:
             # Not an error result: Stirrup shows only stderr for those, and the
             # output so far is worth keeping. 124 is timeout(1)'s exit code.

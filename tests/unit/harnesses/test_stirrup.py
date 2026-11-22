@@ -44,8 +44,8 @@ class CommandResult:
 
 
 @pytest.fixture
-def shell(monkeypatch, tmp_path):
-    """The program's shell tool, loaded without the dependencies uv installs for it."""
+def program(monkeypatch):
+    """The program, loaded without the dependencies uv installs for it."""
     for name in DEPENDENCIES:
         parts = name.split(".")
         for i in range(1, len(parts) + 1):
@@ -55,6 +55,12 @@ def shell(monkeypatch, tmp_path):
     spec = importlib.util.spec_from_file_location("stirrup_program", PROGRAM)
     program = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(program)
+    return program
+
+
+@pytest.fixture
+def shell(program, tmp_path):
+    """The program's shell tool."""
     provider = program.RuntimeCodeExecToolProvider(str(tmp_path))
     provider._shell_timeout = 30  # Set by Stirrup's base class.
     return provider
@@ -90,32 +96,37 @@ async def timed(shell, command: str, timeout=None) -> tuple[float, CommandResult
         "echo hi; sleep {s} >/dev/null &",
     ],
 )
-async def test_background_job_does_not_hold_the_call_open(shell, command, length):
+async def test_background_job_does_not_hold_the_call_open(
+    program, shell, command, length
+):
     elapsed, result = await timed(shell, command.format(s=length))
     assert elapsed < 2
     assert result.exit_code == 0 and result.error_kind is None
+    assert result.stderr == program.BACKGROUND_NOTE
     assert running(length)
 
 
-async def test_output_written_before_bash_exits_is_complete(shell, length):
+async def test_output_written_before_bash_exits_is_complete(program, shell, length):
     size = 300_000
     result = await shell.run_command(
         f"head -c {size} /dev/zero | tr '\\0' a; head -c {size} /dev/zero | tr '\\0' b >&2;"
         f" sleep {length} &"
     )
     assert result.stdout == "a" * size
-    assert result.stderr == "b" * size
+    assert result.stderr == "b" * size + "\n" + program.BACKGROUND_NOTE
 
 
-async def test_output_written_after_bash_exits_is_not_shown(shell):
+async def test_output_written_after_bash_exits_is_not_shown(program, shell):
     elapsed, result = await timed(shell, "echo fg; (sleep 1; echo bg) &")
     assert result.stdout == "fg\n"
+    assert result.stderr == program.BACKGROUND_NOTE
     assert elapsed < 1
 
 
 async def test_wait_still_waits_for_background_jobs(shell):
     elapsed, result = await timed(shell, "(sleep 1; echo late) & wait; echo done")
     assert result.stdout == "late\ndone\n"
+    assert result.stderr == ""
     assert elapsed >= 1
 
 
