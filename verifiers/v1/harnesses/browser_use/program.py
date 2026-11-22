@@ -186,6 +186,11 @@ def _discard_until_eof(fd: int) -> None:
             pass
 
 
+def _text(output: bytes | bytearray) -> str:
+    """One stream's output as text, with its newlines translated on their own."""
+    return output.decode(errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
 HELD_OUTPUT_NOTE = "[a process this code started still holds its output; what it writes later is not shown]"
 """Ends a result whose output a child the program left running still holds open."""
 
@@ -282,12 +287,7 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
             if process.returncode is None:
                 process.kill()
                 process.wait()
-    text = (
-        (stdout + stderr)
-        .decode(errors="replace")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
-    )
+    text = _text(stdout) + _text(stderr)
     if held_open:
         text += ("\n" if text and not text.endswith("\n") else "") + HELD_OUTPUT_NOTE
     return text

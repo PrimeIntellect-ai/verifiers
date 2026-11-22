@@ -118,3 +118,13 @@ def test_program_that_closes_its_output_still_runs_to_the_end(env, tmp_path):
     )
     assert run_browser(code, env) == "(no output)"
     assert done.exists()
+
+
+def test_stdout_and_stderr_newlines_are_translated_separately(env):
+    # A CR ending stdout and an LF starting stderr stay two line breaks.
+    code = (
+        "import sys\n"
+        "sys.stdout.write('50%\\r'); sys.stdout.flush()\n"
+        "sys.stderr.write('\\nERR')\n"
+    )
+    assert run_browser(code, env) == "50%\n\nERR"
