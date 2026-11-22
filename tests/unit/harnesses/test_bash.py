@@ -183,6 +183,16 @@ def test_job_holding_fds_above_1024(length):
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
 
+def test_character_cut_at_the_hand_off_is_replaced(length):
+    # The job writes 2047.5 two-byte characters at once and holds the pipe.
+    writer = (
+        "import os, time; os.write(1, ('\u00e9' * 3000).encode()[:4095]);"
+        f" time.sleep({length})"
+    )
+    out = PROGRAM["run_bash"](f'echo start; python3 -c "{writer}" &')
+    assert out == "start\n" + "\u00e9" * 2047 + "\ufffd\n" + NOTE
+
+
 def test_at_end_tells_a_closed_pipe_from_a_held_one():
     read, write = os.pipe()
     try:

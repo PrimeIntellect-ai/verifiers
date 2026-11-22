@@ -319,8 +319,11 @@ def run_bash(command: str) -> str:
             len(BACKGROUND_NOTE.encode()) + 1 if held_open else 0
         )
         if size <= budget:
+            # A job still writing may have been cut off mid-character at the hand-off.
             text = "".join(
-                output.head.decode().replace("\r\n", "\n").replace("\r", "\n")
+                output.head.decode(errors="replace")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
                 for output in (stdout, stderr)
             )
         else:
