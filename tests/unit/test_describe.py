@@ -259,3 +259,35 @@ def test_a_harness_package_named_like_a_built_in_resolves_to_the_built_in(
         "verifiers.v1.harnesses.bash.harness.BashHarness"
     )
     assert descriptor["exports"]["taskset"] is None
+
+
+def test_a_judge_is_described_as_its_id_loads_it(package, monkeypatch) -> None:
+    source = PACKAGE + (
+        "\n\nclass QuizJudge(vf.Judge):\n"
+        "    pass\n\n\n"
+        "__all__ = [*__all__, 'QuizJudge']\n"
+    )
+    monkeypatch.delitem(sys.modules, "rubric", raising=False)
+    descriptor = describe(package("QuizTaskset", source=source, name="rubric"))
+
+    # `judge_class("rubric")` loads the built-in judge, whatever the package exports.
+    assert descriptor["exports"]["taskset"] == "rubric.QuizTaskset"
+    assert descriptor["exports"]["judge"] == "verifiers.v1.judges.rubric.RubricJudge"
+
+
+def test_describing_never_runs_a_configs_validators(package) -> None:
+    source = PACKAGE.replace(
+        '    split: str = "train"\n',
+        '    split: str = "train"\n\n'
+        '    @pydantic.model_validator(mode="after")\n'
+        "    def _check(self):\n"
+        '        raise AssertionError("describing a package never validates a config")\n',
+    ).replace(
+        "import verifiers.v1 as vf\n", "import pydantic\nimport verifiers.v1 as vf\n"
+    )
+    descriptor = describe(package("QuizTaskset", source=source))
+
+    assert descriptor["errors"] == []
+    assert [
+        t["class"].rsplit(".", 1)[1] for t in descriptor["taskset"]["task"]["toolsets"]
+    ] == ["LookupToolset"]

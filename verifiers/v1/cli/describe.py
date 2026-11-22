@@ -5,8 +5,9 @@ harness, env and judge classes, their config schemas, capability flags, rewards 
 metrics with their source locations, toolsets, and the env's agent roles with their
 default harnesses. Nothing is loaded: `Taskset.load()` never runs, no runtime starts
 and no model is called. Beyond the import, only the `toolsets()` classmethods run,
-with the taskset's and task's default configs; a reward or metric plugged in the
-default config is named by its `fn` path, never imported. So a registry or hub
+with the taskset's and task's declared default configs, built without running
+their validators; a reward or metric plugged in the default config is named by
+its `fn` path, never imported. So a registry or hub
 indexer can describe a package without running it.
 
 A package that can't be described exits non-zero with a JSON error on stderr.
@@ -247,19 +248,21 @@ class _Describer:
         """The one class of each kind the package exports via `__all__`, found where a
         run finds it, and the modules they came from. A run reads a taskset's bundled
         harness and env from the taskset's own module and nowhere else, so for a
-        taskset package every kind comes from that module. Otherwise each kind comes
-        from the module its own built-in group resolves the id to, as the run's
-        loaders resolve a standalone harness, env or judge."""
+        taskset package those two come from that module. Everything else comes from
+        the module its own built-in group resolves the id to, as the run's loaders
+        resolve a standalone harness or env, and every judge."""
         exports: dict[str, type] = {}
         modules: list[str] = []
         self._not_found: ModuleNotFoundError | None = None
         self._no_exports: Exception | None = None
         imported: dict[str, ModuleType | None] = {}
         for kind, (base, _) in KINDS.items():
-            # A taskset package's harness, env and judge are its own or none, as a
-            # run reads them: never a built-in that shares its id. Without a taskset,
-            # each kind resolves through its own group, as `harness_class` does.
-            group_kind = "taskset" if "taskset" in exports else kind
+            # A run reads a taskset package's bundled harness and env from its own
+            # module, never from a built-in that shares its id. Everything else
+            # resolves through its own group, as `harness_class` and `judge_class` do:
+            # a judge is always loaded by its id, even one a taskset package exports.
+            bundled = "taskset" in exports and kind in ("harness", "env")
+            group_kind = "taskset" if bundled else kind
             if group_kind not in imported:
                 imported[group_kind] = self._import(group_kind)
             module = imported[group_kind]
@@ -328,13 +331,18 @@ class _Describer:
     def _taskset(self, cls: type[Taskset]) -> dict[str, Any]:
         config_type = concrete_type(cls, TasksetConfig, origin=Taskset) or TasksetConfig
         task_cls = cls.task_type()
+        # The declared defaults, built without validation: a config's validators are
+        # package code that runs only when a run configures it.
         config = self.attempt(
             "taskset.config",
-            lambda: config_type.model_validate({"id": self.plugin_id}),
+            lambda: config_type.model_construct(id=self.plugin_id),
         )
         task_config = self.attempt(
             "task.config",
-            lambda: config.task if config is not None else task_cls.config_type()(),
+            lambda: (
+                getattr(config, "task", None)
+                or task_cls.config_type().model_construct()
+            ),
         )
         return {
             "class": _name(cls),
