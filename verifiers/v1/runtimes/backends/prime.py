@@ -46,6 +46,12 @@ _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
 _EXPOSE_TAG = "vf-exposed"
+_TERMINAL_SANDBOX_STATUSES = frozenset({"TERMINATED", "ERROR", "TIMEOUT"})
+"""Provider statuses that mean this sandbox can no longer finish a command."""
+_WATCH_INITIAL_SECONDS = 0.5
+_WATCH_MAX_SECONDS = 3.0
+"""How often a running command checks that its sandbox is still the one it started on.
+Backs off from the first to the second, so a lost box is reported within seconds."""
 
 
 BASE_LABELS: list[str] = []
@@ -159,6 +165,10 @@ class PrimeBackend(RuntimeBackend):
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
+        # Provider boot time of the live sandbox. A later `get` with a different
+        # `started_at` means the box restarted under the same id and lost in-flight
+        # commands (see #2814).
+        self._boot_started_at: Any | None = None
 
     @property
     def published_port(self) -> int:
@@ -258,6 +268,13 @@ class PrimeBackend(RuntimeBackend):
                     self.info.id,
                 )
             await self._client.wait_for_creation(self.info.id, max_attempts=900)
+            # Capture boot identity after the sandbox is RUNNING so a later restart
+            # under the same id is detectable while a command waits.
+            try:
+                live = await self._client.get(self.info.id)
+                self._boot_started_at = live.started_at
+            except Exception:  # noqa: BLE001 - missing boot time only disables restart detection
+                self._boot_started_at = None
             logger.debug(
                 "Started prime runtime %s in %s image=%s",
                 self.info.id,
@@ -326,6 +343,45 @@ class PrimeBackend(RuntimeBackend):
             policy.get("deny"),
         )
 
+    async def _watch_sandbox(self, boot_started_at: Any | None) -> None:
+        """Raise when the sandbox this command started on is gone or replaced.
+
+        A restarted box can stay API-`RUNNING` under the same id while the original
+        process and its exit state are gone. Without this watch, `process.wait()` can
+        poll forever when scoring has no deadline (`HarborConfig.ignore_timeouts`).
+        A failed status observation proves nothing and is ignored.
+        """
+        delay = _WATCH_INITIAL_SECONDS
+        while True:
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _WATCH_MAX_SECONDS)
+            if self._client is None or self.info.id is None:
+                # Teardown released the backend while the command was still running.
+                raise SandboxError(
+                    f"prime sandbox {self.info.id} was released during command"
+                )
+            try:
+                sandbox = await self._client.get(self.info.id)
+            except Exception as e:  # noqa: BLE001 - an unreachable provider is not a confirmed loss
+                logger.debug(
+                    "Ignoring failed status check on prime sandbox %s - %s",
+                    self.info.id,
+                    e,
+                )
+                continue
+            if sandbox.status in _TERMINAL_SANDBOX_STATUSES:
+                raise SandboxError(
+                    f"prime sandbox {self.info.id} became {sandbox.status} during command"
+                )
+            if sandbox.status == "RUNNING" and (
+                boot_started_at is not None
+                and sandbox.started_at is not None
+                and sandbox.started_at != boot_started_at
+            ):
+                raise SandboxError(
+                    f"prime sandbox {self.info.id} restarted during command"
+                )
+
     async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
@@ -347,13 +403,31 @@ class PrimeBackend(RuntimeBackend):
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
-            try:
-                stdout, stderr, exit_code = await asyncio.gather(
+
+            async def await_command():
+                return await asyncio.gather(
                     collect(process.stdout), collect(process.stderr), process.wait()
                 )
+
+            wait = asyncio.create_task(await_command())
+            watch = asyncio.create_task(self._watch_sandbox(self._boot_started_at))
+            try:
+                done, _pending = await asyncio.wait(
+                    {wait, watch}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if wait not in done:
+                    # The command cannot finish here: the sandbox was lost or replaced.
+                    await watch
+                stdout, stderr, exit_code = await wait
             finally:
+                for task in (wait, watch):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(wait, watch, return_exceptions=True)
                 # Closing signals and reaps a running process, then releases its stream.
                 await run_shielded(process.aclose())
+        except SandboxError:
+            raise
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
