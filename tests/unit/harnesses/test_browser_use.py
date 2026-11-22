@@ -1,0 +1,85 @@
+"""The browser tool returns when the model's program exits, even if a child process it
+left running holds the program's pipes."""
+
+import os
+import subprocess
+import time
+import uuid
+
+import pytest
+
+from verifiers.v1.harnesses.browser_use.program import run_browser
+
+
+@pytest.fixture
+def env(tmp_path):
+    """A stand-in for browser-harness's CLI that runs the code on stdin, so no browser
+    is needed."""
+    package = tmp_path / "browser_harness"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "run.py").write_text("import sys\nexec(sys.stdin.read())\n")
+    return {**os.environ, "PYTHONPATH": str(tmp_path)}
+
+
+@pytest.fixture
+def length():
+    """A sleep length unique to the test, to find and stop its leftover child."""
+    value = f"{300 + uuid.uuid4().int % 1000 / 1000:.3f}"
+    yield value
+    subprocess.run(["pkill", "-f", f"sleep {value}"], check=False)
+
+
+def timed(code: str, env: dict[str, str]) -> tuple[float, str]:
+    start = time.monotonic()
+    out = run_browser(code, env)
+    return time.monotonic() - start, out
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        'import os; os.system("sleep {s} &")',
+        'import subprocess; subprocess.Popen(["sleep", "{s}"])',
+        'import os; os.system("cd /tmp && nohup sleep {s} >/dev/null 2>&1 &")',
+    ],
+)
+def test_leftover_child_does_not_hold_the_call_open(code, env, length):
+    elapsed, out = timed(code.format(s=length), env)
+    assert elapsed < 5
+    assert out == "(no output)"
+    running = subprocess.run(
+        ["pgrep", "-f", f"sleep {length}"], capture_output=True, check=False
+    )
+    assert running.returncode == 0
+
+
+def test_output_written_before_the_program_exits_is_complete(env, length):
+    size = 300_000
+    code = (
+        "import os, sys\n"
+        f"sys.stdout.write('a' * {size})\n"
+        f"sys.stderr.write('b' * {size})\n"
+        f"os.system('sleep {length} &')\n"
+    )
+    assert run_browser(code, env) == "a" * size + "b" * size
+
+
+def test_output_written_after_the_program_exits_is_not_shown(env):
+    code = "import os\nprint('fg', flush=True)\nos.system('(sleep 2; echo bg) &')\n"
+    elapsed, out = timed(code, env)
+    assert out == "fg\n"
+    assert elapsed < 2
+
+
+def test_output_input_and_errors_are_unchanged(env):
+    assert (
+        run_browser(
+            "import sys; print('a'); print('b', file=sys.stderr); print('c')", env
+        )
+        == "a\nc\nb\n"
+    )
+    assert run_browser("pass", env) == "(no output)"
+    # Code larger than a pipe's capacity reaches the program whole.
+    assert run_browser(f"print(len({'x' * 200_000!r}))", env) == "200000\n"
+    assert run_browser("raise ValueError('boom')", env).endswith("ValueError: boom\n")

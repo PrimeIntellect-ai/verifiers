@@ -19,12 +19,18 @@ Trace-scoped state preserves tabs across resume and records owned process IDs.
 
 import argparse
 import asyncio
+import fcntl
 import json
 import os
 import re
+import select
+import selectors
 import shutil
+import struct
 import subprocess
 import sys
+import termios
+import threading
 import time
 import urllib.request
 from contextlib import AsyncExitStack
@@ -156,19 +162,125 @@ def ensure_chromium(state_dir: Path) -> str:
     )
 
 
+def _pending(fd: int) -> int:
+    """Bytes waiting in a pipe right now."""
+    return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
+
+
+def _at_end(fd: int) -> bool:
+    """Whether every process has closed a pipe whose waiting bytes were just read. Bytes
+    that arrived since are a leftover child's, written after the program exited, and
+    dropped."""
+    if not select.select([fd], [], [], 0)[0]:
+        return False
+    return not os.read(fd, 65536)
+
+
+def _discard_until_eof(fd: int) -> None:
+    """Read a pipe a leftover child still holds to its end, so the child's writes neither
+    block on a full pipe nor fail on a closed one once the call has returned."""
+    with open(fd, "rb", buffering=0) as pipe:
+        while pipe.read(65536):
+            pass
+
+
+def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
+    """Run a program with `stdin` as its input and return its stdout then stderr.
+
+    Returns as soon as the program itself exits, with exactly what it wrote by then.
+    Children it left running may still hold its pipes; what they write later is not
+    included, and the pipes are drained in the background instead of being waited on.
+    """
+    with subprocess.Popen(
+        args,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    ) as process:
+        assert process.stdin and process.stdout and process.stderr
+        stdout, stderr = bytearray(), bytearray()
+        data = memoryview(stdin.encode())
+        deadline = time.monotonic() + BROWSER_TOOL_TIMEOUT
+        try:
+            with selectors.DefaultSelector() as selector:
+                if data:
+                    selector.register(process.stdin, selectors.EVENT_WRITE)
+                else:
+                    process.stdin.close()
+                selector.register(process.stdout, selectors.EVENT_READ, stdout)
+                selector.register(process.stderr, selectors.EVENT_READ, stderr)
+                try:
+                    while selector.get_map():
+                        if process.poll() is not None:
+                            # The program has exited, so what it wrote is in the pipes
+                            # already: read exactly that and return. A pipe still open
+                            # is held by a child it left running.
+                            if not process.stdin.closed:
+                                selector.unregister(process.stdin)
+                                process.stdin.close()
+                            for key in list(selector.get_map().values()):
+                                pending = _pending(key.fd)
+                                while pending > 0:
+                                    chunk = os.read(key.fd, min(pending, 65536))
+                                    if not chunk:
+                                        break
+                                    pending -= len(chunk)
+                                    key.data.extend(chunk)
+                                if _at_end(key.fd):
+                                    selector.unregister(key.fileobj)
+                            break
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(
+                                process.args, BROWSER_TOOL_TIMEOUT
+                            )
+                        for key, _ in selector.select(min(remaining, 0.1)):
+                            if key.fileobj is process.stdin:
+                                try:
+                                    written = os.write(key.fd, data[: select.PIPE_BUF])
+                                except BrokenPipeError:  # it exits without reading all
+                                    written = len(data)
+                                data = data[written:]
+                                if not data:
+                                    selector.unregister(process.stdin)
+                                    process.stdin.close()
+                                continue
+                            chunk = os.read(key.fd, 65536)
+                            if chunk:
+                                key.data.extend(chunk)
+                            else:
+                                selector.unregister(key.fileobj)
+                finally:
+                    # A pipe still open belongs to a child that outlives the call. Read
+                    # it to its end off the call instead of closing it under the child.
+                    for key in list(selector.get_map().values()):
+                        if key.fileobj is not process.stdin:
+                            threading.Thread(
+                                target=_discard_until_eof,
+                                args=(os.dup(key.fd),),
+                                daemon=True,
+                            ).start()
+        finally:
+            # Do not communicate() here: leftover children may still hold the pipes.
+            if process.returncode is None:
+                process.kill()
+                process.wait()
+    return (
+        (stdout + stderr)
+        .decode(errors="replace")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+
 def run_browser(code: str, env: dict[str, str]) -> str:
     """Run model code through the pinned browser-harness CLI."""
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "browser_harness.run"],
-            input=code,
-            capture_output=True,
-            text=True,
-            timeout=BROWSER_TOOL_TIMEOUT,
-            env=env,
-            check=False,
+        return (
+            run_program([sys.executable, "-m", "browser_harness.run"], code, env)
+            or "(no output)"
         )
-        return (result.stdout + result.stderr) or "(no output)"
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
