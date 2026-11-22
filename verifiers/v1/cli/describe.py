@@ -305,7 +305,8 @@ class _Describer:
             # library of the same name (a built-in harness's id, say) that a run
             # never imports.
             if self._failed is not None:
-                raise DescribeError(str(self._failed)) from self._failed
+                failed = self._failed
+                raise DescribeError(f"{type(failed).__name__}: {failed}") from failed
             if self._no_exports is not None:
                 raise DescribeError(
                     f"{self.plugin_id!r} exports no Taskset, Harness, Env or Judge "
@@ -336,7 +337,9 @@ class _Describer:
             else:
                 self._not_found = self._not_found or e
             return None
-        except Exception as e:  # noqa: BLE001 - importing package code can raise anything
+        # SystemExit too: a package that exits on import is a failed import. An
+        # interrupt still propagates.
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - importing package code can raise anything
             self._failed = self._failed or e
             return None
 

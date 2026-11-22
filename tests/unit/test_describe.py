@@ -391,4 +391,17 @@ def test_a_package_that_exits_while_described_gets_a_json_error(
     assert exit_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert json.loads(captured.err)["error"]["type"] == "SystemExit"
+    error = json.loads(captured.err)["error"]
+    assert error["message"].startswith("SystemExit")
+
+
+def test_a_package_named_like_a_built_in_that_exits_leaves_the_built_in(
+    package,
+) -> None:
+    package(source="import sys\nsys.exit(3)\n", name="bash")
+
+    descriptor = describe("bash")
+
+    assert descriptor["exports"]["harness"] == (
+        "verifiers.v1.harnesses.bash.harness.BashHarness"
+    )
