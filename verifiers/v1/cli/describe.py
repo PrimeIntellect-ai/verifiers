@@ -20,6 +20,7 @@ import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal, NoReturn, get_args, get_origin
 
 from pydantic import BaseModel
@@ -213,47 +214,69 @@ class _Describer:
         }
 
     def _exports(self) -> tuple[dict[str, type], list[str]]:
-        """The one class of each kind the package exports via `__all__`, resolved as
-        the run's loaders resolve them, and the modules they came from."""
+        """The one class of each kind the package exports via `__all__`, found where a
+        run finds it, and the modules they came from. A run reads a taskset's bundled
+        harness and env from the taskset's own module, so each kind is looked for
+        there first, then in the module its own built-in group resolves the id to (a
+        standalone harness, env or judge package)."""
         exports: dict[str, type] = {}
         modules: list[str] = []
-        not_found: ModuleNotFoundError | None = None
-        no_exports: Exception | None = None
-        for kind, (base, group) in KINDS.items():
-            try:
-                module = _import_plugin(self.plugin_id, kind, group)
-            except ModuleNotFoundError as e:
-                cause = e.__cause__
-                # A dependency missing inside the package is its own failure, not a
-                # package that isn't there.
-                if isinstance(cause, ModuleNotFoundError) and not _is_target(
-                    cause.name, self.plugin_id, group
-                ):
-                    raise DescribeError(str(cause)) from cause
-                not_found = not_found or e
-                continue
-            try:
-                exports[kind] = _plugin_class(module, base, kind)
-            except (AttributeError, TypeError) as e:
-                no_exports = no_exports or e
-                continue
-            except ValueError as e:
-                raise DescribeError(str(e)) from e
-            if module.__name__ not in modules:
-                modules.append(module.__name__)
+        self._not_found: ModuleNotFoundError | None = None
+        self._no_exports: Exception | None = None
+        imported: dict[str, ModuleType | None] = {}
+        for kind, (base, _) in KINDS.items():
+            for group_kind in dict.fromkeys(("taskset", kind)):
+                if group_kind not in imported:
+                    imported[group_kind] = self._import(group_kind)
+                module = imported[group_kind]
+                if module is None:
+                    continue
+                found = self._exported(module, base, kind)
+                if found is None:
+                    continue
+                exports[kind] = found
+                if module.__name__ not in modules:
+                    modules.append(module.__name__)
+                break
         if not exports:
-            if no_exports is not None:
+            if self._no_exports is not None:
                 raise DescribeError(
                     f"{self.plugin_id!r} exports no Taskset, Harness, Env or Judge "
-                    f"subclass via `__all__` ({no_exports})"
+                    f"subclass via `__all__` ({self._no_exports})"
                 )
             module = _module_name(self.plugin_id)
             raise DescribeError(
                 f"{self.plugin_id!r} not found: no installed package imports as "
                 f"{module!r}, and no built-in taskset, harness, env or judge has that "
                 "name"
-            ) from not_found
+            ) from self._not_found
         return exports, modules
+
+    def _import(self, kind: str) -> ModuleType | None:
+        """The module the id resolves to in `kind`'s built-in group (else installed),
+        or None when there is none."""
+        group = KINDS[kind][1]
+        try:
+            return _import_plugin(self.plugin_id, kind, group)
+        except ModuleNotFoundError as e:
+            cause = e.__cause__
+            # A dependency missing inside the package is its own failure, not a
+            # package that isn't there.
+            if isinstance(cause, ModuleNotFoundError) and not _is_target(
+                cause.name, self.plugin_id, group
+            ):
+                raise DescribeError(str(cause)) from cause
+            self._not_found = self._not_found or e
+            return None
+
+    def _exported(self, module: ModuleType, base: type, kind: str) -> type | None:
+        try:
+            return _plugin_class(module, base, kind)
+        except (AttributeError, TypeError) as e:
+            self._no_exports = self._no_exports or e
+            return None
+        except ValueError as e:
+            raise DescribeError(str(e)) from e
 
     def _distribution(self, modules: list[str]) -> dict[str, str] | None:
         """The installed distribution that provides the package's module, when one

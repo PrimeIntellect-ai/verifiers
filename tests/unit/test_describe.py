@@ -208,3 +208,26 @@ def test_a_dependency_missing_inside_the_package_is_named(package) -> None:
     source = "import a_dependency_nobody_installed\n" + PACKAGE
     with pytest.raises(DescribeError, match="a_dependency_nobody_installed"):
         describe(package("QuizTaskset", source=source))
+
+
+def test_a_built_in_tasksets_bundled_env_is_found_in_its_module(
+    tmp_path, monkeypatch
+) -> None:
+    import verifiers.v1.tasksets as builtin_tasksets
+
+    name = f"quiz_{uuid.uuid4().hex[:8]}"
+    (tmp_path / name).mkdir()
+    body = PACKAGE.replace("{exports}", "'QuizTaskset', 'QuizEnv'")
+    (tmp_path / name / "__init__.py").write_text(textwrap.dedent(body))
+    monkeypatch.setattr(
+        builtin_tasksets, "__path__", [*builtin_tasksets.__path__, str(tmp_path)]
+    )
+
+    descriptor = describe(name.replace("_", "-"))
+
+    assert descriptor["modules"] == [f"verifiers.v1.tasksets.{name}"]
+    assert descriptor["env"]["exported"] is True
+    assert [role["name"] for role in descriptor["env"]["roles"]] == [
+        "solver",
+        "critic",
+    ]
