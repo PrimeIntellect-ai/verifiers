@@ -186,6 +186,10 @@ def _discard_until_eof(fd: int) -> None:
             pass
 
 
+HELD_OUTPUT_NOTE = "[a process this code started still holds its output; what it writes later is not shown]"
+"""Ends a result whose output a child the program left running still holds open."""
+
+
 def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
     """Run a program with `stdin` as its input and return its stdout then stderr.
 
@@ -193,6 +197,7 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
     Children it left running may still hold its pipes; what they write later is not
     included, and the pipes are drained in the background instead of being waited on.
     """
+    held_open = False
     with subprocess.Popen(
         args,
         stdin=subprocess.PIPE,
@@ -231,6 +236,7 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
                                     key.data.extend(chunk)
                                 if _at_end(key.fd):
                                     selector.unregister(key.fileobj)
+                            held_open = bool(selector.get_map())
                             break
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
@@ -276,12 +282,15 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
             if process.returncode is None:
                 process.kill()
                 process.wait()
-    return (
+    text = (
         (stdout + stderr)
         .decode(errors="replace")
         .replace("\r\n", "\n")
         .replace("\r", "\n")
     )
+    if held_open:
+        text += ("\n" if text and not text.endswith("\n") else "") + HELD_OUTPUT_NOTE
+    return text
 
 
 def run_browser(code: str, env: dict[str, str]) -> str:
