@@ -2,6 +2,8 @@
 pipes."""
 
 import importlib.util
+import os
+import resource
 import subprocess
 import sys
 import time
@@ -144,3 +146,19 @@ async def test_timeout_keeps_the_output_so_far_and_stops_the_command(shell, leng
 async def test_foreground_result_is_unchanged(shell):
     result = await shell.run_command("echo a; echo b >&2; exit 3")
     assert (result.exit_code, result.stdout, result.stderr) == (3, "a\n", "b\n")
+
+
+async def test_background_job_works_with_many_open_files(program, shell, length):
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and hard < 1200:
+        pytest.skip("the hard limit on open files is below 1200")
+    resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, 1200), hard))
+    fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(1100)]
+    try:
+        result = await shell.run_command(f"echo fg; sleep {length} &")
+    finally:
+        for fd in fds:
+            os.close(fd)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    assert result.stdout == "fg\n"
+    assert result.stderr == program.BACKGROUND_NOTE

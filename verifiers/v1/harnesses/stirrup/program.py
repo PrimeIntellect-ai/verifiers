@@ -88,7 +88,7 @@ class OutputPipe:
             while pending > 0 and (chunk := os.read(fd, pending)):
                 self.data += chunk
                 pending -= len(chunk)
-            if select.select([fd], [], [], 0)[0] and not os.read(fd, PIPE_READ_SIZE):
+            if at_end(fd):
                 os.close(fd)
             else:
                 self.held_open = True
@@ -100,6 +100,13 @@ class OutputPipe:
 
 def pending_bytes(fd: int) -> int:
     return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
+
+
+def at_end(fd: int) -> bool:
+    """Whether every process has closed a pipe whose waiting bytes were just read."""
+    poller = select.poll()  # not select.select, which rejects fds >= FD_SETSIZE (1024)
+    poller.register(fd, select.POLLIN)
+    return bool(poller.poll(0)) and not os.read(fd, PIPE_READ_SIZE)
 
 
 def discard_until_eof(fd: int) -> None:
