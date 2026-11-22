@@ -2,6 +2,7 @@
 left running holds the program's pipes."""
 
 import os
+import resource
 import subprocess
 import sys
 import time
@@ -195,6 +196,25 @@ def test_timeout_kills_the_programs_children(env, length, monkeypatch):
     while running(f"sleep {length}") and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not running(f"sleep {length}")
+
+
+def test_pipes_on_fds_above_1024(env, length):
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    needed = 1200
+    if hard != resource.RLIM_INFINITY and hard < needed:
+        pytest.skip(f"RLIMIT_NOFILE hard limit {hard} < {needed}")
+    resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, needed), hard))
+    fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(1024)]
+    try:
+        assert max(fds) >= 1024
+        out = run_browser(
+            f"import os; print('hi', flush=True); os.system('sleep {length} &')", env
+        )
+    finally:
+        for fd in fds:
+            os.close(fd)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    assert out == "hi\n" + HELD_OUTPUT_NOTE
 
 
 def test_cleanup_failure_still_returns_the_result(env, length, monkeypatch):
