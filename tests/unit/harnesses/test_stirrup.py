@@ -282,6 +282,80 @@ async def test_cancelling_twice_kills_the_command_and_closes_its_pipes(shell, le
     assert not running(length)
 
 
+@pytest.fixture
+def flood():
+    """A word unique to the test, for `yes` to flood a pipe with until it is stopped."""
+    value = f"flood-{uuid.uuid4().hex}"
+    yield value
+    subprocess.run(["pkill", "-f", f"yes {value}"], check=False)
+
+
+def kept(program, size: int) -> str:
+    """What a call keeps of `size` bytes of `seq` output on a stream."""
+    half = program.MAX_KEPT_BYTES // 2
+    output = "".join(f"{i}\n" for i in range(1, 300_000))[:size]
+    if size <= program.MAX_KEPT_BYTES:
+        return output
+    omitted = size - 2 * half
+    return f"{output[:half]}\n[... {omitted} bytes of output omitted ...]\n{output[-half:]}"
+
+
+@pytest.mark.parametrize("over", [-1, 0, 1, 100_000])
+async def test_output_beyond_the_bound_keeps_its_head_and_tail(program, shell, over):
+    size = program.MAX_KEPT_BYTES + over
+    result = await shell.run_command(
+        f"seq 1 300000 | head -c {size}; seq 1 300000 | head -c {size} >&2"
+    )
+    assert result.stdout == kept(program, size)
+    assert result.stderr == kept(program, size)
+
+
+async def test_a_character_across_the_middle_of_the_bound_is_kept(program, shell):
+    # Within the bound, the first and last halves are decoded together.
+    n = program.MAX_KEPT_BYTES // 2 - 1
+    result = await shell.run_command(
+        f"head -c {n} /dev/zero | tr '\\0' a; printf '\\xc3\\xa9';"
+        f" head -c {n} /dev/zero | tr '\\0' b"
+    )
+    assert result.stdout == "a" * n + "\u00e9" + "b" * n
+
+
+async def test_a_pipe_holds_a_bounded_amount_of_output(program):
+    pipe = program.OutputPipe()
+    for _ in range(64):
+        pipe.keep(b"x" * program.PIPE_READ_SIZE)
+    assert len(pipe.head) + len(pipe.tail) <= 2 * program.MAX_KEPT_BYTES
+    assert len(pipe.finish()) <= program.MAX_KEPT_BYTES + 100
+
+
+@pytest.mark.parametrize(
+    ("command", "timeout"),
+    [
+        # Left running, `yes` writes to the pipes as fast as they are read.
+        ("yes {w} & yes {w} >&2 & echo started", None),
+        ("echo started; yes {w}", 1),
+    ],
+)
+async def test_a_flood_of_output_is_not_all_kept(
+    program, shell, flood, command, timeout
+):
+    elapsed, result = await timed(shell, command.format(w=flood), timeout=timeout)
+    bound = program.MAX_KEPT_BYTES + 100  # With the omission marker.
+    assert elapsed < 2 + (timeout or 0)
+    assert result.stdout.startswith("started\n")
+    assert "bytes of output omitted" in result.stdout
+    assert len(result.stdout) <= bound
+    if timeout is None:
+        assert result.exit_code == 0
+        # The flood is cut off mid-line, and the note follows on a line of its own.
+        assert result.stderr.startswith(flood)
+        assert result.stderr.endswith(f"\n{program.BACKGROUND_NOTE}")
+        assert len(result.stderr) <= bound + len(program.BACKGROUND_NOTE)
+    else:
+        assert result.exit_code == 124
+        assert result.stderr == "Command timed out after 1 seconds"
+
+
 async def test_foreground_result_is_unchanged(shell):
     result = await shell.run_command("echo a; echo b >&2; exit 3")
     assert (result.exit_code, result.stdout, result.stderr) == (3, "a\n", "b\n")

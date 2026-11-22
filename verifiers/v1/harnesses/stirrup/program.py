@@ -55,16 +55,24 @@ COMMAND_CLEANUP_TIMEOUT = 5.0
 OUTPUT_GRACE = 0.5
 """How long to keep reading once bash exits, for processes that finish just after it."""
 PIPE_READ_SIZE = 65536
+MAX_KEPT_BYTES = 1 << 20
+"""How much of each output stream a call keeps: its first and last halves. Stirrup's
+format_result shows the model only the first and last 10,000 characters of each."""
 BACKGROUND_NOTE = "[a process started by this command is still running and holds its output; later output is not shown]"
 """Ends the stderr of a result whose pipes a process the command left running holds."""
 
 
 class OutputPipe:
-    """A command's stdout or stderr, read on the event loop while the command runs."""
+    """A command's stdout or stderr, read on the event loop while the command runs.
+
+    Reading never stops, so the writer never blocks, but at most `MAX_KEPT_BYTES` of
+    it is kept: a process the command leaves running may flood the pipe."""
 
     def __init__(self):
         self.fd, self.write_fd = os.pipe()
-        self.data = bytearray()
+        self.head = bytearray()
+        self.tail = bytearray()
+        self.size = 0  # Bytes read in all, kept or not.
         self.held_open = False
         self.loop = asyncio.get_running_loop()
         self.closed = self.loop.create_future()  # Done once every writer has closed it.
@@ -77,10 +85,33 @@ class OutputPipe:
 
     def read(self):
         chunk = os.read(self.fd, PIPE_READ_SIZE)
-        self.data += chunk
+        self.keep(chunk)
         if not chunk:
             self.loop.remove_reader(self.fd)
             self.closed.set_result(None)
+
+    def keep(self, chunk: bytes):
+        """Keep the first and last halves of the output; drop the middle beyond them."""
+        self.size += len(chunk)
+        half = MAX_KEPT_BYTES // 2
+        room = half - len(self.head)
+        if room > 0:
+            self.head += chunk[:room]
+            chunk = chunk[room:]
+        self.tail += chunk
+        if len(self.tail) > 2 * half:  # Trimmed in batches, not on every read.
+            del self.tail[:-half]
+
+    def text(self) -> str:
+        half = MAX_KEPT_BYTES // 2
+        omitted = self.size - len(self.head) - min(len(self.tail), half)
+        if omitted <= 0:
+            return (self.head + self.tail).decode(errors="replace")
+        return (
+            self.head.decode(errors="replace")
+            + f"\n[... {omitted} bytes of output omitted ...]\n"
+            + self.tail[-half:].decode(errors="replace")
+        )
 
     def close_write_end(self):
         if self.write_fd is not None:
@@ -104,7 +135,7 @@ class OutputPipe:
                 if not self.closed.done():
                     pending = _pending(fd)
                     while pending > 0 and (chunk := os.read(fd, pending)):
-                        self.data += chunk
+                        self.keep(chunk)
                         pending -= len(chunk)
                     open_ = not _at_end(fd)
             except Exception:  # noqa: BLE001 - unreadable: keep what was read
@@ -121,7 +152,7 @@ class OutputPipe:
                 with suppress(OSError):
                     os.close(fd)
         self.close_write_end()
-        return self.data.decode(errors="replace")
+        return self.text()
 
 
 def _pending(fd: int) -> int:
