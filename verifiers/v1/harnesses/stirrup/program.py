@@ -10,10 +10,15 @@
 
 import argparse
 import asyncio
+import fcntl
 import json
 import os
+import select
 import signal
+import struct
 import sys
+import termios
+import threading
 from contextlib import redirect_stdout, suppress
 from pathlib import Path
 from uuid import uuid4
@@ -47,6 +52,56 @@ from stirrup.tools.code_backends.base import CommandResult
 from stirrup.tools.mcp import MCPConfig, MCPToolProvider
 
 COMMAND_CLEANUP_TIMEOUT = 5.0
+PIPE_READ_SIZE = 65536
+
+
+class OutputPipe:
+    """A command's stdout or stderr, read on the event loop while Bash runs."""
+
+    def __init__(self):
+        self.fd, self.write_fd = os.pipe()
+        self.data = bytearray()
+        self.loop = asyncio.get_running_loop()
+        self.loop.add_reader(self.fd, self.read)
+
+    def read(self):
+        chunk = os.read(self.fd, PIPE_READ_SIZE)
+        self.data += chunk
+        if not chunk:
+            self.loop.remove_reader(self.fd)
+
+    def finish(self) -> str:
+        """Take the output waiting in the pipe now and stop collecting.
+
+        Once Bash has exited, that is everything it and its foreground commands
+        wrote. A job left in the background may still hold the pipe: its later
+        output is dropped, but the pipe is read to its end off the loop, so the
+        job neither blocks on a full pipe nor dies of SIGPIPE.
+        """
+        if self.fd is not None:
+            fd, self.fd = self.fd, None
+            self.loop.remove_reader(fd)
+            pending = pending_bytes(fd)
+            while pending > 0 and (chunk := os.read(fd, pending)):
+                self.data += chunk
+                pending -= len(chunk)
+            if select.select([fd], [], [], 0)[0] and not os.read(fd, PIPE_READ_SIZE):
+                os.close(fd)
+            else:
+                threading.Thread(
+                    target=discard_until_eof, args=(fd,), daemon=True
+                ).start()
+        return self.data.decode(errors="replace")
+
+
+def pending_bytes(fd: int) -> int:
+    return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
+
+
+def discard_until_eof(fd: int) -> None:
+    with open(fd, "rb", buffering=0) as pipe:
+        while pipe.read(PIPE_READ_SIZE):
+            pass
 
 
 class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
@@ -76,35 +131,44 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
     async def run_command(self, cmd, *, timeout=None):
         # The pinned local backend cleans up on timeouts, but not task
         # cancellation. ACP cancellation must also stop the command's children.
+        timeout = self._shell_timeout if timeout is None else timeout
         process = None
         completed = False
+        stdout, stderr = OutputPipe(), OutputPipe()
         try:
-            process = await asyncio.create_subprocess_exec(
-                "bash",
-                "-c",
-                cmd,
-                cwd=self.workspace,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                self._shell_timeout if timeout is None else timeout,
-            )
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    "bash",
+                    "-c",
+                    cmd,
+                    cwd=self.workspace,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=stdout.write_fd,
+                    stderr=stderr.write_fd,
+                    start_new_session=True,
+                )
+            finally:
+                os.close(stdout.write_fd)
+                os.close(stderr.write_fd)
+            # Wait for Bash, not for EOF: a job it leaves in the background
+            # keeps the pipes open after Bash exits.
+            await asyncio.wait_for(process.wait(), timeout)
             completed = True
             return CommandResult(
                 exit_code=process.returncode,
-                stdout=stdout.decode(errors="replace"),
-                stderr=stderr.decode(errors="replace"),
+                stdout=stdout.finish(),
+                stderr=stderr.finish(),
             )
         except TimeoutError:
+            # Not an error result: Stirrup shows only stderr for those, and the
+            # output so far is worth keeping. 124 is timeout(1)'s exit code.
+            err = stderr.finish()
+            if err and not err.endswith("\n"):
+                err += "\n"
             return CommandResult(
-                exit_code=1,
-                stdout="",
-                stderr="Command timed out",
-                error_kind="timeout",
+                exit_code=124,
+                stdout=stdout.finish(),
+                stderr=f"{err}Command timed out after {timeout} seconds",
             )
         except Exception as error:  # noqa: BLE001 - shell execution failures are recoverable tool results
             return CommandResult(
@@ -117,15 +181,10 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
             if process is not None and not completed:
                 with suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
-                try:
+                with suppress(TimeoutError):
                     await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
-                except TimeoutError:
-                    # A detached child can retain the pipes after Bash exits.
-                    # asyncio has no public API to close subprocess read pipes.
-                    for stream in (process.stdout, process.stderr):
-                        stream._transport.close()
-                    with suppress(TimeoutError):
-                        await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
+            stdout.finish()
+            stderr.finish()
 
 
 class RuntimeSessionAgent(SessionAgent):
