@@ -4,12 +4,15 @@ Prints, as JSON on stdout, what a package exports and how it is built: its tasks
 harness, env and judge classes, their config schemas, capability flags, rewards and
 metrics with their source locations, toolsets, and the env's agent roles with their
 default harnesses. Nothing is loaded: `Taskset.load()` never runs, no runtime starts
-and no model is called. Beyond the import, the package's code runs in two places:
-the taskset's and task's default configs are built (their default factories run,
-their validators don't), and their `toolsets()` classmethods are called with
-them, as an env calls them before a run. A reward or metric plugged in the
-default config is named by its `fn` path, never imported. So a registry or hub
-indexer can describe a package without running it.
+and no model is called. So a registry or hub indexer can describe a package
+without running it.
+
+Describing still runs the package's own code: its import, the default factories
+of its taskset and task configs (their validators don't run), any JSON-schema
+hooks on its models, and the `toolsets()` classmethods, as an env calls them
+before a run. Describe an untrusted package where its code may run, such as a
+sandbox. A reward or metric plugged in the default config is named by its `fn`
+path, never imported.
 
 A package that can't be described exits non-zero with a JSON error on stderr.
 """
