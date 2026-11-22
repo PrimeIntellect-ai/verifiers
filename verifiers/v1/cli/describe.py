@@ -260,6 +260,7 @@ class _Describer:
         self._not_found: ModuleNotFoundError | None = None
         self._no_exports: Exception | None = None
         self._failed: BaseException | None = None
+        self._ambiguous: list[tuple[str, ValueError]] = []
         imported: dict[str, ModuleType | None] = {}
         for kind, (base, _) in KINDS.items():
             # A run reads a taskset package's bundled harness and env from its own
@@ -271,13 +272,18 @@ class _Describer:
             if group_kind not in imported:
                 imported[group_kind] = self._import(group_kind)
             module = imported[group_kind]
-            # An ambiguous export stays loud, as the loaders keep it.
             found = self._exported(module, base, kind) if module else None
             if module is None or found is None:
                 continue
             exports[kind] = found
             if module.__name__ not in modules:
                 modules.append(module.__name__)
+        # An ambiguous export is an authoring error in a module the descriptor uses,
+        # or in the only module the id resolves to; a probe of another group can
+        # reach an unrelated library of the same name, which a run never reads.
+        for module_name, error in self._ambiguous:
+            if not exports or module_name in modules:
+                raise DescribeError(str(error)) from error
         if not exports:
             # A module that failed to import fails the package only when nothing
             # else resolved: a probe of another kind's group can reach an unrelated
@@ -326,7 +332,10 @@ class _Describer:
             self._no_exports = self._no_exports or e
             return None
         except ValueError as e:
-            raise DescribeError(str(e)) from e
+            # Two exports of one kind: refused once it is known whether the module
+            # is the package's (see `_exports`).
+            self._ambiguous.append((module.__name__, e))
+            return None
 
     def _distribution(self, modules: list[str]) -> dict[str, str] | None:
         """The installed distribution that provides the package's module, when one

@@ -342,3 +342,30 @@ def test_a_broken_package_named_like_a_built_in_harness_leaves_the_built_in(
     assert descriptor["exports"]["harness"] == (
         "verifiers.v1.harnesses.bash.harness.BashHarness"
     )
+
+
+def test_an_unrelated_package_with_ambiguous_exports_leaves_the_built_in(
+    package, monkeypatch
+) -> None:
+    monkeypatch.delitem(sys.modules, "bash", raising=False)
+    source = PACKAGE + (
+        "\n\nclass OtherTaskset(QuizTaskset):\n    pass\n\n\n"
+        "__all__ = [*__all__, 'OtherTaskset']\n"
+    )
+    package("QuizTaskset", source=source, name="bash")
+
+    descriptor = describe("bash")
+
+    assert descriptor["exports"]["taskset"] is None
+    assert descriptor["exports"]["harness"] == (
+        "verifiers.v1.harnesses.bash.harness.BashHarness"
+    )
+
+
+def test_a_package_exporting_two_tasksets_is_refused(package) -> None:
+    source = PACKAGE + (
+        "\n\nclass OtherTaskset(QuizTaskset):\n    pass\n\n\n"
+        "__all__ = [*__all__, 'OtherTaskset']\n"
+    )
+    with pytest.raises(DescribeError, match="exports 2 Taskset subclasses"):
+        describe(package("QuizTaskset", source=source))
