@@ -84,17 +84,24 @@ __all__ = [{exports}]
 
 @pytest.fixture
 def package(tmp_path, monkeypatch):
-    """Write a package exporting `exports` and return its id."""
+    """Write a package exporting `exports` and return its id. Its module leaves
+    `sys.modules` with the test, so one named like a built-in (`bash`) can't shadow
+    it in a later test."""
     monkeypatch.syspath_prepend(str(tmp_path))
+    names: list[str] = []
 
     def write(*exports: str, source: str = PACKAGE, name: str = "") -> str:
         name = name or f"quiz_{uuid.uuid4().hex[:8]}"
+        sys.modules.pop(name, None)
+        names.append(name)
         (tmp_path / name).mkdir()
         body = source.replace("{exports}", ", ".join(repr(e) for e in exports))
         (tmp_path / name / "__init__.py").write_text(textwrap.dedent(body))
         return name.replace("_", "-")
 
-    return write
+    yield write
+    for name in names:
+        sys.modules.pop(name, None)
 
 
 def test_a_taskset_package_is_described_without_loading_its_tasks(package) -> None:
@@ -183,7 +190,6 @@ def test_rewards_plugged_in_the_default_task_config_are_merged_unimported(
 def test_a_taskset_named_like_a_built_in_harness_takes_none_of_its_exports(
     package, monkeypatch
 ) -> None:
-    monkeypatch.delitem(sys.modules, "bash", raising=False)
     descriptor = describe(package("QuizTaskset", name="bash"))
 
     assert descriptor["exports"]["taskset"] == "bash.QuizTaskset"
@@ -251,7 +257,6 @@ def test_a_built_in_tasksets_bundled_env_is_found_in_its_module(
 def test_a_harness_package_named_like_a_built_in_resolves_to_the_built_in(
     package, monkeypatch
 ) -> None:
-    monkeypatch.delitem(sys.modules, "bash", raising=False)
     descriptor = describe(package("QuizHarness", name="bash"))
 
     # As `harness_class("bash")` resolves it: the built-in shadows the package.
@@ -267,7 +272,6 @@ def test_a_judge_is_described_as_its_id_loads_it(package, monkeypatch) -> None:
         "    pass\n\n\n"
         "__all__ = [*__all__, 'QuizJudge']\n"
     )
-    monkeypatch.delitem(sys.modules, "rubric", raising=False)
     descriptor = describe(package("QuizTaskset", source=source, name="rubric"))
 
     # `judge_class("rubric")` loads the built-in judge, whatever the package exports.
@@ -333,7 +337,6 @@ def test_a_taskset_package_exporting_two_judges_is_refused(package) -> None:
 def test_a_broken_package_named_like_a_built_in_harness_leaves_the_built_in(
     package, monkeypatch
 ) -> None:
-    monkeypatch.delitem(sys.modules, "bash", raising=False)
     package(source="import a_dependency_nobody_has\n", name="bash")
 
     # `harness_class("bash")` never imports the broken package: the built-in wins.
@@ -347,7 +350,6 @@ def test_a_broken_package_named_like_a_built_in_harness_leaves_the_built_in(
 def test_an_unrelated_package_with_ambiguous_exports_leaves_the_built_in(
     package, monkeypatch
 ) -> None:
-    monkeypatch.delitem(sys.modules, "bash", raising=False)
     source = PACKAGE + (
         "\n\nclass OtherTaskset(QuizTaskset):\n    pass\n\n\n"
         "__all__ = [*__all__, 'OtherTaskset']\n"
