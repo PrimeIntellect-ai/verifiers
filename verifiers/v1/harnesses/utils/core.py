@@ -225,7 +225,12 @@ def _discard_until_eof(fd: int) -> None:
             pass
 
 
+BACKGROUND_NOTE = "[a background job still holds this command's output; what it writes later is not shown]"
+"""Ends a result whose output a job the command left running still holds open."""
+
+
 def run_bash(command: str) -> str:
+    held_open = False
     try:
         with subprocess.Popen(
             ["bash", "-c", command],
@@ -256,6 +261,7 @@ def run_bash(command: str) -> str:
                                         key.data.add(chunk)
                                     if _at_end(key.fd):
                                         selector.unregister(key.fileobj)
+                                held_open = bool(selector.get_map())
                                 break
                             remaining = deadline - time.monotonic()
                             if remaining <= 0:
@@ -295,7 +301,10 @@ def run_bash(command: str) -> str:
             head = (stdout.head + stderr.head)[:keep].decode(errors="ignore")
             tail = (stdout.tail + stderr.tail)[-keep:].decode(errors="ignore")
             text = head + marker + tail
-        return text.replace("\r\n", "\n").replace("\r", "\n")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if held_open:
+            text += ("\n" if text and not text.endswith("\n") else "") + BACKGROUND_NOTE
+        return text
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 

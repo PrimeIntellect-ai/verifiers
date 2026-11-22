@@ -7,7 +7,7 @@ import uuid
 import pytest
 
 from verifiers.v1.harnesses.utils import compaction, core
-from verifiers.v1.harnesses.utils.core import run_bash
+from verifiers.v1.harnesses.utils.core import BACKGROUND_NOTE, run_bash
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +46,7 @@ def timed(command: str) -> tuple[float, str]:
 def test_background_job_does_not_hold_the_call_open(command, length):
     elapsed, out = timed(command.format(s=length))
     assert elapsed < 2
-    assert out == ""
+    assert out == BACKGROUND_NOTE
     running = subprocess.run(
         ["pgrep", "-f", f"sleep {length}"], capture_output=True, check=False
     )
@@ -60,12 +60,12 @@ def test_output_written_before_bash_exits_is_complete(length):
         f" sleep {length} &"
     )
     assert f"[... bash output truncated; {2 * size} bytes total ...]" in out
-    assert out.startswith("a") and out.endswith("b")
+    assert out.startswith("a") and out.endswith("b\n" + BACKGROUND_NOTE)
 
 
 def test_output_written_after_bash_exits_is_not_shown():
     elapsed, out = timed("echo fg; (sleep 1; echo bg) &")
-    assert out == "fg\n"
+    assert out == "fg\n" + BACKGROUND_NOTE
     assert elapsed < 1
 
 
