@@ -181,22 +181,35 @@ def test_program_running_past_the_timeout_is_an_error(code, env, monkeypatch):
     assert elapsed < 3
 
 
-def test_timeout_kills_the_programs_children(env, length, monkeypatch):
+def test_timeout_closes_the_pipes_instead_of_draining_them(env, monkeypatch):
+    # A child that keeps writing dies on its first write after the call closes the
+    # pipes; were they drained instead, it would keep running.
     monkeypatch.setattr(program, "BROWSER_TOOL_TIMEOUT", 1)
+    word = f"writer{uuid.uuid4().hex}"
+    loop = "while :; do echo tick; sleep 0.05; done"
     code = (
         "import subprocess, time\n"
-        f"subprocess.Popen(['sleep', '{length}'])\n"
+        f"subprocess.Popen(['sh', '-c', {loop!r}, {word!r}])\n"
         "time.sleep(5)\n"
     )
-    elapsed, out = timed(code, env)
-    assert out.startswith("error: Command ") and out.endswith(
-        "timed out after 1 seconds"
-    )
-    assert elapsed < 3
-    deadline = time.monotonic() + 2
-    while running(f"sleep {length}") and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert not running(f"sleep {length}")
+    try:
+        elapsed, out = timed(code, env)
+        assert out.startswith("error: Command ") and out.endswith(
+            "timed out after 1 seconds"
+        )
+        assert elapsed < 3
+        deadline = time.monotonic() + 2
+        while running(word) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not running(word)
+    finally:
+        subprocess.run(["pkill", "-f", word], check=False)
+
+
+def test_program_stays_in_the_callers_process_group(env):
+    # A runtime that kills its program's process group then reaps the tool's
+    # processes too.
+    assert run_browser("import os; print(os.getpgrp())", env) == f"{os.getpgrp()}\n"
 
 
 def test_pipes_on_fds_above_1024(env, length):

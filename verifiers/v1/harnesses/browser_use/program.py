@@ -27,7 +27,6 @@ import re
 import select
 import selectors
 import shutil
-import signal
 import struct
 import subprocess
 import sys
@@ -205,14 +204,6 @@ def _drain_in_background(fd: int) -> None:
         os.close(copy)
 
 
-def _kill_group(process: subprocess.Popen) -> None:
-    """Kill the program and every process in its group (its own session)."""
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except OSError:
-        process.kill()
-
-
 def _text(output: bytes | bytearray) -> str:
     """Bytes as text, with their newlines translated on their own."""
     return output.decode(errors="replace").replace("\r\n", "\n").replace("\r", "\n")
@@ -272,8 +263,10 @@ def run_program(
     background instead of being waited on, and the result ends with HELD_OUTPUT_NOTE.
     Of each stream at most MAX_KEPT_BYTES are kept (its head and tail); the rest is
     still read, so writers never block, and replaced by a marker that says how much.
-    The program runs in its own session; after `timeout` seconds it is killed with its
-    whole process group and TimeoutExpired is raised.
+    After `timeout` seconds the program is killed, its pipes are closed rather than
+    drained (a child still writing to them then fails on its next write), and
+    TimeoutExpired is raised. The program and its children stay in the caller's process
+    group, so a runtime that kills that group on cancellation reaps them too.
     """
     held_open = False
     # The encoding text=True used for stdin; text it cannot encode fails the call.
@@ -284,7 +277,6 @@ def run_program(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
-        start_new_session=True,  # its own process group, killed whole on timeout
     ) as process:
         assert process.stdin and process.stdout and process.stderr
         stdout, stderr = _KeptOutput(), _KeptOutput()
@@ -354,11 +346,12 @@ def run_program(
             except subprocess.TimeoutExpired:
                 raise subprocess.TimeoutExpired(process.args, timeout) from None
         finally:
-            # On a timeout (or any error) the program still runs: kill it and its
-            # group. Its pipes are then closed with the Popen, not drained. Do not
-            # communicate() here: leftover children may still hold the pipes.
+            # On a timeout (or any error) the program still runs: kill it, as
+            # subprocess.run does. Its pipes are then closed with the Popen, not
+            # drained. Do not communicate() here: leftover children may still hold
+            # the pipes.
             if process.returncode is None:
-                _kill_group(process)
+                process.kill()
                 process.wait()
     text = stdout.text() + stderr.text()
     if held_open:
