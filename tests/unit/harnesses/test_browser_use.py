@@ -195,3 +195,17 @@ def test_timeout_kills_the_programs_children(env, length, monkeypatch):
     while running(f"sleep {length}") and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not running(f"sleep {length}")
+
+
+def test_cleanup_failure_still_returns_the_result(env, length, monkeypatch):
+    def fail(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(program.threading.Thread, "start", fail)
+    before = len(os.listdir("/dev/fd"))
+    out = run_browser(
+        f"import os; print('hi', flush=True); os.system('sleep {length} &')", env
+    )
+    assert out == "hi\n" + HELD_OUTPUT_NOTE
+    # The fd duplicated for the drain thread is closed again.
+    assert len(os.listdir("/dev/fd")) == before

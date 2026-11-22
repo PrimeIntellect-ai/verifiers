@@ -183,14 +183,26 @@ def _at_end(fd: int) -> bool:
 def _discard_until_eof(fd: int) -> None:
     """Read a pipe a leftover child still holds to its end, so the child's writes neither
     block on a full pipe nor fail on a closed one once the call has returned."""
-    with open(fd, "rb", buffering=0) as pipe:
-        while pipe.read(65536):
-            pass
+    try:
+        with open(fd, "rb", buffering=0) as pipe:
+            while pipe.read(65536):
+                pass
+    except OSError:
+        pass
 
 
 def _drain_in_background(fd: int) -> None:
-    """Hand a pipe a leftover child holds to a daemon thread that reads it to its end."""
-    threading.Thread(target=_discard_until_eof, args=(os.dup(fd),), daemon=True).start()
+    """Hand a pipe a leftover child holds to a daemon thread that reads it to its end.
+    Never raises: if the fd or the thread cannot be had, the pipe is closed with the
+    call instead."""
+    try:
+        copy = os.dup(fd)
+    except OSError:
+        return
+    try:
+        threading.Thread(target=_discard_until_eof, args=(copy,), daemon=True).start()
+    except Exception:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
+        os.close(copy)
 
 
 def _kill_group(process: subprocess.Popen) -> None:
