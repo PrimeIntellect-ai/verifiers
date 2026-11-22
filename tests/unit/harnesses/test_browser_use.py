@@ -177,3 +177,21 @@ def test_program_running_past_the_timeout_is_an_error(code, env, monkeypatch):
     elapsed, out = timed(code, env)
     assert out == f"error: Command '{args}' timed out after 1 seconds"
     assert elapsed < 3
+
+
+def test_timeout_kills_the_programs_children(env, length, monkeypatch):
+    monkeypatch.setattr(program, "BROWSER_TOOL_TIMEOUT", 1)
+    code = (
+        "import subprocess, time\n"
+        f"subprocess.Popen(['sleep', '{length}'])\n"
+        "time.sleep(5)\n"
+    )
+    elapsed, out = timed(code, env)
+    assert out.startswith("error: Command ") and out.endswith(
+        "timed out after 1 seconds"
+    )
+    assert elapsed < 3
+    deadline = time.monotonic() + 2
+    while running(f"sleep {length}") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not running(f"sleep {length}")
