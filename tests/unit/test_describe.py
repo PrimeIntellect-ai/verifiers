@@ -369,3 +369,24 @@ def test_a_package_exporting_two_tasksets_is_refused(package) -> None:
     )
     with pytest.raises(DescribeError, match="exports 2 Taskset subclasses"):
         describe(package("QuizTaskset", source=source))
+
+
+def test_each_resolved_module_names_its_distribution() -> None:
+    descriptor = describe("bash")
+
+    assert descriptor["distributions"]["verifiers.v1.harnesses.bash"]["name"] == (
+        "verifiers"
+    )
+
+
+def test_a_package_that_exits_while_described_gets_a_json_error(
+    package, capsys
+) -> None:
+    source = "import sys\nsys.exit(0)\n" + PACKAGE
+    with pytest.raises(SystemExit) as exit_info:
+        main([package("QuizTaskset", source=source)])
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"]["type"] == "SystemExit"

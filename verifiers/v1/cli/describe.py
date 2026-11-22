@@ -199,6 +199,21 @@ def _literals(annotation: Any) -> list[Any]:
     return [value for arg in get_args(annotation) for value in _literals(arg)]
 
 
+def _distribution(module: str) -> dict[str, str] | None:
+    """The installed distribution that provides `module`, when one does (a built-in
+    plugin's is verifiers'). An editable install records no top-level module, so the
+    distribution named like the module is the fallback."""
+    top = module.split(".", 1)[0]
+    names = importlib.metadata.packages_distributions().get(top) or [top]
+    for name in names:
+        try:
+            dist = importlib.metadata.distribution(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        return {"name": dist.metadata["Name"], "version": dist.version}
+    return None
+
+
 class _Describer:
     def __init__(self, plugin_id: str) -> None:
         self.plugin_id = plugin_id
@@ -230,7 +245,7 @@ class _Describer:
             "verifiers_version": verifiers.__version__,
             "id": self.plugin_id,
             "modules": modules,
-            "distribution": self._distribution(modules),
+            "distributions": {module: _distribution(module) for module in modules},
             "exports": {
                 kind: _name(cls) if cls else None
                 for kind, cls in (
@@ -336,20 +351,6 @@ class _Describer:
             # is the package's (see `_exports`).
             self._ambiguous.append((module.__name__, e))
             return None
-
-    def _distribution(self, modules: list[str]) -> dict[str, str] | None:
-        """The installed distribution that provides the package's module, when one
-        does (a built-in plugin is verifiers'). An editable install records no
-        top-level module, so the distribution named like the module is the fallback."""
-        top = modules[0].split(".", 1)[0]
-        names = importlib.metadata.packages_distributions().get(top) or [top]
-        for name in names:
-            try:
-                dist = importlib.metadata.distribution(name)
-            except importlib.metadata.PackageNotFoundError:
-                continue
-            return {"name": dist.metadata["Name"], "version": dist.version}
-        return None
 
     def _taskset(self, cls: type[Taskset]) -> dict[str, Any]:
         config_type = concrete_type(cls, TasksetConfig, origin=Taskset) or TasksetConfig
@@ -536,7 +537,9 @@ def main(argv: list[str] | None = None) -> None:
             descriptor = describe(args[0])
     except DescribeError as e:
         _fail(e)
-    except Exception as e:  # noqa: BLE001 - importing package code can raise anything
+    # SystemExit too: a package that calls `sys.exit()` while being described gets
+    # the JSON error, not an exit with no descriptor. An interrupt still propagates.
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - package code can raise anything
         _fail(e)
     print(json.dumps(descriptor, indent=2, default=str))
 
