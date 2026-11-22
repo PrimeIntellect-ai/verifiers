@@ -171,7 +171,9 @@ def _at_end(fd: int) -> bool:
     """Whether every process has closed a pipe whose waiting bytes were just read. Bytes
     that arrived since are a leftover child's, written after the program exited, and
     dropped."""
-    if not select.select([fd], [], [], 0)[0]:
+    poller = select.poll()  # not select.select, which rejects fds >= FD_SETSIZE (1024)
+    poller.register(fd, select.POLLIN)
+    if not poller.poll(0):
         return False
     return not os.read(fd, 65536)
 
