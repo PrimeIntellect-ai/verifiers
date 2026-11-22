@@ -312,11 +312,16 @@ def kept(program, size: int) -> str:
     output = "".join(f"{i}\n" for i in range(1, 300_000))[:size]
     if size <= program.MAX_KEPT_BYTES:
         return output
+    head, tail = output[:half], output[-half:]
+    # The marker is on a line of its own; a newline at the cut is not doubled.
+    before = "" if head.endswith("\n") else "\n"
+    after = "" if tail.startswith("\n") else "\n"
     omitted = size - 2 * half
-    return f"{output[:half]}\n[... {omitted} bytes of output omitted ...]\n{output[-half:]}"
+    unit = "byte" if omitted == 1 else "bytes"
+    return f"{head}{before}[... {omitted} {unit} of output omitted ...]{after}{tail}"
 
 
-@pytest.mark.parametrize("over", [-1, 0, 1, 100_000])
+@pytest.mark.parametrize("over", [-1, 0, 1, 2, 100_000])
 async def test_output_beyond_the_bound_keeps_its_head_and_tail(program, shell, over):
     size = program.MAX_KEPT_BYTES + over
     result = await shell.run_command(
@@ -334,6 +339,50 @@ async def test_a_character_across_the_middle_of_the_bound_is_kept(program, shell
         f" head -c {n} /dev/zero | tr '\\0' b"
     )
     assert result.stdout == "a" * n + "\u00e9" + "b" * n
+
+
+HALF = 1 << 19  # MAX_KEPT_BYTES // 2, checked below.
+
+
+@pytest.mark.parametrize(
+    ("output", "text"),
+    [
+        (
+            b"a" * (2 * HALF + 1),
+            f"{'a' * HALF}\n[... 1 byte of output omitted ...]\n{'a' * HALF}",
+        ),
+        (  # A character cut at the end of the head is omitted.
+            b"a" * (HALF - 1) + "\u00e9".encode() + b"b" * HALF,
+            f"{'a' * (HALF - 1)}\n[... 2 bytes of output omitted ...]\n{'b' * HALF}",
+        ),
+        (  # So is one cut at the start of the tail.
+            b"a" * HALF + b"c" + "\u20ac".encode() + b"b" * (HALF - 2),
+            f"{'a' * HALF}\n[... 4 bytes of output omitted ...]\n{'b' * (HALF - 2)}",
+        ),
+        (
+            b"a" * (HALF - 2) + "\U0001f600".encode() + b"b" * (HALF + 1),
+            f"{'a' * (HALF - 2)}\n[... 5 bytes of output omitted ...]\n{'b' * HALF}",
+        ),
+        (  # Invalid bytes are replaced, not omitted.
+            b"\xff" + b"a" * (2 * HALF),
+            f"\ufffd{'a' * (HALF - 1)}\n[... 1 byte of output omitted ...]\n{'a' * HALF}",
+        ),
+        (  # Line breaks at the cut are not doubled.
+            b"a" * (HALF - 2) + b"\r\n-\r\n" + b"b" * (HALF - 2),
+            f"{'a' * (HALF - 2)}\r\n[... 1 byte of output omitted ...]\r\n{'b' * (HALF - 2)}",
+        ),
+        (  # Nor is the line feed of a CRLF split at the cut.
+            b"a" * HALF + b"\r\n" + b"b" * (HALF - 1),
+            f"{'a' * HALF}\n[... 1 byte of output omitted ...]\n{'b' * (HALF - 1)}",
+        ),
+    ],
+)
+async def test_the_cut_keeps_whole_characters_and_lines(program, output, text):
+    assert program.MAX_KEPT_BYTES == 2 * HALF
+    pipe = program.OutputPipe()
+    for i in range(0, len(output), program.PIPE_READ_SIZE):
+        pipe.keep(output[i : i + program.PIPE_READ_SIZE])
+    assert pipe.finish(drain=False) == text
 
 
 async def test_a_pipe_holds_a_bounded_amount_of_output(program):

@@ -107,10 +107,24 @@ class OutputPipe:
         omitted = self.size - len(self.head) - min(len(self.tail), half)
         if omitted <= 0:
             return (self.head + self.tail).decode(errors="replace")
+        # Cut at character boundaries: the bytes of a character cut in two are
+        # omitted with the middle.
+        head = self.head[: _complete_utf8(self.head)]
+        tail = self.tail[-half:]
+        start = 0
+        while start < 3 and start < len(tail) and tail[start] & 0xC0 == 0x80:
+            start += 1
+        tail = tail[start:]
+        omitted += len(self.head) - len(head) + start
+        head_text = head.decode(errors="replace")
+        tail_text = tail.decode(errors="replace")
+        # The marker gets a line of its own, without adding a blank line.
+        before = "" if head_text.endswith("\n") else "\n"
+        after = "" if tail_text.startswith(("\n", "\r\n")) else "\n"
+        unit = "byte" if omitted == 1 else "bytes"
         return (
-            self.head.decode(errors="replace")
-            + f"\n[... {omitted} bytes of output omitted ...]\n"
-            + self.tail[-half:].decode(errors="replace")
+            f"{head_text}{before}[... {omitted} {unit} of output omitted ...]"
+            f"{after}{tail_text}"
         )
 
     def close_write_end(self):
@@ -153,6 +167,18 @@ class OutputPipe:
                     os.close(fd)
         self.close_write_end()
         return self.text()
+
+
+def _complete_utf8(data: bytes | bytearray) -> int:
+    """Length of `data` without a UTF-8 character cut off at its end."""
+    for i in range(len(data) - 1, max(len(data) - 4, -1), -1):
+        byte = data[i]
+        if byte < 0x80:
+            break
+        if byte >= 0xC0:  # The first byte of a character.
+            length = 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4
+            return i if len(data) - i < length else len(data)
+    return len(data)
 
 
 def _pending(fd: int) -> int:
