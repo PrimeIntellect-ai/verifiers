@@ -322,14 +322,18 @@ def run_bash(command: str) -> str:
                     _kill_group(process)
                     process.wait()
         size = stdout.size + stderr.size
-        if size <= TOOL_OUTPUT_MAX_BYTES:
+        # The note fits in the output budget, so the result is not truncated again.
+        budget = TOOL_OUTPUT_MAX_BYTES - (
+            len(BACKGROUND_NOTE.encode()) + 1 if held_open else 0
+        )
+        if size <= budget:
             text = "".join(
                 output.head.decode().replace("\r\n", "\n").replace("\r", "\n")
                 for output in (stdout, stderr)
             )
         else:
             marker = f"\n[... bash output truncated; {size} bytes total ...]\n"
-            keep = (TOOL_OUTPUT_MAX_BYTES - len(marker.encode())) // 2
+            keep = (budget - len(marker.encode())) // 2
             # Preserve stdout-then-stderr ordering, including when just one is large.
             head = (stdout.head + stderr.head)[:keep].decode(errors="ignore")
             tail = (stdout.tail + stderr.tail)[-keep:].decode(errors="ignore")
