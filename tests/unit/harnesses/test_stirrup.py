@@ -1,11 +1,13 @@
 """The stirrup shell tool returns when bash exits, even if a background job holds its
 pipes."""
 
+import asyncio
 import importlib.util
 import os
 import resource
 import subprocess
 import sys
+import threading
 import time
 import types
 import uuid
@@ -81,6 +83,10 @@ def running(length: str) -> bool:
     return subprocess.run(pgrep, capture_output=True, check=False).returncode == 0
 
 
+def open_fds() -> int:
+    return len(os.listdir("/proc/self/fd" if sys.platform == "linux" else "/dev/fd"))
+
+
 async def timed(shell, command: str, timeout=None) -> tuple[float, CommandResult]:
     start = time.monotonic()
     result = await shell.run_command(command, timeout=timeout)
@@ -102,7 +108,7 @@ async def test_background_job_does_not_hold_the_call_open(
     program, shell, command, length
 ):
     elapsed, result = await timed(shell, command.format(s=length))
-    assert elapsed < 2
+    assert program.OUTPUT_GRACE <= elapsed < 2
     assert result.exit_code == 0 and result.error_kind is None
     assert result.stderr == program.BACKGROUND_NOTE
     assert running(length)
@@ -119,10 +125,51 @@ async def test_output_written_before_bash_exits_is_complete(program, shell, leng
 
 
 async def test_output_written_after_bash_exits_is_not_shown(program, shell):
-    elapsed, result = await timed(shell, "echo fg; (sleep 1; echo bg) &")
+    elapsed, result = await timed(shell, "echo fg; (sleep 2; echo bg) &")
     assert result.stdout == "fg\n"
     assert result.stderr == program.BACKGROUND_NOTE
-    assert elapsed < 1
+    assert program.OUTPUT_GRACE <= elapsed < 1.5
+
+
+@pytest.mark.parametrize(
+    ("command", "stdout"),
+    [
+        # A process substitution outlives bash by the time it takes to finish.
+        ("echo hello > >(cat)", "hello\n"),
+        ("seq 1 2000 > >(grep -c .)", "2000\n"),
+        ("exec > >(tee -a run.log) 2>&1; echo A", "A\n"),
+        ("(sleep 0.1; echo late) &", "late\n"),
+    ],
+)
+async def test_output_of_a_process_that_ends_just_after_bash_is_kept(
+    program, shell, command, stdout
+):
+    elapsed, result = await timed(shell, command)
+    assert (result.exit_code, result.stdout, result.stderr) == (0, stdout, "")
+    assert elapsed < program.OUTPUT_GRACE
+
+
+async def test_a_plain_command_does_not_wait_for_the_grace(program, shell):
+    elapsed, result = await timed(shell, "echo hi")
+    assert result.stdout == "hi\n"
+    assert elapsed < program.OUTPUT_GRACE / 2
+
+
+async def test_a_process_writing_after_the_call_is_not_blocked_or_killed(
+    program, shell, tmp_path
+):
+    # More than a pipe holds, written after the call returned: the pipe must be
+    # read for the writer to finish, and kept open for it not to get SIGPIPE.
+    result = await shell.run_command(
+        "echo fg; (sleep 0.8; head -c 3000000 /dev/zero; echo $? > rc) &"
+    )
+    assert result.stdout == "fg\n"
+    assert result.stderr == program.BACKGROUND_NOTE
+    for _ in range(100):
+        if (tmp_path / "rc").exists():
+            break
+        await asyncio.sleep(0.1)
+    assert (tmp_path / "rc").read_text() == "0\n"
 
 
 async def test_wait_still_waits_for_background_jobs(shell):
@@ -152,6 +199,89 @@ async def test_timeout_keeps_the_output_so_far_and_stops_the_command(shell, leng
     assert not running(length)
 
 
+async def test_timeout_closes_a_pipe_an_escaped_process_holds(
+    program, shell, length, monkeypatch
+):
+    # setsid takes the process out of the group the timeout kills; its pipe is
+    # closed, not read on a thread for as long as the process lives.
+    drained = []
+    monkeypatch.setattr(program, "_discard_until_eof", drained.append)
+    escape = f"import os; os.setsid(); os.execvp('sleep', ['sleep', '{length}'])"
+    result = await shell.run_command(
+        f'echo partial; python3 -c "{escape}" & sleep {length}', timeout=1
+    )
+    assert result.exit_code == 124
+    assert result.stdout == "partial\n"
+    assert drained == []
+
+
+def test_a_non_blocking_pipe_is_read_to_its_end(program):
+    # An event loop such as uvloop can leave the fd it watched non-blocking.
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    reader = threading.Thread(target=program._discard_until_eof, args=(read_fd,))
+    reader.start()
+    time.sleep(0.2)
+    with open(write_fd, "wb", buffering=0) as pipe:
+        pipe.write(b"x" * 300_000)  # More than a pipe holds; EPIPE once it is closed.
+    reader.join(5)
+    assert not reader.is_alive()
+
+
+async def test_running_out_of_file_descriptors_is_a_tool_result(
+    program, shell, monkeypatch
+):
+    pipe = os.pipe
+    pipes = []
+
+    def second_pipe_fails():
+        if pipes:
+            raise OSError(24, "Too many open files")
+        pipes.append(pipe())
+        return pipes[-1]
+
+    fds = open_fds()
+    monkeypatch.setattr(program.os, "pipe", second_pipe_fails)
+    result = await shell.run_command("echo hi")
+    monkeypatch.undo()
+    assert result.error_kind == "execution_error"
+    assert "Too many open files" in result.stderr
+    assert open_fds() == fds
+
+
+async def test_a_thread_that_fails_to_start_still_returns_the_result(
+    program, shell, length, monkeypatch
+):
+    class Thread(threading.Thread):
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    fds = open_fds()
+    # Only the program's threads: asyncio may need one to watch the process.
+    monkeypatch.setattr(program, "threading", types.SimpleNamespace(Thread=Thread))
+    result = await shell.run_command(f"echo hi; sleep {length} &")
+    assert (result.exit_code, result.stdout) == (0, "hi\n")
+    assert result.stderr == program.BACKGROUND_NOTE
+    assert open_fds() == fds
+
+
+async def test_cancelling_twice_kills_the_command_and_closes_its_pipes(shell, length):
+    fds = open_fds()
+    for _ in range(5):
+        task = asyncio.create_task(
+            shell.run_command(f"sleep {length} & sleep {length}")
+        )
+        await asyncio.sleep(0.1)
+        task.cancel()
+        await asyncio.sleep(0)  # The second cancel lands in the cleanup.
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    await asyncio.sleep(0.2)
+    assert open_fds() == fds
+    assert not running(length)
+
+
 async def test_foreground_result_is_unchanged(shell):
     result = await shell.run_command("echo a; echo b >&2; exit 3")
     assert (result.exit_code, result.stdout, result.stderr) == (3, "a\n", "b\n")
@@ -165,9 +295,16 @@ async def test_background_job_works_with_many_open_files(program, shell, length)
     fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(1100)]
     try:
         result = await shell.run_command(f"echo fg; sleep {length} &")
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        try:
+            closed = program._at_end(read_fd)
+        finally:
+            os.close(read_fd)
     finally:
         for fd in fds:
             os.close(fd)
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
     assert result.stdout == "fg\n"
     assert result.stderr == program.BACKGROUND_NOTE
+    assert read_fd >= 1024 and closed
