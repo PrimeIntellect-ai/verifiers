@@ -273,9 +273,10 @@ class _Describer:
                 # that fails to import is no judge of the package's, not a failure.
                 try:
                     module = self._import(group_kind)
-                    found = self._exported(module, base, kind) if module else None
                 except Exception:  # noqa: BLE001 - an unrelated library's import
-                    found = None
+                    module = None
+                # An ambiguous export stays loud, as the loaders keep it.
+                found = self._exported(module, base, kind) if module else None
             else:
                 if group_kind not in imported:
                     imported[group_kind] = self._import(group_kind)

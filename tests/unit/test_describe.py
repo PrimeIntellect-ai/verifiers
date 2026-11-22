@@ -318,3 +318,13 @@ def test_a_broken_library_named_like_a_built_in_taskset_is_no_judge(
         descriptor["exports"]["taskset"] == f"verifiers.v1.tasksets.{name}.QuizTaskset"
     )
     assert descriptor["exports"]["judge"] is None
+
+
+def test_a_taskset_package_exporting_two_judges_is_refused(package) -> None:
+    source = PACKAGE + (
+        "\n\nclass FirstJudge(vf.Judge):\n    pass\n\n\n"
+        "class SecondJudge(vf.Judge):\n    pass\n\n\n"
+        "__all__ = [*__all__, 'FirstJudge', 'SecondJudge']\n"
+    )
+    with pytest.raises(DescribeError, match="exports 2 Judge subclasses"):
+        describe(package("QuizTaskset", source=source))
