@@ -14,7 +14,7 @@ import termios
 import threading
 import time
 import traceback
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -204,6 +204,14 @@ class _BashOutput:
         self.size += len(chunk)
 
 
+EXIT_GRACE = 0.5
+"""Seconds to keep reading after bash exits, for processes it does not wait for, such as
+process substitutions, to finish writing and close the pipes."""
+
+BACKGROUND_NOTE = "[a process started by this command is still running and holds its output; later output is not shown]"
+"""Ends a result whose output a process the command left running still holds open."""
+
+
 def _pending(fd: int) -> int:
     """Bytes waiting in a pipe right now."""
     return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
@@ -211,7 +219,7 @@ def _pending(fd: int) -> int:
 
 def _at_end(fd: int) -> bool:
     """Whether every process has closed a pipe whose waiting bytes were just read. Bytes
-    that arrived since are a background job's, written after bash exited, and dropped."""
+    that arrived since are a background job's, written after the grace, and dropped."""
     poller = select.poll()  # not select.select, which rejects fds >= FD_SETSIZE (1024)
     poller.register(fd, select.POLLIN)
     if not poller.poll(0):
@@ -227,8 +235,18 @@ def _discard_until_eof(fd: int) -> None:
             pass
 
 
-BACKGROUND_NOTE = "[a background job still holds this command's output; what it writes later is not shown]"
-"""Ends a result whose output a job the command left running still holds open."""
+def _drain_in_background(fd: int) -> None:
+    """Hand a pipe still held open to a daemon thread. Never raises: if that fails, the
+    pipe is closed with the call, as on a timeout."""
+    try:
+        copy = os.dup(fd)
+    except OSError:
+        return
+    try:
+        threading.Thread(target=_discard_until_eof, args=(copy,), daemon=True).start()
+    except Exception:  # noqa: BLE001 - e.g. no more threads; the result still stands
+        with suppress(OSError):
+            os.close(copy)
 
 
 def run_bash(command: str) -> str:
@@ -242,48 +260,46 @@ def run_bash(command: str) -> str:
         ) as process:
             stdout, stderr = _BashOutput(), _BashOutput()
             deadline = time.monotonic() + 3600
+            exited = None
             try:
                 with selectors.DefaultSelector() as selector:
                     assert process.stdout is not None and process.stderr is not None
                     selector.register(process.stdout, selectors.EVENT_READ, stdout)
                     selector.register(process.stderr, selectors.EVENT_READ, stderr)
-                    try:
-                        while selector.get_map():
-                            if process.poll() is not None:
-                                # Bash has exited, so what it and its foreground commands
-                                # wrote is in the pipes already: read exactly that and
-                                # return. A pipe still open is held by a job left running.
-                                for key in list(selector.get_map().values()):
-                                    pending = _pending(key.fd)
-                                    while pending > 0:
-                                        chunk = os.read(key.fd, min(pending, 65536))
-                                        if not chunk:
-                                            break
-                                        pending -= len(chunk)
-                                        key.data.add(chunk)
-                                    if _at_end(key.fd):
-                                        selector.unregister(key.fileobj)
-                                held_open = bool(selector.get_map())
-                                break
-                            remaining = deadline - time.monotonic()
-                            if remaining <= 0:
+                    while selector.get_map():
+                        now = time.monotonic()
+                        if exited is None and process.poll() is not None:
+                            exited = now
+                        if exited is None:
+                            if now >= deadline:
                                 raise subprocess.TimeoutExpired(process.args, 3600)
-                            for key, _ in selector.select(min(remaining, 0.1)):
-                                chunk = os.read(key.fd, 8192)
-                                if chunk:
+                            wait = min(deadline - now, 0.1)
+                        elif now - exited < EXIT_GRACE:
+                            # Bash has exited, but a process it did not wait for, such
+                            # as a process substitution, may still be writing.
+                            wait = exited + EXIT_GRACE - now
+                        else:
+                            # A pipe still open is held by a job left running. Read what
+                            # is waiting and hand the rest to a thread off the call.
+                            for key in list(selector.get_map().values()):
+                                pending = _pending(key.fd)
+                                while pending > 0:
+                                    chunk = os.read(key.fd, min(pending, 65536))
+                                    if not chunk:
+                                        break
+                                    pending -= len(chunk)
                                     key.data.add(chunk)
-                                else:
-                                    selector.unregister(key.fileobj)
-                    finally:
-                        # A pipe still open belongs to a job the command put in the
-                        # background, which outlives the call. Read it to its end off the
-                        # call instead of closing it under the job.
-                        for key in list(selector.get_map().values()):
-                            threading.Thread(
-                                target=_discard_until_eof,
-                                args=(os.dup(key.fd),),
-                                daemon=True,
-                            ).start()
+                                selector.unregister(key.fileobj)
+                                if not _at_end(key.fd):
+                                    held_open = True
+                                    _drain_in_background(key.fd)
+                            break
+                        for key, _ in selector.select(wait):
+                            chunk = os.read(key.fd, 8192)
+                            if chunk:
+                                key.data.add(chunk)
+                            else:
+                                selector.unregister(key.fileobj)
                     process.wait(timeout=max(0, deadline - time.monotonic()))
             finally:
                 # Do not communicate() here: descendants may still hold the pipes.
