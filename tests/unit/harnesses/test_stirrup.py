@@ -387,6 +387,16 @@ HALF = 1 << 19  # MAX_KEPT_BYTES // 2, checked below.
             f"{'a' * HALF}\n[... 1 byte of output omitted ...]\n{'b' * (HALF - 1)}",
         ),
     ],
+    # Short ids: generated ones would hold the megabyte inputs.
+    ids=[
+        "one-byte-over",
+        "character-at-head-cut",
+        "character-at-tail-cut",
+        "emoji-at-head-cut",
+        "invalid-byte-replaced",
+        "line-breaks-at-cut",
+        "crlf-split-at-cut",
+    ],
 )
 async def test_the_cut_keeps_whole_characters_and_lines(program, output, text):
     assert program.MAX_KEPT_BYTES == 2 * HALF
