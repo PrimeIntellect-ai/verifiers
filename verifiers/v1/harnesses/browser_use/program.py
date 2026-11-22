@@ -214,8 +214,42 @@ def _kill_group(process: subprocess.Popen) -> None:
 
 
 def _text(output: bytes | bytearray) -> str:
-    """One stream's output as text, with its newlines translated on their own."""
+    """Bytes as text, with their newlines translated on their own."""
     return output.decode(errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
+MAX_KEPT_BYTES = 1 << 20
+"""Bytes of each stream a call keeps: 1 MiB, some hundreds of thousands of tokens and
+well above a page's printed text or a typical page's HTML. Beyond it the head and the
+tail are kept and the rest is read and dropped. Per stream, so a traceback on stderr
+still shows when stdout floods."""
+
+
+class _KeptOutput:
+    """One stream's first and last MAX_KEPT_BYTES / 2 bytes, and how many it had."""
+
+    def __init__(self) -> None:
+        self.head = bytearray()
+        self.tail = bytearray()  # bytes after the head
+        self.size = 0
+
+    def extend(self, chunk: bytes) -> None:
+        half = MAX_KEPT_BYTES // 2
+        room = max(0, half - len(self.head))
+        self.head += chunk[:room]
+        self.tail += chunk[room:]
+        excess = len(self.tail) - (MAX_KEPT_BYTES - half)
+        if excess > 0:
+            del self.tail[:excess]
+        self.size += len(chunk)
+
+    def text(self) -> str:
+        """The stream as text; beyond MAX_KEPT_BYTES, its head and tail around a marker."""
+        omitted = self.size - len(self.head) - len(self.tail)
+        if not omitted:
+            return _text(self.head + self.tail)
+        marker = f"\n[... {omitted} bytes of output omitted ...]\n"
+        return _text(self.head) + marker + _text(self.tail)
 
 
 EXIT_GRACE = 0.5
@@ -236,6 +270,8 @@ def run_program(
     each time the read loop wakes, at most 0.1 s apart). In that case what is in the
     pipes then is included, later writes are not, the pipes are drained in the
     background instead of being waited on, and the result ends with HELD_OUTPUT_NOTE.
+    Of each stream at most MAX_KEPT_BYTES are kept (its head and tail); the rest is
+    still read, so writers never block, and replaced by a marker that says how much.
     The program runs in its own session; after `timeout` seconds it is killed with its
     whole process group and TimeoutExpired is raised.
     """
@@ -251,7 +287,7 @@ def run_program(
         start_new_session=True,  # its own process group, killed whole on timeout
     ) as process:
         assert process.stdin and process.stdout and process.stderr
-        stdout, stderr = bytearray(), bytearray()
+        stdout, stderr = _KeptOutput(), _KeptOutput()
         deadline = time.monotonic() + timeout
         exited_at = None
         try:
@@ -324,7 +360,7 @@ def run_program(
             if process.returncode is None:
                 _kill_group(process)
                 process.wait()
-    text = _text(stdout) + _text(stderr)
+    text = stdout.text() + stderr.text()
     if held_open:
         text += ("\n" if text and not text.endswith("\n") else "") + HELD_OUTPUT_NOTE
     return text

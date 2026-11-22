@@ -14,6 +14,7 @@ from verifiers.v1.harnesses.browser_use import program
 from verifiers.v1.harnesses.browser_use.program import (
     EXIT_GRACE,
     HELD_OUTPUT_NOTE,
+    MAX_KEPT_BYTES,
     run_browser,
 )
 
@@ -229,3 +230,42 @@ def test_cleanup_failure_still_returns_the_result(env, length, monkeypatch):
     assert out == "hi\n" + HELD_OUTPUT_NOTE
     # The fd duplicated for the drain thread is closed again.
     assert len(os.listdir("/dev/fd")) == before
+
+
+def test_output_up_to_the_bound_is_kept_whole(env):
+    code = (
+        "import sys\n"
+        f"sys.stdout.write('a' * {MAX_KEPT_BYTES})\n"
+        f"sys.stderr.write('b' * {MAX_KEPT_BYTES})\n"
+    )
+    assert run_browser(code, env) == "a" * MAX_KEPT_BYTES + "b" * MAX_KEPT_BYTES
+
+
+def test_output_above_the_bound_keeps_its_head_and_tail(env):
+    half = MAX_KEPT_BYTES // 2
+    code = (
+        "import sys\n"
+        f"sys.stdout.write('h' * {half} + 'm' * 10 + 't' * {MAX_KEPT_BYTES - half})\n"
+        "sys.stderr.write('err')\n"
+    )
+    assert run_browser(code, env) == (
+        "h" * half
+        + "\n[... 10 bytes of output omitted ...]\n"
+        + "t" * (MAX_KEPT_BYTES - half)
+        + "err"
+    )
+
+
+def test_child_flooding_its_output_during_the_grace_is_bounded(env):
+    word = f"flood{uuid.uuid4().hex}"
+    try:
+        elapsed, out = timed(
+            f"import subprocess; subprocess.Popen(['yes', '{word}'])", env
+        )
+    finally:
+        subprocess.run(["pkill", "-f", f"yes {word}"], check=False)
+    assert elapsed < 2
+    assert out.startswith(f"{word}\n")
+    assert " bytes of output omitted ...]\n" in out
+    assert out.endswith(HELD_OUTPUT_NOTE)
+    assert len(out.encode()) <= MAX_KEPT_BYTES + 100 + len(HELD_OUTPUT_NOTE)
