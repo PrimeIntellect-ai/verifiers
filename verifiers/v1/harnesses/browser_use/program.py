@@ -170,8 +170,8 @@ def _pending(fd: int) -> int:
 
 def _at_end(fd: int) -> bool:
     """Whether every process has closed a pipe whose waiting bytes were just read. Bytes
-    that arrived since are a leftover child's, written after the program exited, and
-    dropped."""
+    that arrived since are a leftover child's, written after the call stopped reading,
+    and dropped."""
     poller = select.poll()  # not select.select, which rejects fds >= FD_SETSIZE (1024)
     poller.register(fd, select.POLLIN)
     if not poller.poll(0):
@@ -187,12 +187,21 @@ def _discard_until_eof(fd: int) -> None:
             pass
 
 
+def _drain_in_background(fd: int) -> None:
+    """Hand a pipe a leftover child holds to a daemon thread that reads it to its end."""
+    threading.Thread(target=_discard_until_eof, args=(os.dup(fd),), daemon=True).start()
+
+
 def _text(output: bytes | bytearray) -> str:
     """One stream's output as text, with its newlines translated on their own."""
     return output.decode(errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
-HELD_OUTPUT_NOTE = "[a process this code started still holds its output; what it writes later is not shown]"
+EXIT_GRACE = 0.5
+"""Seconds to keep reading after the program exits, for short-lived children it
+started (a pipeline through a shell, a quick `Popen`) to finish and close its pipes."""
+
+HELD_OUTPUT_NOTE = "[a process started by this code is still running and holds its output; later output is not shown]"
 """Ends a result whose output a child the program left running still holds open."""
 
 
@@ -201,12 +210,12 @@ def run_program(
 ) -> str:
     """Run a program with `stdin` as its input and return its stdout then stderr.
 
-    Returns once the program itself has exited, with what is in its pipes when the exit
-    is seen; the check runs each time the read loop wakes, at most 0.1 s apart.
-    Children it left running may still hold the pipes: what they write after that is
-    not included, the pipes are drained in the background instead of being waited on,
-    and the result ends with HELD_OUTPUT_NOTE. After `timeout` seconds the program is
-    killed and TimeoutExpired is raised.
+    Returns once both pipes reach EOF, or, if a child the program left running still
+    holds them, EXIT_GRACE seconds after the program's exit is seen (the check runs
+    each time the read loop wakes, at most 0.1 s apart). In that case what is in the
+    pipes then is included, later writes are not, the pipes are drained in the
+    background instead of being waited on, and the result ends with HELD_OUTPUT_NOTE.
+    After `timeout` seconds the program is killed and TimeoutExpired is raised.
     """
     held_open = False
     # The encoding text=True used for stdin; text it cannot encode fails the call.
@@ -221,6 +230,7 @@ def run_program(
         assert process.stdin and process.stdout and process.stderr
         stdout, stderr = bytearray(), bytearray()
         deadline = time.monotonic() + timeout
+        exited_at = None
         try:
             with selectors.DefaultSelector() as selector:
                 if data:
@@ -229,15 +239,25 @@ def run_program(
                     process.stdin.close()
                 selector.register(process.stdout, selectors.EVENT_READ, stdout)
                 selector.register(process.stderr, selectors.EVENT_READ, stderr)
-                try:
-                    while selector.get_map():
-                        if process.poll() is not None:
-                            # The program has exited, so what it wrote is in the pipes
-                            # already: read exactly that and return. A pipe still open
-                            # is held by a child it left running.
-                            if not process.stdin.closed:
-                                selector.unregister(process.stdin)
-                                process.stdin.close()
+                while selector.get_map():
+                    now = time.monotonic()
+                    if exited_at is None and process.poll() is not None:
+                        exited_at = now
+                        if not process.stdin.closed:
+                            selector.unregister(process.stdin)
+                            process.stdin.close()
+                    if exited_at is None:
+                        remaining = deadline - now
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(process.args, timeout)
+                    else:
+                        # The program has exited; children it started may still be
+                        # writing. Give them EXIT_GRACE to close the pipes.
+                        remaining = exited_at + EXIT_GRACE - now
+                        if remaining <= 0:
+                            # A pipe still open is held by a child left running: read
+                            # what is in it now, then drain it off the call instead of
+                            # waiting for it or closing it under the child.
                             for key in list(selector.get_map().values()):
                                 pending = _pending(key.fd)
                                 while pending > 0:
@@ -248,45 +268,36 @@ def run_program(
                                     key.data.extend(chunk)
                                 if _at_end(key.fd):
                                     selector.unregister(key.fileobj)
-                            held_open = bool(selector.get_map())
+                                else:
+                                    held_open = True
+                                    _drain_in_background(key.fd)
                             break
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise subprocess.TimeoutExpired(process.args, timeout)
-                        for key, _ in selector.select(min(remaining, 0.1)):
-                            if key.fileobj is process.stdin:
-                                try:
-                                    written = os.write(key.fd, data[: select.PIPE_BUF])
-                                except BrokenPipeError:  # it exits without reading all
-                                    written = len(data)
-                                data = data[written:]
-                                if not data:
-                                    selector.unregister(process.stdin)
-                                    process.stdin.close()
-                                continue
-                            chunk = os.read(key.fd, 65536)
-                            if chunk:
-                                key.data.extend(chunk)
-                            else:
-                                selector.unregister(key.fileobj)
-                finally:
-                    # A pipe still open belongs to a child that outlives the call. Read
-                    # it to its end off the call instead of closing it under the child.
-                    for key in list(selector.get_map().values()):
-                        if key.fileobj is not process.stdin:
-                            threading.Thread(
-                                target=_discard_until_eof,
-                                args=(os.dup(key.fd),),
-                                daemon=True,
-                            ).start()
-                # Both pipes can close while the program still runs (it redirected or
-                # closed its stdout and stderr): let it finish within the deadline.
-                try:
-                    process.wait(timeout=max(0, deadline - time.monotonic()))
-                except subprocess.TimeoutExpired:
-                    raise subprocess.TimeoutExpired(process.args, timeout) from None
+                    for key, _ in selector.select(min(remaining, 0.1)):
+                        if key.fileobj is process.stdin:
+                            try:
+                                written = os.write(key.fd, data[: select.PIPE_BUF])
+                            except BrokenPipeError:  # it exits without reading all
+                                written = len(data)
+                            data = data[written:]
+                            if not data:
+                                selector.unregister(process.stdin)
+                                process.stdin.close()
+                            continue
+                        chunk = os.read(key.fd, 65536)
+                        if chunk:
+                            key.data.extend(chunk)
+                        else:
+                            selector.unregister(key.fileobj)
+            # Both pipes can close while the program still runs (it redirected or
+            # closed its stdout and stderr): let it finish within the deadline.
+            try:
+                process.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise subprocess.TimeoutExpired(process.args, timeout) from None
         finally:
-            # Do not communicate() here: leftover children may still hold the pipes.
+            # On a timeout (or any error) the program still runs: kill it. Its pipes
+            # are then closed with the Popen, not drained. Do not communicate() here:
+            # leftover children may still hold the pipes.
             if process.returncode is None:
                 process.kill()
                 process.wait()

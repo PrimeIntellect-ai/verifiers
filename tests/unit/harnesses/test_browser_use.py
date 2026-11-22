@@ -10,7 +10,11 @@ import uuid
 import pytest
 
 from verifiers.v1.harnesses.browser_use import program
-from verifiers.v1.harnesses.browser_use.program import HELD_OUTPUT_NOTE, run_browser
+from verifiers.v1.harnesses.browser_use.program import (
+    EXIT_GRACE,
+    HELD_OUTPUT_NOTE,
+    run_browser,
+)
 
 
 @pytest.fixture
@@ -38,6 +42,11 @@ def timed(code: str, env: dict[str, str]) -> tuple[float, str]:
     return time.monotonic() - start, out
 
 
+def running(pattern: str) -> bool:
+    found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, check=False)
+    return found.returncode == 0
+
+
 HELD = {HELD_OUTPUT_NOTE}
 
 
@@ -56,12 +65,10 @@ HELD = {HELD_OUTPUT_NOTE}
 )
 def test_leftover_child_does_not_hold_the_call_open(code, results, env, length):
     elapsed, out = timed(code.format(s=length), env)
-    assert elapsed < 5
     assert out in results
-    running = subprocess.run(
-        ["pgrep", "-f", f"sleep {length}"], capture_output=True, check=False
-    )
-    assert running.returncode == 0
+    # A held pipe is given EXIT_GRACE to close before the call returns.
+    assert (EXIT_GRACE if out == HELD_OUTPUT_NOTE else 0) <= elapsed < 5
+    assert running(f"sleep {length}")
 
 
 def test_output_written_before_the_program_exits_is_complete(env, length):
@@ -82,18 +89,41 @@ def test_output_written_after_the_program_exits_is_not_shown(env):
     assert elapsed < 2
 
 
-def test_leftover_child_keeps_running_after_the_call(env, tmp_path):
-    done = tmp_path / "done"
-    code = (
-        "import subprocess\n"
-        f"subprocess.Popen(['sh', '-c', 'sleep 0.5; echo late; touch {done}'])\n"
+def test_leftover_child_that_writes_after_the_call_finishes_cleanly(env, tmp_path):
+    status = tmp_path / "status"
+    # Writes far more than a pipe holds, after the call has returned, then records
+    # whether the write succeeded (a closed pipe fails it, an unread one blocks it).
+    child = (
+        "import sys, time\n"
+        "time.sleep(1.5)\n"
+        "try:\n"
+        "    sys.stdout.write('x' * 3_000_000); sys.stdout.flush(); result = 0\n"
+        "except OSError as e:\n"
+        "    result = e.errno\n"
+        f"open({str(status)!r}, 'w').write(str(result))\n"
     )
-    assert run_browser(code, env) == HELD_OUTPUT_NOTE
-    # Its pipes are read to the end after the call, so its late write succeeds.
-    deadline = time.monotonic() + 5
-    while not done.exists() and time.monotonic() < deadline:
+    code = (
+        f"import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n"
+    )
+    elapsed, out = timed(code, env)
+    assert out == HELD_OUTPUT_NOTE
+    assert elapsed < 1.5
+    deadline = time.monotonic() + 10
+    while not status.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert done.exists()
+    assert status.read_text() == "0"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import subprocess\nsubprocess.Popen(['sh', '-c', 'sleep 0.05; echo late'])\n",
+        # bash exits before the process substitution has written.
+        "import os\nos.system(\"bash -c 'echo late > >(sleep 0.05; cat)'\")\n",
+    ],
+)
+def test_short_lived_child_output_is_included(code, env):
+    assert run_browser(code, env) == "late\n"
 
 
 def test_ordinary_calls_return_their_output(env):
