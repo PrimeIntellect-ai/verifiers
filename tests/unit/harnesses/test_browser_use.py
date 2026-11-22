@@ -3,11 +3,13 @@ left running holds the program's pipes."""
 
 import os
 import subprocess
+import sys
 import time
 import uuid
 
 import pytest
 
+from verifiers.v1.harnesses.browser_use import program
 from verifiers.v1.harnesses.browser_use.program import HELD_OUTPUT_NOTE, run_browser
 
 
@@ -107,15 +109,17 @@ def test_ordinary_calls_return_their_output(env):
     assert run_browser("raise ValueError('boom')", env).endswith("ValueError: boom\n")
 
 
+CLOSE_OUTPUT = (
+    "import os, time\n"
+    "devnull = os.open(os.devnull, os.O_WRONLY)\n"
+    "os.dup2(devnull, 1); os.dup2(devnull, 2)\n"
+)
+"""Code that points the program's stdout and stderr away from the pipes."""
+
+
 def test_program_that_closes_its_output_still_runs_to_the_end(env, tmp_path):
     done = tmp_path / "done"
-    code = (
-        "import os, time\n"
-        "devnull = os.open(os.devnull, os.O_WRONLY)\n"
-        "os.dup2(devnull, 1); os.dup2(devnull, 2)\n"
-        "time.sleep(1)\n"
-        f"open({str(done)!r}, 'w').close()\n"
-    )
+    code = CLOSE_OUTPUT + f"time.sleep(1)\nopen({str(done)!r}, 'w').close()\n"
     assert run_browser(code, env) == "(no output)"
     assert done.exists()
 
@@ -128,3 +132,18 @@ def test_stdout_and_stderr_newlines_are_translated_separately(env):
         "sys.stderr.write('\\nERR')\n"
     )
     assert run_browser(code, env) == "50%\n\nERR"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import time; time.sleep(5)",
+        CLOSE_OUTPUT + "time.sleep(5)\n",
+    ],
+)
+def test_program_running_past_the_timeout_is_an_error(code, env, monkeypatch):
+    monkeypatch.setattr(program, "BROWSER_TOOL_TIMEOUT", 1)
+    args = [sys.executable, "-m", "browser_harness.run"]
+    elapsed, out = timed(code, env)
+    assert out == f"error: Command '{args}' timed out after 1 seconds"
+    assert elapsed < 3

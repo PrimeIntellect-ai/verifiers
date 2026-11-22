@@ -196,12 +196,17 @@ HELD_OUTPUT_NOTE = "[a process this code started still holds its output; what it
 """Ends a result whose output a child the program left running still holds open."""
 
 
-def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
+def run_program(
+    args: list[str], stdin: str, env: dict[str, str], timeout: float
+) -> str:
     """Run a program with `stdin` as its input and return its stdout then stderr.
 
-    Returns as soon as the program itself exits, with exactly what it wrote by then.
-    Children it left running may still hold its pipes; what they write later is not
-    included, and the pipes are drained in the background instead of being waited on.
+    Returns once the program itself has exited, with what is in its pipes when the exit
+    is seen; the check runs each time the read loop wakes, at most 0.1 s apart.
+    Children it left running may still hold the pipes: what they write after that is
+    not included, the pipes are drained in the background instead of being waited on,
+    and the result ends with HELD_OUTPUT_NOTE. After `timeout` seconds the program is
+    killed and TimeoutExpired is raised.
     """
     held_open = False
     # The encoding text=True used for stdin; text it cannot encode fails the call.
@@ -215,7 +220,7 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
     ) as process:
         assert process.stdin and process.stdout and process.stderr
         stdout, stderr = bytearray(), bytearray()
-        deadline = time.monotonic() + BROWSER_TOOL_TIMEOUT
+        deadline = time.monotonic() + timeout
         try:
             with selectors.DefaultSelector() as selector:
                 if data:
@@ -247,9 +252,7 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
                             break
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
-                            raise subprocess.TimeoutExpired(
-                                process.args, BROWSER_TOOL_TIMEOUT
-                            )
+                            raise subprocess.TimeoutExpired(process.args, timeout)
                         for key, _ in selector.select(min(remaining, 0.1)):
                             if key.fileobj is process.stdin:
                                 try:
@@ -281,9 +284,7 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
                 try:
                     process.wait(timeout=max(0, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
-                    raise subprocess.TimeoutExpired(
-                        process.args, BROWSER_TOOL_TIMEOUT
-                    ) from None
+                    raise subprocess.TimeoutExpired(process.args, timeout) from None
         finally:
             # Do not communicate() here: leftover children may still hold the pipes.
             if process.returncode is None:
@@ -299,7 +300,12 @@ def run_browser(code: str, env: dict[str, str]) -> str:
     """Run model code through the pinned browser-harness CLI."""
     try:
         return (
-            run_program([sys.executable, "-m", "browser_harness.run"], code, env)
+            run_program(
+                [sys.executable, "-m", "browser_harness.run"],
+                code,
+                env,
+                BROWSER_TOOL_TIMEOUT,
+            )
             or "(no output)"
         )
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
