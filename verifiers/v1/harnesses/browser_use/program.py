@@ -216,6 +216,16 @@ tail are kept and the rest is read and dropped. Per stream, so a traceback on st
 still shows when stdout floods."""
 
 
+def _cut_sequence(data: bytes | bytearray) -> int:
+    """How many bytes at the end of `data` are a UTF-8 character missing its last bytes."""
+    for back in range(1, min(4, len(data)) + 1):
+        byte = data[-back]
+        if byte & 0xC0 != 0x80:  # the character's first byte
+            needed = 2 if byte >> 5 == 0b110 else 3 if byte >> 4 == 0b1110 else 4
+            return back if byte >= 0xC0 and back < needed else 0
+    return 0
+
+
 class _KeptOutput:
     """One stream's first and last MAX_KEPT_BYTES / 2 bytes, and how many it had."""
 
@@ -223,24 +233,45 @@ class _KeptOutput:
         self.head = bytearray()
         self.tail = bytearray()  # bytes after the head
         self.size = 0
+        self.after_head = -1  # the first byte after the head, once there is one
+        self.before_tail = -1  # the last byte dropped from the tail's front
 
     def extend(self, chunk: bytes) -> None:
         half = MAX_KEPT_BYTES // 2
         room = max(0, half - len(self.head))
         self.head += chunk[:room]
+        if self.after_head < 0 and len(chunk) > room:
+            self.after_head = chunk[room]
         self.tail += chunk[room:]
         excess = len(self.tail) - (MAX_KEPT_BYTES - half)
         if excess > 0:
+            self.before_tail = self.tail[excess - 1]
             del self.tail[:excess]
         self.size += len(chunk)
 
     def text(self) -> str:
-        """The stream as text; beyond MAX_KEPT_BYTES, its head and tail around a marker."""
-        omitted = self.size - len(self.head) - len(self.tail)
-        if not omitted:
-            return _text(self.head + self.tail)
-        marker = f"\n[... {omitted} bytes of output omitted ...]\n"
-        return _text(self.head) + marker + _text(self.tail)
+        """The stream as text; beyond MAX_KEPT_BYTES, its head and tail around a marker.
+
+        The cuts are moved off a UTF-8 character and a CRLF they would split, so neither
+        leaves a replacement character or an extra blank line; the moved bytes count as
+        omitted."""
+        head, tail = self.head, self.tail
+        if self.size == len(head) + len(tail):
+            return _text(head + tail)
+        if head.endswith(b"\r") and self.after_head == ord("\n"):
+            head = head[:-1]
+        head = head[: len(head) - _cut_sequence(head)]
+        if tail[:1] == b"\n" and self.before_tail == ord("\r"):
+            start = 1
+        else:  # skip the rest of a character the cut split (at most 3 bytes)
+            start = 0
+            while start < min(3, len(tail)) and tail[start] & 0xC0 == 0x80:
+                start += 1
+        tail = tail[start:]
+        omitted = self.size - len(head) - len(tail)
+        unit = "byte" if omitted == 1 else "bytes"
+        marker = f"\n[... {omitted} {unit} of output omitted ...]\n"
+        return _text(head) + marker + _text(tail)
 
 
 EXIT_GRACE = 0.5

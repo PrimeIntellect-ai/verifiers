@@ -1,7 +1,9 @@
 """The browser tool returns when the model's program exits, even if a child process it
 left running holds the program's pipes."""
 
+import locale
 import os
+import re
 import resource
 import subprocess
 import sys
@@ -33,9 +35,9 @@ def env(tmp_path):
 @pytest.fixture
 def length():
     """A sleep length unique to the test, to find and stop its leftover child."""
-    value = f"{300 + uuid.uuid4().int % 1000 / 1000:.3f}"
+    value = f"{300 + uuid.uuid4().int % 10**9 / 10**9:.9f}"
     yield value
-    subprocess.run(["pkill", "-f", f"sleep {value}"], check=False)
+    subprocess.run(["pkill", "-f", re.escape(f"sleep {value}")], check=False)
 
 
 def timed(code: str, env: dict[str, str]) -> tuple[float, str]:
@@ -44,8 +46,10 @@ def timed(code: str, env: dict[str, str]) -> tuple[float, str]:
     return time.monotonic() - start, out
 
 
-def running(pattern: str) -> bool:
-    found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, check=False)
+def running(text: str) -> bool:
+    found = subprocess.run(
+        ["pgrep", "-f", re.escape(text)], capture_output=True, check=False
+    )
     return found.returncode == 0
 
 
@@ -139,6 +143,14 @@ def test_ordinary_calls_return_their_output(env):
     # Code larger than a pipe's capacity reaches the program whole.
     assert run_browser(f"print(len({'x' * 200_000!r}))", env) == "200000\n"
     assert run_browser("raise ValueError('boom')", env).endswith("ValueError: boom\n")
+
+
+def test_code_that_cannot_be_encoded_is_an_error(env):
+    # As with text=True, which encoded the input strictly in the locale's encoding.
+    code = "print('\udc80')"
+    with pytest.raises(UnicodeEncodeError) as error:
+        code.encode(locale.getpreferredencoding(False))
+    assert run_browser(code, env) == f"error: {error.value}"
 
 
 CLOSE_OUTPUT = (
@@ -252,6 +264,57 @@ def test_output_up_to_the_bound_is_kept_whole(env):
         f"sys.stderr.write('b' * {MAX_KEPT_BYTES})\n"
     )
     assert run_browser(code, env) == "a" * MAX_KEPT_BYTES + "b" * MAX_KEPT_BYTES
+
+
+HALF = MAX_KEPT_BYTES // 2
+
+
+def omitted(count: int) -> str:
+    return (
+        f"\n[... {count} {'byte' if count == 1 else 'bytes'} of output omitted ...]\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "data, expected",
+    [
+        # One byte over: the marker says "1 byte".
+        (b"q" * (MAX_KEPT_BYTES + 1), "q" * HALF + omitted(1) + "q" * HALF),
+        # A 4-byte character across the head's cut moves out of the head whole.
+        (
+            b"a" * (HALF - 2) + "\U0001f40e".encode() + b"z" * MAX_KEPT_BYTES,
+            "a" * (HALF - 2) + omitted(HALF + 4) + "z" * HALF,
+        ),
+        # The rest of a character the tail's cut split is dropped with it.
+        (
+            b"a" * (HALF + 8) + "\U0001f40e".encode() + b"z" * (HALF - 2),
+            "a" * HALF + omitted(12) + "z" * (HALF - 2),
+        ),
+        # A CRLF split by either cut gives no extra line break.
+        (
+            b"a" * (HALF - 1) + b"\r\n" + b"b" * (HALF + 5),
+            "a" * (HALF - 1) + omitted(7) + "b" * HALF,
+        ),
+        (
+            b"a" * (HALF + 9) + b"\r\n" + b"b" * (HALF - 1),
+            "a" * HALF + omitted(11) + "b" * (HALF - 1),
+        ),
+    ],
+    ids=[
+        "one-byte",
+        "char-at-head-cut",
+        "char-at-tail-cut",
+        "crlf-at-head-cut",
+        "crlf-at-tail-cut",
+    ],
+)
+def test_cuts_do_not_split_a_character_or_a_line_break(data, expected, env, tmp_path):
+    source = tmp_path / "data"
+    source.write_bytes(data)
+    code = f"import sys\nsys.stdout.buffer.write(open({str(source)!r}, 'rb').read())\n"
+    out = run_browser(code, env)
+    assert "\ufffd" not in out
+    assert out == expected
 
 
 def test_output_above_the_bound_keeps_its_head_and_tail(env):
