@@ -328,3 +328,17 @@ def test_a_taskset_package_exporting_two_judges_is_refused(package) -> None:
     )
     with pytest.raises(DescribeError, match="exports 2 Judge subclasses"):
         describe(package("QuizTaskset", source=source))
+
+
+def test_a_broken_package_named_like_a_built_in_harness_leaves_the_built_in(
+    package, monkeypatch
+) -> None:
+    monkeypatch.delitem(sys.modules, "bash", raising=False)
+    package(source="import a_dependency_nobody_has\n", name="bash")
+
+    # `harness_class("bash")` never imports the broken package: the built-in wins.
+    descriptor = describe("bash")
+
+    assert descriptor["exports"]["harness"] == (
+        "verifiers.v1.harnesses.bash.harness.BashHarness"
+    )

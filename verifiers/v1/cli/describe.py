@@ -259,6 +259,7 @@ class _Describer:
         modules: list[str] = []
         self._not_found: ModuleNotFoundError | None = None
         self._no_exports: Exception | None = None
+        self._failed: BaseException | None = None
         imported: dict[str, ModuleType | None] = {}
         for kind, (base, _) in KINDS.items():
             # A run reads a taskset package's bundled harness and env from its own
@@ -267,27 +268,23 @@ class _Describer:
             # a judge is always loaded by its id, even one a taskset package exports.
             bundled = "taskset" in exports and kind in ("harness", "env")
             group_kind = "taskset" if bundled else kind
-            if kind == "judge" and "taskset" in exports:
-                # A built-in taskset's id names no judge, so the judge group falls
-                # back to a third-party library of that name (say `textarena`): one
-                # that fails to import is no judge of the package's, not a failure.
-                try:
-                    module = self._import(group_kind)
-                except Exception:  # noqa: BLE001 - an unrelated library's import
-                    module = None
-                # An ambiguous export stays loud, as the loaders keep it.
-                found = self._exported(module, base, kind) if module else None
-            else:
-                if group_kind not in imported:
-                    imported[group_kind] = self._import(group_kind)
-                module = imported[group_kind]
-                found = self._exported(module, base, kind) if module else None
+            if group_kind not in imported:
+                imported[group_kind] = self._import(group_kind)
+            module = imported[group_kind]
+            # An ambiguous export stays loud, as the loaders keep it.
+            found = self._exported(module, base, kind) if module else None
             if module is None or found is None:
                 continue
             exports[kind] = found
             if module.__name__ not in modules:
                 modules.append(module.__name__)
         if not exports:
+            # A module that failed to import fails the package only when nothing
+            # else resolved: a probe of another kind's group can reach an unrelated
+            # library of the same name (a built-in harness's id, say) that a run
+            # never imports.
+            if self._failed is not None:
+                raise DescribeError(str(self._failed)) from self._failed
             if self._no_exports is not None:
                 raise DescribeError(
                     f"{self.plugin_id!r} exports no Taskset, Harness, Env or Judge "
@@ -303,7 +300,7 @@ class _Describer:
 
     def _import(self, kind: str) -> ModuleType | None:
         """The module the id resolves to in `kind`'s built-in group (else installed),
-        or None when there is none."""
+        or None when there is none or it fails to import (kept in `_failed`)."""
         group = KINDS[kind][1]
         try:
             return _import_plugin(self.plugin_id, kind, group)
@@ -314,8 +311,12 @@ class _Describer:
             if isinstance(cause, ModuleNotFoundError) and not _is_target(
                 cause.name, self.plugin_id, group
             ):
-                raise DescribeError(str(cause)) from cause
-            self._not_found = self._not_found or e
+                self._failed = self._failed or cause
+            else:
+                self._not_found = self._not_found or e
+            return None
+        except Exception as e:  # noqa: BLE001 - importing package code can raise anything
+            self._failed = self._failed or e
             return None
 
     def _exported(self, module: ModuleType, base: type, kind: str) -> type | None:
