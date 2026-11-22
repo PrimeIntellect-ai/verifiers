@@ -4,10 +4,11 @@ Prints, as JSON on stdout, what a package exports and how it is built: its tasks
 harness, env and judge classes, their config schemas, capability flags, rewards and
 metrics with their source locations, toolsets, and the env's agent roles with their
 default harnesses. Nothing is loaded: `Taskset.load()` never runs, no runtime starts
-and no model is called. Beyond the import, only the `toolsets()` classmethods run,
-with the taskset's and task's declared default configs, built without running
-their validators; a reward or metric plugged in the default config is named by
-its `fn` path, never imported. So a registry or hub
+and no model is called. Beyond the import, the package's code runs in two places:
+the taskset's and task's default configs are built (their default factories run,
+their validators don't), and their `toolsets()` classmethods are called with
+them, as an env calls them before a run. A reward or metric plugged in the
+default config is named by its `fn` path, never imported. So a registry or hub
 indexer can describe a package without running it.
 
 A package that can't be described exits non-zero with a JSON error on stderr.
@@ -263,13 +264,21 @@ class _Describer:
             # a judge is always loaded by its id, even one a taskset package exports.
             bundled = "taskset" in exports and kind in ("harness", "env")
             group_kind = "taskset" if bundled else kind
-            if group_kind not in imported:
-                imported[group_kind] = self._import(group_kind)
-            module = imported[group_kind]
-            if module is None:
-                continue
-            found = self._exported(module, base, kind)
-            if found is None:
+            if kind == "judge" and "taskset" in exports:
+                # A built-in taskset's id names no judge, so the judge group falls
+                # back to a third-party library of that name (say `textarena`): one
+                # that fails to import is no judge of the package's, not a failure.
+                try:
+                    module = self._import(group_kind)
+                    found = self._exported(module, base, kind) if module else None
+                except Exception:  # noqa: BLE001 - an unrelated library's import
+                    found = None
+            else:
+                if group_kind not in imported:
+                    imported[group_kind] = self._import(group_kind)
+                module = imported[group_kind]
+                found = self._exported(module, base, kind) if module else None
+            if module is None or found is None:
                 continue
             exports[kind] = found
             if module.__name__ not in modules:
@@ -332,7 +341,8 @@ class _Describer:
         config_type = concrete_type(cls, TasksetConfig, origin=Taskset) or TasksetConfig
         task_cls = cls.task_type()
         # The declared defaults, built without validation: a config's validators are
-        # package code that runs only when a run configures it.
+        # package code that runs only when a run configures it. Default factories
+        # still run, as they must to build a default.
         config = self.attempt(
             "taskset.config",
             lambda: config_type.model_construct(id=self.plugin_id),

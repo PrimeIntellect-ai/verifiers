@@ -291,3 +291,30 @@ def test_describing_never_runs_a_configs_validators(package) -> None:
     assert [
         t["class"].rsplit(".", 1)[1] for t in descriptor["taskset"]["task"]["toolsets"]
     ] == ["LookupToolset"]
+
+
+def test_a_broken_library_named_like_a_built_in_taskset_is_no_judge(
+    tmp_path, monkeypatch
+) -> None:
+    import verifiers.v1.tasksets as builtin_tasksets
+
+    name = f"quiz_{uuid.uuid4().hex[:8]}"
+    builtin = tmp_path / "builtin"
+    (builtin / name).mkdir(parents=True)
+    body = PACKAGE.replace("{exports}", "'QuizTaskset'")
+    (builtin / name / "__init__.py").write_text(textwrap.dedent(body))
+    monkeypatch.setattr(
+        builtin_tasksets, "__path__", [*builtin_tasksets.__path__, str(builtin)]
+    )
+    # A third-party library with the taskset's name, which can't import.
+    library = tmp_path / "library"
+    (library / name).mkdir(parents=True)
+    (library / name / "__init__.py").write_text("import a_dependency_nobody_has\n")
+    monkeypatch.syspath_prepend(str(library))
+
+    descriptor = describe(name.replace("_", "-"))
+
+    assert (
+        descriptor["exports"]["taskset"] == f"verifiers.v1.tasksets.{name}.QuizTaskset"
+    )
+    assert descriptor["exports"]["judge"] is None
