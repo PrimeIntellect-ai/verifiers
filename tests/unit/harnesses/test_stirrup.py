@@ -132,6 +132,15 @@ async def test_wait_still_waits_for_background_jobs(shell):
     assert elapsed >= 1
 
 
+async def test_closing_both_pipes_does_not_end_the_call(shell, tmp_path):
+    elapsed, result = await timed(
+        shell, "echo early; exec >/dev/null 2>&1; sleep 1; touch marker"
+    )
+    assert elapsed >= 1
+    assert (tmp_path / "marker").exists()
+    assert (result.exit_code, result.stdout, result.stderr) == (0, "early\n", "")
+
+
 async def test_timeout_keeps_the_output_so_far_and_stops_the_command(shell, length):
     elapsed, result = await timed(
         shell, f"echo partial; echo oops >&2; sleep {length}", timeout=1
