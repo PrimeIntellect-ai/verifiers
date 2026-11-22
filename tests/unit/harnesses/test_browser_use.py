@@ -83,3 +83,16 @@ def test_output_input_and_errors_are_unchanged(env):
     # Code larger than a pipe's capacity reaches the program whole.
     assert run_browser(f"print(len({'x' * 200_000!r}))", env) == "200000\n"
     assert run_browser("raise ValueError('boom')", env).endswith("ValueError: boom\n")
+
+
+def test_program_that_closes_its_output_still_runs_to_the_end(env, tmp_path):
+    done = tmp_path / "done"
+    code = (
+        "import os, time\n"
+        "devnull = os.open(os.devnull, os.O_WRONLY)\n"
+        "os.dup2(devnull, 1); os.dup2(devnull, 2)\n"
+        "time.sleep(1)\n"
+        f"open({str(done)!r}, 'w').close()\n"
+    )
+    assert run_browser(code, env) == "(no output)"
+    assert done.exists()

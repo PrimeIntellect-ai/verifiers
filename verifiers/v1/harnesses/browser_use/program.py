@@ -261,6 +261,14 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
                                 args=(os.dup(key.fd),),
                                 daemon=True,
                             ).start()
+                # Both pipes can close while the program still runs (it redirected or
+                # closed its stdout and stderr): let it finish within the deadline.
+                try:
+                    process.wait(timeout=max(0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    raise subprocess.TimeoutExpired(
+                        process.args, BROWSER_TOOL_TIMEOUT
+                    ) from None
         finally:
             # Do not communicate() here: leftover children may still hold the pipes.
             if process.returncode is None:
