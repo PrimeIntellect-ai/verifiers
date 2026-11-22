@@ -8,7 +8,6 @@ import logging
 import os
 import select
 import selectors
-import signal
 import struct
 import subprocess
 import termios
@@ -206,7 +205,7 @@ class _BashOutput:
 
 
 BASH_TIMEOUT = 3600
-"""Seconds a command may run before the call fails and its process group is killed."""
+"""Seconds a command may run before the call fails and bash is killed."""
 
 EXIT_GRACE = 0.5
 """Seconds to keep reading after bash exits, for processes it does not wait for, such as
@@ -253,14 +252,6 @@ def _drain_in_background(fd: int) -> None:
             os.close(copy)
 
 
-def _kill_group(process: subprocess.Popen) -> None:
-    """Kill bash and every process of its group, so a timed-out command stops."""
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except OSError:  # the group is gone, or holds only zombies (EPERM on macOS)
-        process.kill()
-
-
 def run_bash(command: str) -> str:
     held_open = False
     try:
@@ -269,7 +260,6 @@ def run_bash(command: str) -> str:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True,  # its own process group, killed whole on a timeout
         ) as process:
             stdout, stderr = _BashOutput(), _BashOutput()
             deadline = time.monotonic() + BASH_TIMEOUT
@@ -317,9 +307,11 @@ def run_bash(command: str) -> str:
                                 selector.unregister(key.fileobj)
                     process.wait(timeout=max(0, deadline - time.monotonic()))
             finally:
-                # Do not communicate() here: descendants may still hold the pipes.
+                # Do not communicate() here: descendants may still hold the pipes. On a
+                # timeout the pipes are closed, not drained, so a process still writing
+                # to them dies on its next write.
                 if process.returncode is None:
-                    _kill_group(process)
+                    process.kill()
                     process.wait()
         size = stdout.size + stderr.size
         # The note fits in the output budget, so the result is not truncated again.

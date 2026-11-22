@@ -2,7 +2,9 @@
 
 import os
 import resource
+import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -20,16 +22,37 @@ NOTE = PROGRAM["BACKGROUND_NOTE"]
 
 
 @pytest.fixture
-def length():
-    """A sleep length unique to the test, to find and stop its background job."""
-    value = f"{300 + uuid.uuid4().int % 1000 / 1000:.3f}"
-    yield value
-    subprocess.run(["pkill", "-f", f"sleep {value}"], check=False)
+def new_length():
+    """Makes sleep lengths unique to the test, to find and stop the processes that use
+    them; all have six decimals, so none is a prefix of another."""
+    made = []
+
+    def make() -> str:
+        made.append(f"{300 + uuid.uuid4().int % 10**6 / 10**6:.6f}")
+        return made[-1]
+
+    yield make
+    for value in made:
+        subprocess.run(["pkill", "-f", value], check=False)
+
+
+@pytest.fixture
+def length(new_length):
+    return new_length()
 
 
 def running(pattern: str) -> bool:
     found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, check=False)
     return found.returncode == 0
+
+
+def gone(pattern: str, within: float = 3) -> bool:
+    deadline = time.monotonic() + within
+    while running(pattern):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
 
 
 def timed(command: str) -> tuple[float, str]:
@@ -84,34 +107,68 @@ def test_output_bounded_with_the_note(length):
 
 def test_job_writing_after_the_call_runs_to_completion(tmp_path):
     rc = tmp_path / "rc"
-    elapsed, out = timed(
-        f"echo fg; (sleep 0.8; head -c 3000000 /dev/zero; echo $? > {rc}) &"
-    )
-    assert out == "fg\n" + NOTE
-    assert elapsed < 0.8
-    for _ in range(100):
-        if rc.exists() and rc.read_text():
-            break
-        time.sleep(0.1)
-    assert (
-        rc.read_text() == "0\n"
-    )  # neither blocked on a full pipe nor killed by SIGPIPE
-
-
-def test_timeout_kills_the_command(monkeypatch, length):
-    marker = f"y{uuid.uuid4().hex[:8]}"
-    writer = f"import os; os.setsid(); os.execvp('yes', ['yes', '{marker}'])"
-    monkeypatch.setitem(PROGRAM, "BASH_TIMEOUT", 1)
     try:
-        _, out = timed(f'python3 -c "{writer}" & sleep {length}; true')
-        assert out.endswith("timed out after 1 seconds")
-        time.sleep(0.5)
-        # The foreground child dies with bash's process group; a writer that left the
-        # group dies on the closed pipe instead of being drained.
-        assert not running(f"sleep {length}")
-        assert not running(f"yes {marker}")
+        elapsed, out = timed(
+            f"echo fg; (sleep 0.8; head -c 3000000 /dev/zero; echo $? > {rc}) &"
+        )
+        assert out == "fg\n" + NOTE
+        assert elapsed < 0.8
+        for _ in range(100):
+            if rc.exists() and rc.read_text():
+                break
+            time.sleep(0.1)
+        # Neither blocked on a full pipe nor killed by SIGPIPE.
+        assert rc.read_text() == "0\n"
     finally:
-        subprocess.run(["pkill", "-f", f"yes {marker}"], check=False)
+        subprocess.run(["pkill", "-f", str(rc)], check=False)
+
+
+def test_timeout_closes_the_pipes(monkeypatch, length):
+    # A foreground writer bash forks (`; true` keeps bash from exec'ing it).
+    ticker = f"import time\nwhile True: print({length}, flush=True); time.sleep(0.05)"
+    monkeypatch.setitem(PROGRAM, "BASH_TIMEOUT", 1)
+    elapsed, out = timed(f'python3 -c "{ticker}"; true')
+    assert out.endswith("timed out after 1 seconds")
+    assert elapsed < 2
+    # Bash is killed and the pipes are closed, not drained, so the writer dies on its
+    # next write.
+    assert gone(length)
+
+
+def test_runtime_reaping_the_program_stops_its_jobs(tmp_path, new_length):
+    # The subprocess runtime starts the chat program in its own session and, when a
+    # rollout is cancelled, kills that process group. Jobs started by run_bash, in
+    # flight or left running, must be in it.
+    job, in_flight = new_length(), new_length()
+    program = tmp_path / "program.py"
+    program.write_text(
+        f"program = {{'__name__': 'chat_program'}}\n"
+        f"exec(compile({CHAT_PROGRAM_SOURCE!r}, 'chat_program.py', 'exec'), program)\n"
+        f"print(repr(program['run_bash']('echo started; sleep {job} &')), flush=True)\n"
+        f"program['run_bash']('sleep {in_flight}; echo done')\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(program)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().decode() == repr("started\n" + NOTE) + "\n"
+        for _ in range(100):
+            if running(f"sleep {in_flight}"):
+                break
+            time.sleep(0.05)
+        assert running(f"sleep {job}") and running(f"sleep {in_flight}")
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        assert gone(f"sleep {job}") and gone(f"sleep {in_flight}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdout.close()
 
 
 def test_job_holding_fds_above_1024(length):
@@ -124,6 +181,21 @@ def test_job_holding_fds_above_1024(length):
         for fd in held:
             os.close(fd)
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_at_end_tells_a_closed_pipe_from_a_held_one():
+    read, write = os.pipe()
+    try:
+        assert not PROGRAM["_at_end"](read)
+        os.write(write, b"late")  # a held pipe's late bytes are dropped
+        assert not PROGRAM["_at_end"](read)
+        os.close(write)
+        write = None
+        assert PROGRAM["_at_end"](read)
+    finally:
+        os.close(read)
+        if write is not None:
+            os.close(write)
 
 
 def test_failed_cleanup_keeps_the_result(monkeypatch, length):
