@@ -52,67 +52,104 @@ from stirrup.tools.code_backends.base import CommandResult
 from stirrup.tools.mcp import MCPConfig, MCPToolProvider
 
 COMMAND_CLEANUP_TIMEOUT = 5.0
+OUTPUT_GRACE = 0.5
+"""How long to keep reading once bash exits, for processes that finish just after it."""
 PIPE_READ_SIZE = 65536
-BACKGROUND_NOTE = "[a background job still holds this command's output; what it writes later is not shown]"
-"""Ends the stderr of a result whose pipes a job the command left running still holds."""
+BACKGROUND_NOTE = "[a process started by this command is still running and holds its output; later output is not shown]"
+"""Ends the stderr of a result whose pipes a process the command left running holds."""
 
 
 class OutputPipe:
-    """A command's stdout or stderr, read on the event loop while Bash runs."""
+    """A command's stdout or stderr, read on the event loop while the command runs."""
 
     def __init__(self):
         self.fd, self.write_fd = os.pipe()
         self.data = bytearray()
         self.held_open = False
         self.loop = asyncio.get_running_loop()
-        self.loop.add_reader(self.fd, self.read)
+        self.closed = self.loop.create_future()  # Done once every writer has closed it.
+        try:
+            self.loop.add_reader(self.fd, self.read)
+        except BaseException:
+            os.close(self.fd)
+            os.close(self.write_fd)
+            raise
 
     def read(self):
         chunk = os.read(self.fd, PIPE_READ_SIZE)
         self.data += chunk
         if not chunk:
             self.loop.remove_reader(self.fd)
+            self.closed.set_result(None)
 
-    def finish(self) -> str:
-        """Take the output waiting in the pipe now and stop collecting.
+    def close_write_end(self):
+        if self.write_fd is not None:
+            fd, self.write_fd = self.write_fd, None
+            with suppress(OSError):
+                os.close(fd)
 
-        Once Bash has exited, that is everything it and its foreground commands
-        wrote. A job left in the background may still hold the pipe: its later
-        output is dropped, but the pipe is read to its end off the loop, so the
-        job neither blocks on a full pipe nor dies of SIGPIPE.
+    def finish(self, *, drain: bool = True) -> str:
+        """Take the output waiting in the pipe now and stop collecting. Never raises.
+
+        A process the command left running may still hold the pipe. Its later
+        output is dropped. With `drain`, the pipe is then read to its end off the
+        loop, so that process neither blocks on a full pipe nor dies of SIGPIPE;
+        without it, the pipe is closed.
         """
         if self.fd is not None:
             fd, self.fd = self.fd, None
-            self.loop.remove_reader(fd)
-            pending = pending_bytes(fd)
-            while pending > 0 and (chunk := os.read(fd, pending)):
-                self.data += chunk
-                pending -= len(chunk)
-            if at_end(fd):
-                os.close(fd)
-            else:
-                self.held_open = True
-                threading.Thread(
-                    target=discard_until_eof, args=(fd,), daemon=True
-                ).start()
+            open_ = False
+            try:
+                self.loop.remove_reader(fd)
+                if not self.closed.done():
+                    pending = _pending(fd)
+                    while pending > 0 and (chunk := os.read(fd, pending)):
+                        self.data += chunk
+                        pending -= len(chunk)
+                    open_ = not _at_end(fd)
+            except Exception:  # noqa: BLE001 - unreadable: keep what was read
+                open_ = True
+            self.held_open = open_
+            if open_ and drain:
+                try:
+                    threading.Thread(
+                        target=_discard_until_eof, args=(fd,), daemon=True
+                    ).start()
+                except Exception:  # noqa: BLE001 - the process may get SIGPIPE
+                    open_ = False
+            if not (open_ and drain):
+                with suppress(OSError):
+                    os.close(fd)
+        self.close_write_end()
         return self.data.decode(errors="replace")
 
 
-def pending_bytes(fd: int) -> int:
+def _pending(fd: int) -> int:
+    """Bytes waiting in a pipe right now."""
     return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
 
 
-def at_end(fd: int) -> bool:
-    """Whether every process has closed a pipe whose waiting bytes were just read."""
+def _at_end(fd: int) -> bool:
+    """Whether every process has closed a pipe whose waiting bytes were just read. Bytes
+    that arrived since are written by a process left running, and dropped."""
     poller = select.poll()  # not select.select, which rejects fds >= FD_SETSIZE (1024)
     poller.register(fd, select.POLLIN)
     return bool(poller.poll(0)) and not os.read(fd, PIPE_READ_SIZE)
 
 
-def discard_until_eof(fd: int) -> None:
-    with open(fd, "rb", buffering=0) as pipe:
-        while pipe.read(PIPE_READ_SIZE):
+def _discard_until_eof(fd: int) -> None:
+    """Read a pipe a process left running still holds to its end, then close it."""
+    try:
+        # An event loop such as uvloop may have made the fd non-blocking; an empty
+        # non-blocking read is not EOF.
+        os.set_blocking(fd, True)
+        while os.read(fd, PIPE_READ_SIZE):
             pass
+    except OSError:
+        pass
+    finally:
+        with suppress(OSError):
+            os.close(fd)
 
 
 class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
@@ -145,9 +182,11 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
         timeout = self._shell_timeout if timeout is None else timeout
         process = None
         completed = False
-        stdout, stderr = OutputPipe(), OutputPipe()
+        stdout = stderr = None
         try:
             try:
+                stdout = OutputPipe()
+                stderr = OutputPipe()
                 process = await asyncio.create_subprocess_exec(
                     "bash",
                     "-c",
@@ -159,30 +198,29 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
                     start_new_session=True,
                 )
             finally:
-                os.close(stdout.write_fd)
-                os.close(stderr.write_fd)
-            # Wait for Bash, not for EOF: a job it leaves in the background
-            # keeps the pipes open after Bash exits.
-            await asyncio.wait_for(process.wait(), timeout)
-            completed = True
-            out, err = stdout.finish(), stderr.finish()
-            if stdout.held_open or stderr.held_open:
-                # Status messages go to stderr, as for a timeout.
-                if err and not err.endswith("\n"):
-                    err += "\n"
-                err += BACKGROUND_NOTE
-            return CommandResult(exit_code=process.returncode, stdout=out, stderr=err)
-        except TimeoutError:
-            # Not an error result: Stirrup shows only stderr for those, and the
-            # output so far is worth keeping. 124 is timeout(1)'s exit code.
-            err = stderr.finish()
-            if err and not err.endswith("\n"):
-                err += "\n"
-            return CommandResult(
-                exit_code=124,
-                stdout=stdout.finish(),
-                stderr=f"{err}Command timed out after {timeout} seconds",
-            )
+                for pipe in (stdout, stderr):
+                    if pipe is not None:
+                        pipe.close_write_end()
+            try:
+                # Wait for Bash, not for EOF: a process it leaves running keeps
+                # the pipes open after Bash exits.
+                await asyncio.wait_for(process.wait(), timeout)
+            except TimeoutError:
+                pass  # The command is killed below, and the timeout result follows.
+            else:
+                completed = True
+                # A process substitution or a short-lived child may still be
+                # writing the command's output: give the pipes a moment to close.
+                await asyncio.wait([stdout.closed, stderr.closed], timeout=OUTPUT_GRACE)
+                out, err = stdout.finish(), stderr.finish()
+                if stdout.held_open or stderr.held_open:
+                    # Status messages go to stderr, as for a timeout.
+                    if err and not err.endswith("\n"):
+                        err += "\n"
+                    err += BACKGROUND_NOTE
+                return CommandResult(
+                    exit_code=process.returncode, stdout=out, stderr=err
+                )
         except Exception as error:  # noqa: BLE001 - shell execution failures are recoverable tool results
             return CommandResult(
                 exit_code=1,
@@ -191,13 +229,27 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
                 error_kind="execution_error",
             )
         finally:
-            if process is not None and not completed:
-                with suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
-            stdout.finish()
-            stderr.finish()
+            try:
+                if process is not None and not completed:
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
+            finally:
+                # Pipes of a killed command are closed, not drained.
+                for pipe in (stdout, stderr):
+                    if pipe is not None:
+                        pipe.finish(drain=completed)
+        # Timed out. Not an error result: Stirrup shows only stderr for those, and
+        # the output so far is worth keeping. 124 is timeout(1)'s exit code.
+        err = stderr.finish()
+        if err and not err.endswith("\n"):
+            err += "\n"
+        return CommandResult(
+            exit_code=124,
+            stdout=stdout.finish(),
+            stderr=f"{err}Command timed out after {timeout} seconds",
+        )
 
 
 class RuntimeSessionAgent(SessionAgent):
