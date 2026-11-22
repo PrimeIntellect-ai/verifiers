@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import fcntl
 import json
+import locale
 import os
 import re
 import select
@@ -203,6 +204,8 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
     included, and the pipes are drained in the background instead of being waited on.
     """
     held_open = False
+    # The encoding text=True used for stdin; text it cannot encode fails the call.
+    data = memoryview(stdin.encode(locale.getpreferredencoding(False)))
     with subprocess.Popen(
         args,
         stdin=subprocess.PIPE,
@@ -212,7 +215,6 @@ def run_program(args: list[str], stdin: str, env: dict[str, str]) -> str:
     ) as process:
         assert process.stdin and process.stdout and process.stderr
         stdout, stderr = bytearray(), bytearray()
-        data = memoryview(stdin.encode())
         deadline = time.monotonic() + BROWSER_TOOL_TIMEOUT
         try:
             with selectors.DefaultSelector() as selector:
