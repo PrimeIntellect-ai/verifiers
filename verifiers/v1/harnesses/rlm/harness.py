@@ -75,7 +75,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="a834702617a7d74f50fe03edca4fff2a16c24c48", min_length=1
+        default="41e977b48a42b135581a6a11fef433cbe8d5f293", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
