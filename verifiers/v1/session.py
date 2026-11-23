@@ -19,7 +19,6 @@ import copy
 import hashlib
 import inspect
 import json
-import weakref
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -61,6 +60,7 @@ logger = get_logger(__name__)
 MCPProxy = Callable[[str], AbstractAsyncContextManager[str]]
 ToolResultKey = tuple[int | str, str]
 StopVerdict = tuple[str, dict[str, Any]]
+PendingRewrite = tuple[int | None, InterceptRecord]
 HookT = TypeVar("HookT", Request, Response, bool)
 
 
@@ -117,29 +117,6 @@ def _tool_call(calls: dict[str, ToolCall], message: Message) -> ToolCall | None:
     )
 
 
-_POSITIONS: dict[int, tuple[weakref.ref[InterceptRecord], int]] = {}
-
-
-def _bind_pos(rec: InterceptRecord, pos: int) -> None:
-    key = id(rec)
-
-    def forget(ref: weakref.ref[InterceptRecord]) -> None:
-        if (entry := _POSITIONS.get(key)) is not None and entry[0] is ref:
-            del _POSITIONS[key]
-
-    _POSITIONS[key] = weakref.ref(rec, forget), pos
-
-
-def _get_pos(rec: InterceptRecord) -> int | None:
-    entry = _POSITIONS.get(id(rec))
-    return entry[1] if entry is not None and entry[0]() is rec else None
-
-
-def _pop_pos(rec: InterceptRecord) -> int | None:
-    entry = _POSITIONS.pop(id(rec), None)
-    return entry[1] if entry is not None and entry[0]() is rec else None
-
-
 def _make_record(
     handler: Callable,
     node: int | None,
@@ -147,16 +124,14 @@ def _make_record(
     calls: dict[str, ToolCall],
     message: Message,
     info: dict[str, Any],
-) -> InterceptRecord:
+) -> PendingRewrite:
     rec = InterceptRecord(
         handler=handler.__name__,
         node=node,
         tool_call=_tool_call(calls, message),
         info=copy.deepcopy(info),
     )
-    if node is None:
-        _bind_pos(rec, pos)
-    return rec
+    return (pos if node is None else None, rec)
 
 
 def _role_key(message: Message) -> tuple[type, str]:
@@ -392,8 +367,10 @@ class RolloutSession:
         default_factory=list
     )
     """`(tool_key, record)` pairs for pinned tool results awaiting their node commit."""
-    inflight_rewrites: dict[str, list[InterceptRecord]] = field(default_factory=dict)
-    """Unpinned in-request rewrites keyed by `replay_key`, flushed if the turn never commits."""
+    inflight_rewrites: dict[str, list[tuple[int, InterceptRecord]]] = field(
+        default_factory=dict
+    )
+    """Unpinned `(pos, record)` pairs keyed by `replay_key`, flushed if the turn never commits."""
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
     their parse, which the next request's equal prefix reuses instead of parsing again."""
@@ -495,9 +472,9 @@ class RolloutSession:
         current: Request,
         active: set[int],
         node: int | None,
-    ) -> tuple[Request, list[InterceptRecord]]:
+    ) -> tuple[Request, list[PendingRewrite]]:
         calls = _tool_calls((*(n.message for n in self.trace.nodes), *current.messages))
-        records: list[InterceptRecord] = []
+        records: list[PendingRewrite] = []
         for handler in self.request_interceptors if active else ():
             raw = await call_hook(
                 handler, {Request: current.model_copy(deep=True), Trace: self.trace}
@@ -535,7 +512,7 @@ class RolloutSession:
         dialect: DialectName | None = None,
         known_path: Sequence[int] = (),
         node: int | None = None,
-    ) -> tuple[Request, list[InterceptRecord], StopVerdict | None]:
+    ) -> tuple[Request, list[PendingRewrite], StopVerdict | None]:
         """Run typed request interceptors and stops over one canonical request. Only the
         uncommitted tail's user and tool messages may change; a rewritten tool result is
         pinned for the rest of the rollout."""
@@ -572,7 +549,7 @@ class RolloutSession:
         if not boundaries or boundaries[-1] != len(request.messages):
             boundaries.append(len(request.messages))
         messages = list(request.messages)
-        records: list[InterceptRecord] = []
+        records: list[PendingRewrite] = []
         previous = 0
         try:
             for end in boundaries:
@@ -614,17 +591,21 @@ class RolloutSession:
             self.pinned_rewrites = [
                 item for item in self.pinned_rewrites if item[0] not in replaced
             ]
-            for rec in records:
-                if (pos := _get_pos(rec)) in pinned_positions:
-                    _pop_pos(rec)
+            unpinned: list[PendingRewrite] = []
+            for pos, rec in records:
+                if pos in pinned_positions:
                     self.pinned_rewrites.append((pinned_positions[pos], rec))
+                    unpinned.append((None, rec))
+                else:
+                    unpinned.append((pos, rec))
+            records = unpinned
         return current, records, None
 
     def stage_rewrites(
-        self, replay_key: str, records: Iterable[InterceptRecord]
+        self, replay_key: str, records: Iterable[PendingRewrite]
     ) -> None:
         """Hold unpinned in-request rewrites in case the model call fails before commit."""
-        unpinned = [rec for rec in records if _get_pos(rec) is not None]
+        unpinned = [(pos, rec) for pos, rec in records if pos is not None]
         if unpinned:
             self.inflight_rewrites[replay_key] = unpinned
         else:
@@ -634,7 +615,7 @@ class RolloutSession:
         self,
         turn: graph.PendingTurn,
         last_prompt_node: int | None,
-        request_rewrites: Iterable[InterceptRecord] = (),
+        request_rewrites: Iterable[PendingRewrite] = (),
         response_rewrites: Iterable[InterceptRecord] = (),
         assistant_node: int | None = None,
         *,
@@ -643,7 +624,11 @@ class RolloutSession:
     ) -> None:
         """Consume prepared user turns and attach committed node ids to buffered rewrites."""
         if replay_key is not None:
-            self.inflight_rewrites.pop(replay_key, None)
+            pending_in_turn: Iterable[PendingRewrite] = self.inflight_rewrites.pop(
+                replay_key, ()
+            )
+        else:
+            pending_in_turn = request_rewrites
         for message in turn.tail:
             if isinstance(message, UserMessage) and self.prepared_users:
                 key = graph.message_hash(message)
@@ -659,8 +644,8 @@ class RolloutSession:
         node_by_pos = _align_nodes(base.messages, turn.prompt, prompt_nodes)
         in_turn: list[tuple[int, InterceptRecord]] = []
         in_turn_nodes: set[int] = set()
-        for rec in request_rewrites:
-            if (pos := _pop_pos(rec)) is None:
+        for pos, rec in pending_in_turn:
+            if pos is None:
                 continue
             nid = node_by_pos.get(pos)
             rec.node = nid
@@ -722,9 +707,9 @@ class RolloutSession:
         self._prepared_user_count = 0
         self.trace.request_rewrites.extend(rec for _, rec in self.pinned_rewrites)
         self.pinned_rewrites.clear()
-        for rec in chain.from_iterable(self.inflight_rewrites.values()):
-            _pop_pos(rec)
-            self.trace.request_rewrites.append(rec)
+        self.trace.request_rewrites.extend(
+            rec for _, rec in chain.from_iterable(self.inflight_rewrites.values())
+        )
         self.inflight_rewrites.clear()
 
     async def prepare_users(
@@ -737,7 +722,7 @@ class RolloutSession:
             else []
         )
         branch = [self.trace.nodes[i].message for i in known_path]
-        rewritten, records, _ = await self.rewrite_request(
+        rewritten, pending, _ = await self.rewrite_request(
             Request(messages=[*branch, *request.messages]),
             run_stops=False,
             known_path=known_path,
@@ -749,9 +734,10 @@ class RolloutSession:
                 self.prepared_users[graph.message_hash(message)] += 1
                 user_slots[len(branch) + offset] = self._prepared_user_count
                 self._prepared_user_count += 1
-        for rec in records:
-            if (pos := _get_pos(rec)) in user_slots:
-                _pop_pos(rec)
+        records: list[InterceptRecord] = []
+        for pos, rec in pending:
+            records.append(rec)
+            if pos in user_slots:
                 self.prepared_rewrites.append((user_slots[pos], rec))
         return Request(messages=tail), records
 
@@ -849,9 +835,10 @@ class RolloutSession:
                 raise HarnessError(
                     f"tool call id {call.id!r} was reused in the same assistant turn"
                 )
-            request, records, stopped = await self.rewrite_request(
+            request, pending, stopped = await self.rewrite_request(
                 request, dialect=dialect, known_path=known_path, node=node
             )
+            records = [rec for _, rec in pending]
             self.trace.request_rewrites.extend(records)
             if stopped is not None:
                 return stopped
@@ -936,7 +923,7 @@ class RolloutSession:
                 update={"tool_calls": [*(assistant.tool_calls or []), call]}
             )
             probe = ToolMessage(tool_call_id=call.id, content="", name=name)
-            request, records, stopped = await self.rewrite_request(
+            request, pending, stopped = await self.rewrite_request(
                 Request(
                     messages=[*branch, assistant, probe],
                     tools=self.trace.nodes[known_path[0]].tools or None,
@@ -945,6 +932,7 @@ class RolloutSession:
                 known_path=known_path[:-1],
                 node=spawn_node,
             )
+            records = [rec for _, rec in pending]
             self.trace.request_rewrites.extend(records)
             if stopped is not None:
                 stop_name, stop_info = stopped
