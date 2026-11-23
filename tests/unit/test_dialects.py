@@ -7,6 +7,7 @@ import httpx
 import openai
 import pytest
 
+import verifiers.v1 as vf
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects import AnthropicDialect, ChatDialect, ResponsesDialect
 from verifiers.v1.errors import ProviderError
@@ -177,3 +178,60 @@ def test_chat_stream_failure_fails_the_turn(failure):
     with pytest.raises(ProviderError, match="provider disconnected") as raised:
         parser.feed(sse(failure))
     assert raised.value.status_code == 502
+
+
+def claude_message(stop_reason: str) -> dict:
+    return {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude",
+        "content": [{"type": "text", "text": "partial answer"}],
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 199990, "output_tokens": 10},
+    }
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["json", "stream"])
+def test_claude_reply_that_filled_the_context_window_is_truncated(streamed):
+    """A Claude reply that stopped at the model's context window is cut off, as one that hit
+    max_tokens is, so the trace it ends counts as truncated."""
+    dialect = AnthropicDialect()
+    raw = claude_message("model_context_window_exceeded")
+    if streamed:
+        # Claude's own stream: the stop reason arrives in message_delta.
+        events = [
+            ("message_start", {"message": {**raw, "content": [], "stop_reason": None}}),
+            (
+                "content_block_start",
+                {"index": 0, "content_block": {"type": "text", "text": ""}},
+            ),
+            (
+                "content_block_delta",
+                {"index": 0, "delta": {"type": "text_delta", "text": "partial answer"}},
+            ),
+            ("content_block_stop", {"index": 0}),
+            (
+                "message_delta",
+                {
+                    "delta": {"stop_reason": raw["stop_reason"], "stop_sequence": None},
+                    "usage": {"output_tokens": 10},
+                },
+            ),
+            ("message_stop", {}),
+        ]
+        parser = dialect.stream_parser()
+        for kind, payload in events:
+            data = json.dumps({"type": kind, **payload})
+            parser.feed(f"event: {kind}\ndata: {data}\n\n".encode())
+        response = parser.finish()
+    else:
+        response = dialect.parse_response(dialect.validate_response(raw))
+    assert response.finish_reason == "length"
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+    )
+    trace.calls.append(vf.ModelCall(finish_reason=response.finish_reason))
+    assert trace.is_truncated

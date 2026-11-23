@@ -49,6 +49,8 @@ from verifiers.v1.types import (
 STOP_REASONS: dict[str, FinishReason] = {
     "end_turn": "stop",
     "max_tokens": "length",
+    # The response filled the model's context window: Anthropic documents it as truncated.
+    "model_context_window_exceeded": "length",
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
 }
