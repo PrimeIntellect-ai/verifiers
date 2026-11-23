@@ -55,6 +55,8 @@ class Relay:
         self.upstream = ""
         self.tokens: dict[str, str] = {}
         self._connected = asyncio.Event()
+        self._configuring = asyncio.Lock()
+        """One config change at a time: each stages the same file before moving it."""
         self._installed = asyncio.Event()
         if running is not None:
             self._installed.set()
@@ -138,14 +140,24 @@ class Relay:
             raise RelayError("the relay did not start")
 
     async def reroute(
-        self, upstream: str, tokens: dict[str, str] | None = None
+        self, upstream: str | None = None, tokens: dict[str, str] | None = None
     ) -> None:
-        """Move the relay to `upstream`, with `tokens` if the secrets changed. Its
-        requests in flight retry against the new upstream."""
+        """Move the relay to `upstream` (by default, reload it where it is), with
+        `tokens` if the secrets changed. Its requests in flight retry against the
+        new upstream."""
         await self.wait_connected()
-        await self._configure(upstream, self.tokens if tokens is None else tokens)
+        await self._configure(upstream, tokens)
 
-    async def _configure(self, upstream: str, tokens: dict[str, str]) -> None:
+    async def _configure(
+        self, upstream: str | None, tokens: dict[str, str] | None
+    ) -> None:
+        async with self._configuring:
+            # Read under the lock: a concurrent move may have changed them.
+            upstream = upstream or self.upstream
+            tokens = self.tokens if tokens is None else tokens
+            await self._write_config(upstream, tokens)
+
+    async def _write_config(self, upstream: str, tokens: dict[str, str]) -> None:
         # Written whole, then moved: the relay must never read a partial config.
         staged = f"{self.config_path}.next"
         await self.runtime.write(staged, relay_config(upstream, tokens))

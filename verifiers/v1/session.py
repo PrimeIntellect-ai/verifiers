@@ -309,6 +309,13 @@ class RolloutSession:
                 for (prefix, call_id), verdict in self.tool_decisions.items()
             ],
             "gated": sorted(self.gated_tools),
+            # A pin is keyed by the node that issued its call; requests that do not name
+            # their path reach that node only through these.
+            "issuers": [
+                (prefix, call_id, sorted(nodes))
+                for (prefix, call_id), nodes in self.tool_issuers.items()
+            ],
+            "dialects": list(self.tool_dialects.items()),
             "prepared": {k: n for k, n in self.prepared_users.items() if n > 0},
             "replays": {
                 key: (
@@ -343,6 +350,11 @@ class RolloutSession:
             }
         )
         self.gated_tools.update((prefix, call_id) for prefix, call_id in data["gated"])
+        for prefix, call_id, nodes in data.get("issuers", []):
+            self.tool_issuers.setdefault((prefix, call_id), set()).update(nodes)
+        self.tool_dialects.update(
+            (node, dialect) for node, dialect in data.get("dialects", [])
+        )
         self.prepared_users.update(data["prepared"])
         now = time.monotonic()
         for key, (path, digest, status, body, content_type) in data["replays"].items():

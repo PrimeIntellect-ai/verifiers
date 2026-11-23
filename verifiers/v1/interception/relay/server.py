@@ -257,35 +257,68 @@ class ClientGone(Exception):
     pass
 
 
+# The events the interception server keeps a waiting stream alive with, for clients that
+# only count events (each dialect's `stream_keepalive`): a retry may send them again.
+KEEPALIVE_EVENTS = (b"ping", b"response.created", b"response.in_progress")
+KEEPALIVE_DATA = (b'"type": "ping"', b'"id": "resp_keepalive"')
+
+
 class Scanner:
-    """Whether a response body forwarded anything but SSE comment lines and blank lines.
-    A client skips those, so a retry's body can still follow them."""
+    """Whether a response body forwarded anything but what a retry's body can still
+    follow: SSE comment lines, blank lines, and the server's keepalive events. A
+    line not yet complete counts as data unless it is a comment."""
 
     def __init__(self) -> None:
         self.sse = False
-        self.data = False
-        self.line_start = True
+        self.sent_data = False
+        self.line = bytearray()
+        self.in_event = False
+        """A field line came since the last blank line: the event is still open."""
+        self.keepalive = False
+
+    @property
+    def data(self) -> bool:
+        return self.sent_data or (bool(self.line) and not self.line.startswith(b":"))
 
     def feed(self, chunk: bytes) -> None:
-        if self.data or not chunk:
+        if self.sent_data or not chunk:
             return
         if not self.sse:
-            self.data = True
+            self.sent_data = True
             return
         for byte in chunk:
-            if self.line_start:
-                if byte in b"\r\n":
-                    continue
-                if byte != ord(":"):
-                    self.data = True
-                    return
-                self.line_start = False
-            elif byte in b"\r\n":
-                self.line_start = True
+            if byte != ord("\n"):
+                self.line.append(byte)
+                continue
+            self.end_line(bytes(self.line).rstrip(b"\r"))
+            self.line.clear()
+            if self.sent_data:
+                return
+
+    def end_line(self, line: bytes) -> None:
+        if not line:
+            self.in_event = self.keepalive = False
+            return
+        if line.startswith(b":"):
+            return
+        field, _, value = line.partition(b":")
+        value = value.lstrip(b" ")
+        if not self.in_event:
+            self.in_event = True
+            self.keepalive = field == b"event" and value in KEEPALIVE_EVENTS
+        if field == b"event":
+            ok = self.keepalive and value in KEEPALIVE_EVENTS
+        elif field == b"data":
+            ok = self.keepalive and any(mark in value for mark in KEEPALIVE_DATA)
+        else:
+            ok = False
+        if not ok:
+            self.sent_data = True
 
     def line_break(self) -> bytes:
-        """What ends a comment line that a broken upstream left unfinished."""
-        return b"" if self.line_start else b"\n"
+        """What ends a comment line and a keepalive event that a broken upstream left
+        unfinished."""
+        return (b"\n" if self.line else b"") + (b"\n" if self.in_event else b"")
 
 
 class Handler(BaseHTTPRequestHandler):

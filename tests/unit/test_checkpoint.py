@@ -447,6 +447,8 @@ async def test_save_returns_a_trace_another_process_can_continue():
     denied = ToolMessage(tool_call_id="c2", content="denied")
     session.tool_decisions = {("prefix", "c1"): None, ("prefix", "c2"): denied}
     session.gated_tools = {("prefix", "c1")}
+    session.tool_issuers[("prefix", "c1")] = {0}
+    session.tool_dialects[0] = "chat_completions"
     session.prepared_users["user-key"] += 1
     backend.running.set()
     backend.durable.set()
@@ -478,6 +480,9 @@ async def test_save_returns_a_trace_another_process_can_continue():
     assert fresh.pinned_tool_results == session.pinned_tool_results
     assert fresh.tool_decisions == {("prefix", "c1"): None, ("prefix", "c2"): denied}
     assert fresh.gated_tools == {("prefix", "c1")}
+    # A request that names no path reaches the pin's node through its issuer.
+    assert fresh.tool_issuers == {("prefix", "c1"): {0}}
+    assert fresh.tool_dialects == {0: "chat_completions"}
     assert fresh.prepared_users == {"user-key": 1}
     # The restored trace rewinds to the point like a retry's: the rewrite record
     # made after the save goes, the info comes back.

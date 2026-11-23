@@ -35,7 +35,7 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.interception.relay import Relay
 from verifiers.v1.mcp import SharedToolServer, serve_tools
-from verifiers.v1.restore import LIVE, restorable, unsaveable
+from verifiers.v1.restore import LIVE, restorable, restore_entry, unsaveable
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -900,10 +900,10 @@ class Rollout:
             if not turn.cancelled():
                 turn.exception()  # the abort decides the outcome, whatever the turn did
             return True
-        turn.result()
-        # An owner that saved this rollout records it as running: it does not finish
-        # before the owner lets it go on.
+        # An owner that saved this rollout records it as running: it does not finish,
+        # nor fail, before the owner lets it go on.
         await self._unheld.wait()
+        turn.result()
         return False
 
     async def restore(self) -> bool:
@@ -1010,6 +1010,15 @@ class Rollout:
             )
         return saved
 
+    def disown(self, saved: dict[str, Any]) -> None:
+        """Give back a `save` whose owner never got it: the rollout goes on, and its
+        teardown deletes the snapshot."""
+        snapshot_id = restore_entry(saved)["snapshot"]["id"]
+        for checkpoint in self.trace.checkpoints:
+            if checkpoint.snapshot.id == snapshot_id:
+                checkpoint.pinned = False
+        self.release()
+
     def release(self) -> None:
         """Answer the box again after a `save(hold=True)`."""
         self._held = False
@@ -1088,7 +1097,7 @@ class Rollout:
                 # The box's connections to the server did not survive the stop: its
                 # relay opens new ones and repeats the requests that wait.
                 try:
-                    await self._relay.reroute(self._relay.upstream)
+                    await self._relay.reroute()
                 except Exception:
                     logger.warning(
                         "relay did not reconnect after a memory snapshot (rollout %s)",
@@ -1129,13 +1138,17 @@ class Rollout:
             )
         except Exception:
             # Not restorable: no retry may pick it. The backend still holds it as
-            # stray and frees it with the box.
+            # stray and frees it with the box, unless an owner holds it: the owner
+            # has its restore point and deletes it.
             logger.warning(
                 "checkpoint %s never became durable (rollout %s)",
                 checkpoint.id,
                 self.trace.id,
                 exc_info=True,
             )
+            if checkpoint.pinned:
+                with contextlib.suppress(ValueError):
+                    self.runtime.backend.stray_snapshots.remove(checkpoint.snapshot)
             with contextlib.suppress(ValueError):
                 self.trace.checkpoints.remove(checkpoint)
         else:
@@ -1189,7 +1202,10 @@ class Rollout:
             for checkpoint_id, task in self._durable.items():
                 if checkpoint_id not in pinned:
                     task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Shielded: a cancelled close must not cancel the uploads an owner waits for.
+        await asyncio.gather(
+            *(asyncio.shield(t) for t in tasks), return_exceptions=True
+        )
         # A task cancelled before it first ran never reached its own cleanup.
         for checkpoint_id, task in list(self._durable.items()):
             if task.done():
@@ -1458,6 +1474,9 @@ class Rollout:
                             logger.debug("Skipped scoring - %s", skip_reason)
                             trace.info["scoring_skipped"] = skip_reason
                         elif grader is not None:
+                            # Grading in a box of its own stops this one first: an
+                            # owner's snapshot must finish its upload before.
+                            await self._settle_checkpoints(wait=False)
                             try:
                                 await grade_task(
                                     grader,

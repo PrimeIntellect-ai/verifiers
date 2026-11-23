@@ -128,10 +128,21 @@ async def save_all(
         return point
 
     rollouts = list(LIVE)
-    points = [
-        point
-        for point in await asyncio.gather(*(save(rollout) for rollout in rollouts))
-        if point is not None
-    ]
+    saves = [asyncio.ensure_future(save(rollout)) for rollout in rollouts]
+    try:
+        results = await asyncio.gather(*saves)
+    except BaseException:
+        # The caller never gets the saves done so far: nobody would release their
+        # rollouts or delete their snapshots, so both go back to the rollouts.
+        for rollout, task in zip(rollouts, saves):
+            if (
+                task.done()
+                and not task.cancelled()
+                and task.exception() is None
+                and (point := task.result()) is not None
+            ):
+                rollout.disown(point)
+        raise
+    points = [point for point in results if point is not None]
     logger.info("Saved %d of %d running rollouts", len(points), len(rollouts))
     return points

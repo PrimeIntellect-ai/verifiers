@@ -493,7 +493,12 @@ def call(path: str, request_path: str, reply_path: str) -> None:
         connection.connect(path)
         connection.sendall(len(data).to_bytes(8, "big") + data)
         stream = connection.makefile("rb")
-        size = int.from_bytes(stream.read(8), "big")
+        header = stream.read(8)
+        if len(header) != 8:
+            raise EOFError(
+                "ACP runner closed the connection before its response header"
+            )
+        size = int.from_bytes(header, "big")
         response = stream.read(size)
     if len(response) != size:
         raise EOFError("ACP runner closed the connection before its response")

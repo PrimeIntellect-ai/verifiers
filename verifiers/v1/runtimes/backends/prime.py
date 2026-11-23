@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import io
 import math
+import random
 import shlex
 import tempfile
 import time
@@ -357,7 +358,13 @@ class PrimeBackend(RuntimeBackend):
             self._awake.clear()
             self._snapshots += 1
             try:
-                paused = await self._client.pause(self.info.id)
+                try:
+                    paused = await self._client.pause(self.info.id)
+                except BaseException:
+                    # The platform may have accepted a pause whose answer was lost:
+                    # the box must run again. A box that runs returns at once.
+                    await self._resume()
+                    raise
                 snapshot = Snapshot(id=paused.checkpoint_id)
                 # Kept whatever comes next: a pause that was not seen to finish can
                 # still have made the snapshot.
@@ -432,12 +439,20 @@ class PrimeBackend(RuntimeBackend):
 
     async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
         started = time.monotonic()
-        try:
-            durable = await self._client.wait_for_checkpoint(
-                snapshot.id, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
-            )
-        except Exception as e:
-            raise SandboxError(f"prime checkpoint {snapshot.id}: {e}") from e
+        deadline = started + _CHECKPOINT_DURABLE_SECONDS
+        while True:
+            try:
+                durable = await self._client.wait_for_checkpoint(
+                    snapshot.id, timeout_seconds=max(1.0, deadline - time.monotonic())
+                )
+                break
+            except Exception as e:
+                # The SDK gives up on a rate-limited lookup while the upload goes on.
+                # Spread the next waits out: thousands of boxes wait at once.
+                if "HTTP 429" in str(e) and time.monotonic() < deadline:
+                    await asyncio.sleep(random.uniform(5, 15))
+                    continue
+                raise SandboxError(f"prime checkpoint {snapshot.id}: {e}") from e
         self.stray_snapshots.remove(snapshot)
         logger.debug(
             "prime: checkpoint %s durable after %.1fs on sandbox %s",
@@ -572,8 +587,9 @@ class PrimeBackend(RuntimeBackend):
                 )
                 break
             except Exception as e:
-                # The running harness can take a snapshot while this attaches.
-                if snapshots == self._snapshots and not self._stopped_by_snapshot(e):
+                # The running harness can take a snapshot while this attaches. Only a
+                # new snapshot is waited out: a box that stays paused fails here.
+                if snapshots == self._snapshots:
                     raise SandboxError(f"prime attach failed: {e}") from e
         if program is not None:
             program.job = dict(job)
@@ -614,6 +630,9 @@ class PrimeBackend(RuntimeBackend):
                     await run_shielded(process.detach())
                     await self._awake.wait()
                     process = await self._client.attach_process(self.info.id, session)
+                    # The new stream replays the output sandboxd kept from the start.
+                    stdout.clear()
+                    stderr.clear()
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's

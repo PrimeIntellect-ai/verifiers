@@ -622,3 +622,30 @@ async def test_relay_failure_names_the_relay(monkeypatch, stdout, expected):
     else:
         assert isinstance(failure, RelayError) and str(failure) == expected
     await relay.stop()
+
+
+def test_server_keepalive_events_are_not_response_data():
+    """A retry's body can follow the keepalive events the interception server sends
+    while a turn is produced, as it follows comment lines."""
+    from verifiers.v1.dialects.anthropic import AnthropicDialect
+    from verifiers.v1.dialects.responses import ResponsesDialect
+    from verifiers.v1.interception.relay.server import Scanner
+
+    def scanned(*chunks: bytes) -> Scanner:
+        scanner = Scanner()
+        scanner.sse = True
+        for chunk in chunks:
+            scanner.feed(chunk)
+        return scanner
+
+    responses = ResponsesDialect()
+    assert not scanned(AnthropicDialect().stream_keepalive(True)).data
+    first, later = responses.stream_keepalive(True), responses.stream_keepalive(False)
+    assert not scanned(first, later, later).data
+    turn = b'event: response.created\ndata: {"type": "response.created", "response": {"id": "resp_1"}}\n\n'
+    assert scanned(first, turn).data
+    # A keepalive cut before its blank line is closed before the retry's body.
+    cut = scanned(first[:-1])
+    assert not cut.data and cut.line_break() == b"\n"
+    # A line cut before its end could be anything.
+    assert scanned(first[:12]).data
