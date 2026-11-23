@@ -694,6 +694,9 @@ async def test_an_attached_program_can_be_snapshotted_again():
     segment's program, so the restored rollout can be saved again."""
     backend = PrimeBackend.__new__(PrimeBackend)
     backend.info = SimpleNamespace(id="sb")  # type: ignore[assignment]
+    backend._awake = asyncio.Event()
+    backend._awake.set()
+    backend._snapshots = 0
 
     async def attach_process(sandbox_id: str, session: str) -> str:
         return session
