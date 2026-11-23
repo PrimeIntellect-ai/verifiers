@@ -561,11 +561,20 @@ class PrimeBackend(RuntimeBackend):
         *,
         program: Program | None = None,
     ) -> ProgramResult:
-        try:
-            # The session and its process came with the snapshot; only the box is new.
-            process = await self._client.attach_process(self.info.id, job["session"])
-        except Exception as e:
-            raise SandboxError(f"prime attach failed: {e}") from e
+        while True:
+            await self._awake.wait()
+            snapshots = self._snapshots
+            try:
+                # The session and its process came with the snapshot; only the box is
+                # new.
+                process = await self._client.attach_process(
+                    self.info.id, job["session"]
+                )
+                break
+            except Exception as e:
+                # The running harness can take a snapshot while this attaches.
+                if snapshots == self._snapshots and not self._stopped_by_snapshot(e):
+                    raise SandboxError(f"prime attach failed: {e}") from e
         if program is not None:
             program.job = dict(job)
         try:

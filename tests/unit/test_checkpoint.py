@@ -312,6 +312,13 @@ def test_keep_policies():
     assert kept(pending, 1) == {"b"}
 
 
+def test_an_owners_snapshots_do_not_shift_the_keep_policy():
+    checkpoints = durable("a", "o1", "b", "o2", "c", "d", "e")
+    for checkpoint in checkpoints:
+        checkpoint.pinned = checkpoint.id.startswith("o")
+    assert kept(checkpoints, 2) == {"a", "c", "e"}
+
+
 async def test_a_durable_snapshot_prunes_the_older_ones():
     run, backend, _ = make_rollout(keep="last")
     run.trace.checkpoints = durable("old1", "old2")
