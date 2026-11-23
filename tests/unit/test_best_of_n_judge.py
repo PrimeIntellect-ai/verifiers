@@ -159,3 +159,39 @@ async def test_a_failed_attempt_skips_judging(make_trace):
     await env.run(vf.Task(vf.TaskData(prompt="go")), agents)
     assert judge.tasks == []
     assert all("judge" not in t.rewards for t in attempts)
+
+
+@pytest.mark.parametrize(
+    "invalid", [set(), {1}, {0, 1, 2}], ids=["valid", "mixed", "invalid"]
+)
+async def test_format_violations_keep_zero_reward(make_trace, monkeypatch, invalid):
+    """A format-violating attempt is still ranked, so it shapes its valid siblings'
+    judge scores, but the episode leaves it with no reward of its own (#3072)."""
+    env = make_env()
+    attempts = []
+    for i in range(3):
+        trace = attempt(make_trace, 1.0 if i % 2 == 0 else 0.0)
+        trace.agent.name = "agent"
+        if i in invalid:
+            trace.rewards = {}  # task scoring skips a format violation
+            trace.stop("format_violation")
+        attempts.append(trace)
+
+    def agents(ctx, completed, on_trace, on_discard):
+        class Attempts(ReplayAgent):
+            async def run(self, task, collect_artifacts: bool = False) -> vf.Trace:
+                completed.append(trace := await super().run(task))
+                return trace
+
+        return SimpleNamespace(agent=Attempts(attempts), judge=OracleJudge())
+
+    monkeypatch.setattr(env, "_episode_agents", agents)
+    episode = await env.run_episode(vf.Task(vf.TaskData(prompt="go")), None)
+
+    assert episode.ok and len(episode.traces) == 3
+    for i, trace in enumerate(attempts):
+        assert "best" in trace.metrics
+        if i in invalid:
+            assert trace.rewards == {} and trace.reward == 0.0
+        else:
+            assert set(trace.rewards) == {"correct", "judge"}
