@@ -32,12 +32,15 @@ class CreationLimiter:
 
     def _reserve(self) -> float:
         os.makedirs(LIMITER_DIR, exist_ok=True)
-        # Shared buckets require a clock comparable across the run's hosts.
-        with open(self._path, "a+") as f:
+        # Write at offset zero without relying on the filesystem's append offset.
+        fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o666)
+        with os.fdopen(fd, "r+") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
                 f.seek(0)
-                data = f.read().strip()
+                # Recover cursors padded with NULs by a write past the truncated EOF.
+                data = f.read().replace("\x00", "").strip()
+                # Shared buckets require a clock comparable across the run's hosts.
                 now = time.time()
                 slot = max(now, float(data) if data else 0.0)
                 f.seek(0)

@@ -27,22 +27,21 @@ if TYPE_CHECKING:
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
-from verifiers.v1.configs.sampling import Sampling
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.errors import ProviderError, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import DataT, WireTaskData
+from verifiers.v1.task import DataT, Task, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Message,
     Messages,
-    SamplingMask,
+    SamplerSupport,
     Tool,
     ToolMessage,
-    TopLogprobs,
     Usage,
     content_text,
 )
@@ -55,8 +54,7 @@ EXCLUDE_FIELDS: dict = {
     "nodes": {
         "__all__": {
             "routed_experts",
-            "sampling_mask",
-            "top_logprobs",
+            "sampler_support",
         }
     }
 }
@@ -186,6 +184,7 @@ class PolicySpan(BaseModel):
             raise ValueError("policy span end must be at least its start")
         return self
 
+    @computed_field
     @property
     def drift(self) -> int:
         return self.end - self.start
@@ -231,11 +230,12 @@ RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
 
 
 class TimeSpan(BaseModel):
-    """Wall-clock timestamps with a derived, non-serialized duration in seconds."""
+    """Wall-clock timestamps, with their duration in seconds."""
 
     start: float = 0.0
     end: float = 0.0
 
+    @computed_field
     @property
     def duration(self) -> float:
         return max(0.0, self.end - self.start) if self.end else 0.0
@@ -266,6 +266,20 @@ class Error(BaseModel):
     message: str
     status_code: int | None = None
     traceback: str | None = None
+
+    @classmethod
+    def from_exception(cls, error: BaseException) -> Self:
+        """Record `error`. The traceback is formatted from the exception object, so
+        this also works after its handler has exited (e.g. in a `finally`)."""
+        return cls(
+            type=type(error).__name__,
+            message=str(error),
+            status_code=getattr(error, "status_code", None),
+            # Provider errors already carry the actionable upstream diagnostic.
+            traceback=None
+            if isinstance(error, ProviderError)
+            else "".join(traceback.format_exception(error)),
+        )
 
 
 class VersionInfo(BaseModel):
@@ -303,9 +317,15 @@ class TraceTask(BaseModel, Generic[DataT]):
     data: DataT
     """The (immutable) row being solved."""
     key: str | None = None
-    """Stable task identity (``Task.key``); defaults to the content hash unless overridden."""
+    """Stable task identity (``Task.key``); defaults to a hash of data excluding ``idx``."""
     hash: str | None = None
     """Content hash of ``data`` (``Task.hash``)."""
+
+    @classmethod
+    def from_task(cls, task: Task) -> Self:
+        return cls(
+            type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
+        )
 
 
 class InterceptRecord(BaseModel):
@@ -337,7 +357,7 @@ class ModelCall(BaseModel):
     """Index into `Trace.nodes` of the assistant node this call committed."""
     model: str | None = None
     """The model requested from the provider."""
-    sampling: Sampling | None = None
+    sampling: SamplingConfig | None = None
     """The call's effective sampling settings (may differ from trace-level sampling)."""
     endpoint: str | None = None
     """The provider endpoint path the request went to (e.g. `/chat/completions`)."""
@@ -504,42 +524,33 @@ class Branch(BaseModel):
         return merged if merged.shape[0] == total else None
 
     @property
-    def sampling_mask(self) -> SamplingMask | None:
-        """Sampling masks aligned to this branch's token ids."""
-        if all(n.sampling_mask is None for n in self.nodes):
+    def sampler_support(self) -> SamplerSupport | None:
+        """The sampler support aligned to this branch's token ids: one row per token, empty
+        for tokens without one. `logprobs` is None unless every node's support carries them."""
+        supports = [
+            n.sampler_support for n in self.nodes if n.sampler_support is not None
+        ]
+        if not supports:
             return None
-        # Attribution validates each mask against the node's sampled positions.
-        ids_parts: list[np.ndarray] = []
         counts_parts: list[np.ndarray] = []
+        replayed_parts: list[np.ndarray] = []
         for node in self.nodes:
             counts = np.zeros(len(node.mask), dtype=np.int32)
-            if node.sampling_mask is not None and len(node.sampling_mask.counts):
-                counts[np.nonzero(node.mask)[0]] = node.sampling_mask.counts
-                ids_parts.append(node.sampling_mask.ids)
+            replayed = np.zeros(len(node.mask), dtype=np.bool_)
+            if node.sampler_support is not None:
+                sampled = np.nonzero(node.mask)[0]
+                counts[sampled] = node.sampler_support.counts
+                replayed[sampled] = node.sampler_support.replayed
             counts_parts.append(counts)
-        ids = (
-            np.concatenate(ids_parts).astype(np.int32, copy=False)
-            if ids_parts
-            else np.zeros(0, dtype=np.int32)
-        )
-        return SamplingMask(ids=ids, counts=np.concatenate(counts_parts))
-
-    @property
-    def top_logprobs(self) -> TopLogprobs | None:
-        """Top-k sampling heads aligned to this branch's token ids."""
-        heads = [n.top_logprobs for n in self.nodes if n.top_logprobs is not None]
-        if not heads:
-            return None
-        counts = []
-        for node in self.nodes:
-            rows = np.zeros(len(node.mask), dtype=np.int32)
-            if node.top_logprobs is not None:
-                rows[np.nonzero(node.mask)[0]] = node.top_logprobs.counts
-            counts.append(rows)
-        return TopLogprobs(
-            ids=np.concatenate([head.ids for head in heads]),
-            logprobs=np.concatenate([head.logprobs for head in heads]),
-            counts=np.concatenate(counts),
+            replayed_parts.append(replayed)
+        logprobs = None
+        if all(support.logprobs is not None for support in supports):
+            logprobs = np.concatenate([support.logprobs for support in supports])
+        return SamplerSupport(
+            ids=np.concatenate([support.ids for support in supports]),
+            counts=np.concatenate(counts_parts),
+            replayed=np.concatenate(replayed_parts),
+            logprobs=logprobs,
         )
 
     @property
@@ -675,10 +686,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         dump str keys; validation coerces them back to int."""
         return {str(k): v for k, v in mapping.items()}
 
+    @computed_field
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values() if r is not None)
 
+    @computed_field
     @property
     def is_format_violation(self) -> bool:
         """The harness rejected a terminal model response as invalid training output."""
@@ -688,6 +701,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             for link in node.semantic_parents
         )
 
+    @computed_field
     @property
     def has_error(self) -> bool:
         return not self.ok
@@ -726,6 +740,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         usage = self.usage
         return self.num_input_tokens + (usage.completion_tokens if usage else 0)
 
+    @computed_field
     @property
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
@@ -747,12 +762,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         }
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
-            path: list[int] = []
-            nid: int | None = leaf
-            while nid is not None:
-                path.append(nid)
-                nid = self.nodes[nid].parent
-            path.reverse()
+            path = graph.path_node_ids(self, leaf)
             is_compaction_attempt = any(
                 link.type == "compaction_attempt"
                 for link in self.nodes[leaf].semantic_parents
@@ -832,14 +842,17 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             raise ValueError("trace has no messages")
         return self.nodes[-1].message
 
+    @computed_field
     @property
     def num_branches(self) -> int:
         return len(graph.leaves(self))
 
+    @computed_field
     @property
     def num_turns(self) -> int:
         return sum(1 for n in self.nodes if n.sampled)
 
+    @computed_field
     @property
     def is_truncated(self) -> bool:
         """True for framework limits, failed compaction, or a length-finished response."""
@@ -870,6 +883,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Every tool result, in order — branch-independent."""
         return [n.message for n in self.nodes if isinstance(n.message, ToolMessage)]
 
+    @computed_field
     @property
     def last_reply(self) -> str:
         """The root agent's response, falling back to the last assistant message."""
@@ -975,18 +989,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed: `<boundary>_error` for a
         typed rollout error (`errors.stop_condition`), `error` for any other."""
-        self.errors.append(
-            Error(
-                type=type(error).__name__,
-                message=str(error),
-                status_code=getattr(error, "status_code", None),
-                # Provider errors already carry the actionable upstream diagnostic.
-                # Keep full tracebacks for every other failure.
-                traceback=None
-                if isinstance(error, ProviderError)
-                else "".join(traceback.format_exception(error)),
-            )
-        )
+        self.errors.append(Error.from_exception(error))
         self.ok = False
         self.stop(stop_condition(error))
 

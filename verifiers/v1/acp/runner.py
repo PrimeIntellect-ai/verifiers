@@ -272,6 +272,10 @@ class ACPSession:
                 mcp_servers=mcp_servers(config),
                 **config["session_meta"],
             )
+            if title := config.get("session_title"):
+                await self.connection.ext_method(
+                    "session/rename", {"sessionId": session.session_id, "title": title}
+                )
         except BaseException:
             with suppress(BaseException):
                 await self.stack.aclose()
@@ -388,7 +392,11 @@ async def serve_stream() -> None:
             response = {"ok": True, "result": result}
         except Exception as error:  # noqa: BLE001 - serialize protocol failures
             traceback.print_exc()
-            response = {"ok": False, "error": f"{type(error).__name__}: {error}"}
+            response = {
+                "ok": False,
+                "error": f"{type(error).__name__}: {error}",
+                "error_type": type(error).__name__,
+            }
             if isinstance(error, RequestError) and isinstance(error.data, dict):
                 response["error"] = error.data.get("details") or str(error)
                 response["error_data"] = error.data

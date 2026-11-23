@@ -27,7 +27,7 @@ from verifiers.v1.harnesses.prime_agent import (
     PrimeAgentHarnessConfig,
 )
 from verifiers.v1.harnesses.rlm import RLMHarness, RLMHarnessConfig
-from verifiers.v1.harnesses.terminus_2 import Terminus2Harness, Terminus2HarnessConfig
+from verifiers.v1.harnesses.stirrup import StirrupHarness, StirrupHarnessConfig
 
 __all__ = [
     "BashHarness",
@@ -58,6 +58,6 @@ __all__ = [
     "PrimeAgentHarnessConfig",
     "RLMHarness",
     "RLMHarnessConfig",
-    "Terminus2Harness",
-    "Terminus2HarnessConfig",
+    "StirrupHarness",
+    "StirrupHarnessConfig",
 ]

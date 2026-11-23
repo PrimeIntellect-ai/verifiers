@@ -18,7 +18,7 @@ from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.sampling import Sampling, SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
@@ -27,6 +27,7 @@ from verifiers.v1.dialects.base import (
     append_user_notice,
     parse_sse_event,
 )
+from verifiers.v1.errors import ProviderError
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -292,6 +293,15 @@ class ChatStreamParser(StreamParser):
         chunk = parse_sse_event(raw)
         if chunk is None:
             return
+        # A provider fails a stream mid-way with a chunk carrying `error` (which the OpenAI
+        # SDK raises on) and/or finishing with "error": fail the turn, not a partial reply.
+        error = chunk.get("error")
+        if error or any(
+            choice.get("finish_reason") == "error"
+            for choice in chunk.get("choices") or []
+        ):
+            message = error.get("message") if isinstance(error, dict) else error
+            raise ProviderError(f"upstream stream failed: {message or 'unknown error'}")
         if self.head is None:
             self.head = chunk
         self.usage = chunk.get("usage") or self.usage
@@ -422,7 +432,7 @@ class ChatDialect(Dialect[ChatCompletion]):
             "extra_body",
         }
     )
-    routes = ("/v1/chat/completions",)
+    routes = ("/v1/chat/completions", "/chat/completions")
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion
 
@@ -509,12 +519,25 @@ class ChatDialect(Dialect[ChatCompletion]):
             )
         return mediated, capabilities
 
-    def parse_request(self, body: RawRequest) -> Request:
+    def parse_request(
+        self, body: RawRequest, last: tuple[list, Messages] = ((), [])
+    ) -> Request:
+        """`last`: an earlier request's raw messages and their parse; the messages this one
+        begins with that are equal to its, as sent, are taken from it."""
         if body.get("n", 1) != 1:
             raise ValueError("chat completions require n=1")
         messages: Messages = []
         tool_names: dict[str, str] = {}
-        for raw in body.get("messages", []):
+        before, parsed = last
+        for index, raw in enumerate(body.get("messages", [])):
+            if index < len(before) and raw == before[index]:
+                message = parsed[index]
+                messages.append(message)
+                if isinstance(message, AssistantMessage):
+                    for call in message.tool_calls or []:
+                        tool_names[call.id] = call.name
+                continue
+            before = ()
             message = parse_message(raw)
             if isinstance(message, ToolMessage) and message.name is None:
                 name = tool_names.get(message.tool_call_id)
@@ -526,13 +549,13 @@ class ChatDialect(Dialect[ChatCompletion]):
                     tool_names[call.id] = call.name
         return Request(messages=messages, tools=parse_tools(body.get("tools")))
 
-    def parse_sampling(self, body: RawRequest) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> SamplingConfig:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Canonicalize the max-tokens alias; when both ride the wire (an eval override
         # on top of a harness's `max_completion_tokens`), the override wins.
         if (mct := settings.pop("max_completion_tokens", None)) is not None:
             settings.setdefault("max_tokens", mct)
-        return Sampling.model_validate(settings)
+        return SamplingConfig.model_validate(settings)
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)

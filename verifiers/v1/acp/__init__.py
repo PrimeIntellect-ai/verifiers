@@ -65,6 +65,7 @@ class ACPConfig:
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     client_capabilities: JsonObject | None = None
+    session_title: str | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -293,6 +294,9 @@ class ACPHarnessSession(HarnessSession):
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
         response = await self._request("steer", message=message, message_id=message_id)
         if not response.get("ok"):
+            if response.get("error_type") == "NotImplementedError":
+                error = str(response.get("error"))
+                raise NotImplementedError(error.removeprefix("NotImplementedError: "))
             raise RuntimeError(response.get("error") or "ACP steering failed")
         result = response.get("result")
         if not isinstance(result, dict):
@@ -332,6 +336,7 @@ class ACPHarnessSession(HarnessSession):
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "client_capabilities": self.config.client_capabilities or {},
+            "session_title": self.config.session_title,
             "tool_interception": {
                 "url": self.tool_interception_url,
                 "secret": self.secret,

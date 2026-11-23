@@ -23,8 +23,8 @@ Every cell carries its axes' marks, so `-m` selects subsets:
     uv run pytest tests/integration -n 8 -m "prime and codex"
     uv run pytest tests/integration -n 8 -m prime
 
-`terminus-2` (drives the host tmux) and `browser-use` (needs its Playwright image, which
-prime cannot pull) stay outside the grid.
+`browser-use` (needs its Playwright image, which prime cannot pull) stays outside the
+grid.
 """
 
 from collections.abc import Sequence
@@ -46,6 +46,7 @@ HARNESSES: list[str | dict] = [
     "codex",
     "claude-code",
     "hermes-agent",
+    "stirrup",
     "deepseek",
     "kimi-code",
     "pi",
@@ -82,7 +83,7 @@ FORKS = {
     "mini-swe-agent": "https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/models/litellm_model.py#L79-L90",
     # Drops historical runtime-context messages and can relocate the current
     # prompt's context around user turns.
-    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.10.9/src/agents/internal-runtime-context.ts#L403-L513",
+    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.11.5/src/agents/internal-runtime-context.ts#L445-L563",
 }
 
 
@@ -93,8 +94,25 @@ def assert_one_branch(
     assert set(forks) <= FORKS.keys(), (
         f"no FORKS reason for {set(forks) - FORKS.keys()}"
     )
-    if harness.id not in forks:
-        assert trace.num_branches == 1, f"{trace.num_branches} branches"
+    if harness.id in forks or trace.num_branches == 1:
+        return
+    first_child: dict[int | None, int] = {}
+    for i, node in enumerate(trace.nodes):
+        first = first_child.setdefault(node.parent, i)
+        if first != i:
+            sibling = trace.nodes[first]
+            a, b = sibling.message, node.message
+            fields = type(a).model_fields.keys() | type(b).model_fields.keys()
+            changed = sorted(
+                k for k in fields if getattr(a, k, None) != getattr(b, k, None)
+            )
+            if sibling.tools != node.tools:
+                changed.append("tools")
+            pytest.fail(
+                f"{trace.num_branches} branches at parent {node.parent}, "
+                f"nodes {first} ({a.role}) and {i} ({b.role}), differing fields {changed}"
+            )
+    pytest.fail(f"{trace.num_branches} branches")
 
 
 def agent_seats(taskset: str, env_id: str = "") -> list[str]:
@@ -277,12 +295,12 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 
 def placements(
     harness_runtimes: tuple[str, ...] = ("prime",),
-    tool_runtimes: tuple[str, ...] = ("colocated", "subprocess", "prime"),
+    tool_runtimes: tuple[str, ...] = ("subprocess", "prime"),
     *,
     shared: bool = False,
 ) -> list:
-    """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box, in a native service VM beside it (`service`), or in its own runtime
+    """`(harness_runtime, tool_runtime)` cells for a tool server placed in a native
+    service VM beside the harness (`service`), or in its own runtime
     (on Prime beside a Prime harness, a VM on the rollout's private network). A
     `subprocess` tool runtime is a server on the host, reached from the sandbox through
     the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
@@ -294,9 +312,7 @@ def placements(
             if tool_runtime == "service":
                 reason = unsupported("null", harness_runtime, ("services",))
             # Beside a Prime harness, a rollout's Prime server joins its private network.
-            elif tool_runtime != "colocated" and not (
-                not shared and tool_runtime == harness_runtime == "prime"
-            ):
+            elif shared or tool_runtime != "prime" or harness_runtime != "prime":
                 reason = unsupported("null", tool_runtime, ("expose",))
             if reason:
                 marks.append(pytest.mark.skip(reason=reason))
@@ -305,12 +321,7 @@ def placements(
                     harness_runtime,
                     tool_runtime,
                     marks=marks,
-                    id=f"harness-in-{harness_runtime}-with-tool-"
-                    + (
-                        "colocated"
-                        if tool_runtime == "colocated"
-                        else f"in-{tool_runtime}"
-                    ),
+                    id=f"harness-in-{harness_runtime}-with-tool-in-{tool_runtime}",
                 )
             )
     return cells

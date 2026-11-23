@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import json
-import logging
 import os
 import shutil
 import sys
@@ -19,7 +18,7 @@ from pydantic_config import cli
 from pydantic_core import from_json
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.output import write_config
+from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_taskset_config,
@@ -45,10 +44,11 @@ from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
+from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.interrupt import install_interrupt
-from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.logging import get_logger, setup_logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 RESULTS_FILE = "results.jsonl"
 SUMMARY_FILE = "summary.json"
@@ -64,7 +64,7 @@ ResultRow = dict[str, Any]
 USAGE = (
     "usage: uv run vf-validate [<taskset-id>] [--only-setup | --only-gold | --only-noop] "
     "[-o <output-dir>] [--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       uv run vf-validate @ <run-dir>/configs/validate.json --resume   (re-run missing/errored/timed-out tasks)\n"
+    "       uv run vf-validate @ <run-dir>/configs/resolved/validate.json --resume   (re-run missing/errored/timed-out tasks)\n"
     "       runs persisted gold and noop (untouched scoring) checks per task (no agent)"
 )
 
@@ -84,13 +84,6 @@ def validation_mode(config: ValidateConfig) -> str:
     if config.only_noop:
         return "noop"
     return "all"
-
-
-def output_path(config: ValidateConfig) -> Path:
-    """Where this run writes: `output_dir / run.dir` — the same grouping convention as
-    eval and training."""
-    assert config.run.dir is not None
-    return config.output_dir / config.run.dir
 
 
 def _write_rows(path: Path, rows: Sequence[ResultRow]) -> None:
@@ -328,9 +321,7 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
             config=config.deployment,
         )
         trace = Trace(
-            task=TraceTask(
-                type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
-            ),
+            task=TraceTask.from_task(task),
             state=state_cls(type(task))(),
             # No agent runs here — the info only records the runtime policy.
             agent=vf.AgentInfo(
@@ -504,11 +495,11 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         await run_shielded(persist())
         detail = f" - {note}" if (note := _describe(row)) else ""
         logger.info(
-            "idx=%s valid=%s reason=%s (%.1fs)%s",
+            "idx=%s valid=%s reason=%s (%s)%s",
             row["index"],
             row["valid"],
             row["reason"],
-            row["elapsed"],
+            format_time(row["elapsed"]),
             detail,
         )
         return row

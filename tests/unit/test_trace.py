@@ -148,7 +148,7 @@ def test_record_exclude_merges_with_the_record_excludes():
     assert "ok" not in record
     assert "reasoning_content" not in record["nodes"][1]["message"]
     assert record["nodes"][1]["message"]["content"] == "a"
-    assert "top_logprobs" not in record["nodes"][1]
+    assert "sampler_support" not in record["nodes"][1]
     assert record["nodes"][1]["token_ids"].tolist() == [4, 5, 6]
     assert tr.to_json(exclude=exclude) == orjson.dumps(
         record, option=orjson.OPT_SERIALIZE_NUMPY
@@ -299,7 +299,7 @@ def test_wire_trace_round_trip(history_type):
     tr.stop("done")
     prepare_turn(tr, [], request.tools).commit_prompt()
 
-    # the dump is plain pydantic — derived values are properties, so they're not serialized
+    # derived values are computed fields: serialized for readers, recomputed on load
     data = json.loads(tr.model_dump_json(exclude_none=True))
     assert "trace-test-" not in json.dumps(data)
     assert mcp["authorization"] == "trace-test-oauth-token"
@@ -317,14 +317,16 @@ def test_wire_trace_round_trip(history_type):
         vf.WireTrace.model_validate_json(chat_trace.model_dump_json()).tools
         == chat_request.tools
     )
-    assert "reward" not in data and "is_truncated" not in data
+    assert data["reward"] == 1.0 and data["is_truncated"] is False
+    assert data["num_branches"] == 2 and data["num_turns"] == 2
+    assert data["last_reply"] == "root answer" and data["has_error"] is True
     # exclude_none drops None FIELDS, not None dict values — unscored seeds survive
     assert data["rewards"]["solved"] is None and data["metrics"]["acc"] is None
 
     rt = vf.WireTrace.model_validate(data)
     assert rt.num_branches == tr.num_branches == 2  # branch topology survived
     assert rt.num_turns == tr.num_turns == 2
-    assert rt.reward == 1.0  # property recomputed from `rewards`, seeds contribute 0
+    assert rt.reward == 1.0  # recomputed from `rewards`, seeds contribute 0
     assert rt.rewards["solved"] is None
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}
@@ -365,29 +367,52 @@ def test_transcript(make_full_trace):
     assert "SECRET REASONING" not in transcript  # reasoning is excluded
 
 
-def test_sampling_mask_from_packed_matches_lists():
-    import base64
-
+def test_branch_sampler_support_spans_every_token():
     import numpy as np
 
-    from verifiers.v1.types import SamplingMask
+    from verifiers.v1.graph import MessageNode
+    from verifiers.v1.trace import Branch
+    from verifiers.v1.types import SamplerSupport
 
-    rows = [[4, 7], [], [9]]
-    ids, counts = np.array([4, 7, 9], np.int32), np.array([2, 0, 1], np.int32)
-    packed = {
-        name: {
-            "data": base64.b64encode(a.tobytes()).decode(),
-            "shape": list(a.shape),
-            "dtype": "int32",
+    def node(token_ids, mask, support=None):
+        return MessageNode.model_construct(
+            token_ids=np.asarray(token_ids, np.int32),
+            mask=np.asarray(mask, np.bool_),
+            sampler_support=support,
+        )
+
+    replayed = SamplerSupport.from_response(
+        {
+            "ids": [4, 7, 9],
+            "counts": [2, 1],
+            "logprobs": np.log([0.75, 0.25, 1.0]),
+            "replayed": True,
         }
-        for name, a in (("ids", ids), ("counts", counts))
-    }
-    for mask in (
-        SamplingMask.from_sampling_mask(rows),
-        SamplingMask.from_sampling_mask(packed),
-    ):
-        np.testing.assert_array_equal(mask.ids, ids)
-        np.testing.assert_array_equal(mask.counts, counts)
+    )
+    head = SamplerSupport.from_response(
+        {"ids": [3], "counts": [1], "logprobs": [-0.5], "replayed": False}
+    )
+    nodes = [node([1, 2], [False, False]), node([4, 9], [True, True], replayed)]
+    support = Branch.model_construct(nodes=nodes).sampler_support
+    np.testing.assert_array_equal(support.ids, [4, 7, 9])
+    np.testing.assert_array_equal(support.counts, [0, 0, 2, 1])
+    np.testing.assert_array_equal(support.replayed, [False, False, True, True])
+    np.testing.assert_allclose(np.exp(support.logprobs), [0.75, 0.25, 1.0])
+
+    nodes.append(node([8, 3], [False, True], head))
+    support = Branch.model_construct(nodes=nodes).sampler_support
+    np.testing.assert_array_equal(support.ids, [4, 7, 9, 3])
+    np.testing.assert_array_equal(support.counts, [0, 0, 2, 1, 0, 1])
+    np.testing.assert_array_equal(support.replayed, [0, 0, 1, 1, 0, 0])
+
+    head.logprobs = None
+    assert Branch.model_construct(nodes=nodes).sampler_support.logprobs is None
+    wire = nodes[2].serialize_sampler_support(head)
+    assert "logprobs" not in wire
+    restored = MessageNode.deserialize_sampler_support(wire)
+    np.testing.assert_array_equal(restored.ids, [3])
+    np.testing.assert_array_equal(restored.replayed, [False])
+    assert Branch.model_construct(nodes=nodes[:1]).sampler_support is None
 
 
 def test_max_turn_tokens_limit():

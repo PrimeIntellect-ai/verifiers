@@ -43,7 +43,7 @@ class GroupInfo(BaseModel):
 
 
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
-    """The artifact Env.run produces. Contains multiple agents' traces."""
+    """The artifact Env.run_episode produces. Contains multiple agents' traces."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Unique ID for this episode, auto-generated. Stable across retries."""
@@ -79,6 +79,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """The last episode-level error captured across attempts."""
         return self.errors[-1] if self.errors else None
 
+    @computed_field
     @property
     def usage(self) -> Usage | None:
         """Provider-reported usage summed across every trace's model calls;
@@ -100,9 +101,10 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @computed_field
     @property
     def num_total_tokens(self) -> int:
-        """Final sequence lengths per branch, summed across traces."""
+        """`Trace.num_total_tokens`, summed across traces."""
         return sum(t.num_total_tokens for t in self.traces)
 
+    @computed_field
     @property
     def num_turns(self) -> int:
         """Sampled turns, summed across traces."""

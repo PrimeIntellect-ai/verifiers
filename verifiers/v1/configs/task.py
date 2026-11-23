@@ -12,8 +12,8 @@ class DecoratedFunctionConfig(BaseConfig):
     """A plugged function standing in for a decorated task method."""
 
     fn: str | None = None
-    """Import path to the function: `pkg.module.function`, `pkg.module:function`,
-    or `path/to/file.py:function`. Unset keeps the task's decorated method with the
+    """Import path to the function: `pkg.module:function` or
+    `path/to/file.py:function`. Unset keeps the task's decorated method with the
     entry's name and only overrides its metadata (priority, weight, skip_scoring)."""
 
     priority: int | None = None

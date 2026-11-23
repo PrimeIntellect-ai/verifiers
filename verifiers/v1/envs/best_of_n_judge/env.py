@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import verifiers.v1 as vf
 from verifiers.v1.envs.agentic_judge.env import (
     HIDDEN_REASONING,
+    HINT_SECTION,
     VERDICT_FILE,
     JudgeTaskConfig,
     ScoreConfig,
@@ -41,11 +42,6 @@ never take a trace's word for an outcome you can check.
 ## The task the attempts were given
 
 {prompt}"""
-
-HINT_SECTION = """\
-## Hints
-
-{hint}"""
 
 WORKSPACE_NOTE = f"""\
 ## Your workspace
