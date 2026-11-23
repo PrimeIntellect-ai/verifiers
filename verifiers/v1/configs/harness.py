@@ -29,6 +29,12 @@ SEARCH_API_KEY_ENV: dict[SearchProvider, str] = {
 """The environment variable that holds each search provider's API key."""
 
 
+class SearchConfig(BaseConfig):
+    provider: SearchProvider = "serper"
+    """Search backend: `serper` (Google results via serper.dev, key `SERPER_API_KEY`) or
+    `eco` (You.com Eco Search, key `YOU_API_KEY`)."""
+
+
 SkillSource = Path | Annotated[dict[Literal["runtime"], str], Field(min_length=1)]
 
 
