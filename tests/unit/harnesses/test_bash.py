@@ -23,8 +23,7 @@ NOTE = PROGRAM["BACKGROUND_NOTE"]
 
 @pytest.fixture
 def new_length():
-    """Makes sleep lengths unique to the test, to find and stop the processes that use
-    them; all have six decimals, so none is a prefix of another."""
+    """Sleep lengths unique to the test, to find and stop its processes."""
     made = []
 
     def make() -> str:
@@ -64,8 +63,7 @@ def timed(command: str) -> tuple[float, str]:
 @pytest.mark.parametrize(
     "command",
     [
-        # `&` puts the whole && list in the background, and bash's subshell for the
-        # list keeps the pipes although the job's own output is redirected.
+        # bash forks a subshell for the backgrounded && list, which keeps the pipes.
         "cd /tmp && nohup sleep {s} >/dev/null 2>&1 &",
         "sleep {s} &",
         "nohup sleep {s} &",
@@ -117,28 +115,23 @@ def test_job_writing_after_the_call_runs_to_completion(tmp_path):
             if rc.exists() and rc.read_text():
                 break
             time.sleep(0.1)
-        # Neither blocked on a full pipe nor killed by SIGPIPE.
         assert rc.read_text() == "0\n"
     finally:
         subprocess.run(["pkill", "-f", str(rc)], check=False)
 
 
 def test_timeout_closes_the_pipes(monkeypatch, length):
-    # A foreground writer bash forks (`; true` keeps bash from exec'ing it).
+    # `; true` keeps bash from exec'ing the writer.
     ticker = f"import time\nwhile True: print({length}, flush=True); time.sleep(0.05)"
     monkeypatch.setitem(PROGRAM, "BASH_TIMEOUT", 1)
     elapsed, out = timed(f'python3 -c "{ticker}"; true')
     assert out.endswith("timed out after 1 seconds")
     assert elapsed < 2
-    # Bash is killed and the pipes are closed, not drained, so the writer dies on its
-    # next write.
     assert gone(length)
 
 
 def test_runtime_reaping_the_program_stops_its_jobs(tmp_path, new_length):
-    # The subprocess runtime starts the chat program in its own session and, when a
-    # rollout is cancelled, kills that process group. Jobs started by run_bash, in
-    # flight or left running, must be in it.
+    # The subprocess runtime kills the chat program's process group on cancel.
     job, in_flight = new_length(), new_length()
     program = tmp_path / "program.py"
     program.write_text(
@@ -184,7 +177,6 @@ def test_job_holding_fds_above_1024(length):
 
 
 def test_character_cut_at_the_hand_off_is_replaced(length):
-    # The job writes 2047.5 two-byte characters at once and holds the pipe.
     writer = (
         "import os, time; os.write(1, ('\u00e9' * 3000).encode()[:4095]);"
         f" time.sleep({length})"
@@ -197,7 +189,7 @@ def test_at_end_tells_a_closed_pipe_from_a_held_one():
     read, write = os.pipe()
     try:
         assert not PROGRAM["_at_end"](read)
-        os.write(write, b"late")  # a held pipe's late bytes are dropped
+        os.write(write, b"late")
         assert not PROGRAM["_at_end"](read)
         os.close(write)
         write = None

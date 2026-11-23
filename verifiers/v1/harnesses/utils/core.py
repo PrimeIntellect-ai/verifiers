@@ -205,14 +205,11 @@ class _BashOutput:
 
 
 BASH_TIMEOUT = 3600
-"""Seconds a command may run before the call fails and bash is killed."""
 
 EXIT_GRACE = 0.5
-"""Seconds to keep reading after bash exits, for processes it does not wait for, such as
-process substitutions, to finish writing and close the pipes."""
+"""Seconds to keep reading after bash exits, e.g. for a process substitution."""
 
 BACKGROUND_NOTE = "[a process started by this command is still running and holds its output; later output is not shown]"
-"""Ends a result whose output a process the command left running still holds open."""
 
 
 def _pending(fd: int) -> int:
@@ -221,9 +218,8 @@ def _pending(fd: int) -> int:
 
 
 def _at_end(fd: int) -> bool:
-    """Whether every process has closed a pipe whose waiting bytes were just read. Bytes
-    that arrived since are a background job's, written after the grace, and dropped."""
-    poller = select.poll()  # not select.select, which rejects fds >= FD_SETSIZE (1024)
+    """Whether every writer has closed the pipe; late bytes read here are dropped."""
+    poller = select.poll()  # select.select rejects fds >= 1024
     poller.register(fd, select.POLLIN)
     if not poller.poll(0):
         return False
@@ -231,23 +227,21 @@ def _at_end(fd: int) -> bool:
 
 
 def _discard_until_eof(fd: int) -> None:
-    """Read a pipe a background job still holds to its end, so the job's writes neither
-    block on a full pipe nor fail on a closed one once the call has returned."""
+    """Read a held pipe to EOF, so its writer neither blocks nor gets SIGPIPE."""
     with open(fd, "rb", buffering=0) as pipe:
         while pipe.read(65536):
             pass
 
 
 def _drain_in_background(fd: int) -> None:
-    """Hand a pipe still held open to a daemon thread. Never raises: if that fails, the
-    pipe is closed with the call, as on a timeout."""
+    """Drain a held pipe on a daemon thread; never raises."""
     try:
         copy = os.dup(fd)
     except OSError:
         return
     try:
         threading.Thread(target=_discard_until_eof, args=(copy,), daemon=True).start()
-    except Exception:  # noqa: BLE001 - e.g. no more threads; the result still stands
+    except Exception:  # noqa: BLE001 - e.g. no more threads
         with suppress(OSError):
             os.close(copy)
 
@@ -280,12 +274,10 @@ def run_bash(command: str) -> str:
                                 )
                             wait = min(deadline - now, 0.1)
                         elif now - exited < EXIT_GRACE:
-                            # Bash has exited, but a process it did not wait for, such
-                            # as a process substitution, may still be writing.
+                            # A process bash did not wait for may still be writing.
                             wait = exited + EXIT_GRACE - now
                         else:
-                            # A pipe still open is held by a job left running. Read what
-                            # is waiting and hand the rest to a thread off the call.
+                            # A pipe still open is held by a job left running.
                             for key in list(selector.get_map().values()):
                                 pending = _pending(key.fd)
                                 while pending > 0:
@@ -307,19 +299,17 @@ def run_bash(command: str) -> str:
                                 selector.unregister(key.fileobj)
                     process.wait(timeout=max(0, deadline - time.monotonic()))
             finally:
-                # Do not communicate() here: descendants may still hold the pipes. On a
-                # timeout the pipes are closed, not drained, so a process still writing
-                # to them dies on its next write.
+                # Do not communicate() here: descendants may still hold the pipes.
                 if process.returncode is None:
                     process.kill()
                     process.wait()
         size = stdout.size + stderr.size
-        # The note fits in the output budget, so the result is not truncated again.
+        # Leave room for the note.
         budget = TOOL_OUTPUT_MAX_BYTES - (
             len(BACKGROUND_NOTE.encode()) + 1 if held_open else 0
         )
         if size <= budget:
-            # A job still writing may have been cut off mid-character at the hand-off.
+            # A held pipe may be cut mid-character.
             text = "".join(
                 output.head.decode(errors="replace")
                 .replace("\r\n", "\n")
