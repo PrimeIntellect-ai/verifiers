@@ -153,6 +153,28 @@ async def test_a_retry_under_the_same_id_restarts_the_trace():
 
 
 @pytest.mark.asyncio
+async def test_a_rewound_trace_restarts_its_delta_stream():
+    trace = make_trace()
+    streamer, sent = recorder([trace])
+    async with streamer:
+        streamer.watch(trace)
+        add_turn(trace, "t1")
+        ckpt = vf.Checkpoint(id="c1", snapshot=vf.Snapshot(id="c1"), node=1)
+        trace.checkpoints.append(ckpt)
+        add_turn(trace, "t2")
+        await settle()
+        trace.rewind(ckpt)
+        add_turn(trace, "t2-new")
+        await settle()
+    (raw,) = assemble(sent).traces.values()
+    assert [node["message"]["content"] for node in raw["nodes"]] == [
+        "q",
+        "t1",
+        "t2-new",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_an_array_in_info_survives_a_grading_copy():
     trace = make_trace(info={"arr": np.zeros(2)})
     streamer, sent = recorder([trace])

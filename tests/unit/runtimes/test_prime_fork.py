@@ -35,3 +35,53 @@ def test_a_memory_restore_retry_deletes_the_box_that_died(monkeypatch):
     assert client.created == ["sb0", "sb1"]
     assert client.deleted == ["sb0"]
     assert backend.info.id == "sb1"
+
+
+def test_attach_waits_until_sandbox_is_awake(monkeypatch):
+    class FakeProcess:
+        session_uuid = "sess-1"
+
+        async def _empty(self):
+            if False:
+                yield b""
+
+        @property
+        def stdout(self):
+            return self._empty()
+
+        @property
+        def stderr(self):
+            return self._empty()
+
+        async def wait(self):
+            return 0
+
+        async def aclose(self):
+            return None
+
+    events: list[str] = []
+
+    class AttachClient:
+        async def attach_process(self, sandbox_id, session_uuid):
+            events.append(f"attach:{sandbox_id}:{session_uuid}")
+            return FakeProcess()
+
+    async def scenario():
+        monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+        backend = PrimeBackend(PrimeConfig())
+        backend._client = AttachClient()
+        backend.info.id = "sb1"
+        backend._awake.clear()
+
+        task = asyncio.create_task(
+            backend.attach(backend.bind(), {"session": "sess-1"})
+        )
+        await asyncio.sleep(0)
+        assert events == []
+        events.append("awake")
+        backend._awake.set()
+        result = await task
+        assert result.exit_code == 0
+        assert events == ["awake", "attach:sb1:sess-1"]
+
+    asyncio.run(scenario())

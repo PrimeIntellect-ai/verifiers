@@ -643,6 +643,7 @@ class PrimeBackend(RuntimeBackend):
         *,
         program: Program | None = None,
     ) -> ProgramResult:
+        await self._awake.wait()
         try:
             # The session and its process came with the snapshot; only the box is new.
             process = await self._client.attach_process(self.info.id, job["session"])

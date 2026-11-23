@@ -310,6 +310,17 @@ def test_keep_policies():
         Checkpoint(id="c", snapshot=vf.Snapshot(id="c")),
     ]
     assert kept(pending, 1) == {"b"}
+    # Pinned owner saves and deleted entries do not shift the keep stride for live ones.
+    mixed = [
+        Checkpoint(
+            id="pin",
+            snapshot=vf.Snapshot(id="pin"),
+            time=TimeSpan(start=1.0, end=2.0),
+            pinned=True,
+        ),
+        *durable("a", "b", "c", "d"),
+    ]
+    assert kept(mixed, 2) == {"a", "c", "d"}
 
 
 async def test_a_durable_snapshot_prunes_the_older_ones():
@@ -687,6 +698,8 @@ async def test_an_attached_program_can_be_snapshotted_again():
     segment's program, so the restored rollout can be saved again."""
     backend = PrimeBackend.__new__(PrimeBackend)
     backend.info = SimpleNamespace(id="sb")  # type: ignore[assignment]
+    backend._awake = asyncio.Event()
+    backend._awake.set()
 
     async def attach_process(sandbox_id: str, session: str) -> str:
         return session
@@ -702,3 +715,152 @@ async def test_an_attached_program_can_be_snapshotted_again():
     await backend.attach(None, {"session": "s1"}, program=program)  # type: ignore[arg-type]
     assert seen == [{"session": "s1"}]
     assert program.job is None
+
+
+async def test_restore_applies_egress_before_connecting_relay(monkeypatch):
+    """On restore, prepare_execution must allow the new tunnel host before Relay.connect
+    reloads the already-running relay."""
+    import verifiers.v1.rollout as rollout_module
+    from verifiers.v1.runtimes.backends.prime import PrimeRuntimeInfo
+    from verifiers.v1.runtimes.base import RuntimeBackend
+
+    events: list[str] = []
+
+    class FakeBackend(RuntimeBackend):
+        SUPPORTS_MEMORY_SNAPSHOTS = True
+        network_restricted = True
+
+        def __init__(self):
+            super().__init__()
+            self.config = vf.PrimeConfig()
+            self.info = PrimeRuntimeInfo(id="sb-restored")
+
+        @property
+        def is_local(self) -> bool:
+            return False
+
+        async def start(self):
+            return None
+
+        async def stop(self):
+            self.stopped = True
+
+        async def discard_snapshots(self, snapshots):
+            return []
+
+        async def prepare_execution(self, routes, network=None):
+            events.append(f"prepare_execution:{routes}")
+
+        async def run(self, runtime, argv, env):
+            raise AssertionError("unexpected run")
+
+        async def exec(self, runtime, argv, env):
+            raise AssertionError("unexpected exec")
+
+        async def run_background(self, runtime, argv, env, log):
+            raise AssertionError("unexpected run_background")
+
+        async def read(self, runtime, path, max_bytes=None):
+            raise AssertionError("unexpected read")
+
+        async def write(self, runtime, path, data):
+            raise AssertionError("unexpected write")
+
+        @classmethod
+        def restore_config(cls, config, snapshot):
+            return config
+
+    class FakeRelayClient:
+        def __init__(self, runtime, name, *, running=None):
+            self.url = running["url"]
+            self.upstream = ""
+
+        async def installed(self):
+            return None
+
+        async def connect(self, upstream, tokens):
+            self.upstream = upstream
+            events.append(f"relay.connect:{upstream}")
+            return self.url
+
+        async def stop(self):
+            return None
+
+    @contextlib.asynccontextmanager
+    async def fake_serve_interception(*args, **kwargs):
+        yield ("https://new-tunnel.example", "new-secret", "state-secret")
+
+    @contextlib.asynccontextmanager
+    async def fake_serve_tools(*args, **kwargs):
+        yield {}
+
+    async def fake_resolve_agent_runtime(runtime, *args):
+        return runtime
+
+    class FakeHarness:
+        SUPPORTS_MEMORY_RESTORE = True
+        SUPPORTS_TOOL_INTERCEPTION = False
+        replay_view = None
+        config = SimpleNamespace(id="bash", name="bash")
+
+        async def session(self, *args, **kwargs):
+            return SimpleNamespace(memory=False, close=lambda: asyncio.sleep(0))
+
+        async def cleanup(self, *args):
+            return None
+
+    monkeypatch.setattr(rollout_module, "backend_cls", lambda cfg: FakeBackend)
+    monkeypatch.setattr(rollout_module, "make_backend", lambda cfg, name: FakeBackend())
+    monkeypatch.setattr(rollout_module, "Relay", FakeRelayClient)
+    monkeypatch.setattr(rollout_module, "serve_interception", fake_serve_interception)
+    monkeypatch.setattr(rollout_module, "serve_tools", fake_serve_tools)
+    monkeypatch.setattr(
+        rollout_module, "resolve_agent_runtime", fake_resolve_agent_runtime
+    )
+
+    trace = make_trace()
+    ckpt = Checkpoint(
+        id="ck1",
+        snapshot=vf.Snapshot(id="ck1"),
+        node=1,
+        time=TimeSpan(start=1.0, end=2.0),
+        session={
+            **held(trace),
+            "pins": [],
+            "decisions": [],
+            "gated": [],
+            "prepared": {},
+            "replays": {},
+            "live": {
+                "program": {"job": {"session": "s1"}},
+                "relay": {"dir": "/tmp/vf-relay/t", "url": "http://127.0.0.1:4000"},
+                "secret": "old-secret",
+            },
+        },
+    )
+    trace.checkpoints.append(ckpt)
+
+    from verifiers.v1.rollout import RolloutTimeouts
+    from verifiers.v1.session import RolloutLimits
+
+    run = Rollout(
+        task=vf.Task(vf.TaskData(idx=0, prompt="q")),
+        harness=FakeHarness(),  # type: ignore[arg-type]
+        runtime_config=vf.PrimeConfig(),
+        agent_config=vf.AgentConfig(runtime=vf.PrimeConfig()),
+        route=ModelRoute(ModelContext(model="m", client=EvalClientConfig())),
+        timeouts=RolloutTimeouts(),
+        limits=RolloutLimits(),
+        restore=(trace, ckpt),
+        checkpoint=RolloutCheckpointConfig(),
+    )
+    try:
+        opened = await run.open()
+        assert opened, (run.failure, run.trace.errors)
+    finally:
+        await run.abort()
+
+    assert events == [
+        "prepare_execution:['http://127.0.0.1:4000/v1', 'https://new-tunnel.example']",
+        "relay.connect:https://new-tunnel.example",
+    ]
