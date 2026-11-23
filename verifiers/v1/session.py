@@ -34,6 +34,7 @@ from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext, ModelRoute
 from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.dialects.base import CAPABILITY_NOTICE
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
 from verifiers.v1.trace import InterceptRecord, Trace
@@ -43,6 +44,7 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
+    TextContentPart,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -153,6 +155,23 @@ def _align_role_slice(
             yield from zip(range(i1, i2), nodes[j1:j2])
 
 
+def _strip_notice(message: Message) -> Message:
+    if not isinstance(message, UserMessage):
+        return message
+    if isinstance(message.content, str):
+        if message.content.startswith(CAPABILITY_NOTICE):
+            return message.model_copy(update={"content": ""})
+        head, sep, _ = message.content.partition(f"\n\n{CAPABILITY_NOTICE}")
+        return message.model_copy(update={"content": head}) if sep else message
+    if (
+        message.content
+        and isinstance(last := message.content[-1], TextContentPart)
+        and last.text.startswith(CAPABILITY_NOTICE)
+    ):
+        return message.model_copy(update={"content": message.content[:-1]})
+    return message
+
+
 def _align_nodes(
     before: Messages, after: Messages, prompt_nodes: list[int]
 ) -> dict[int, int]:
@@ -164,10 +183,10 @@ def _align_nodes(
         and not any(isinstance(m, UserMessage) for m in before)
         else after
     )
-    if before == trimmed:
+    if [_role_key(m) for m in before] == [_role_key(m) for m in trimmed]:
         return {i: prompt_nodes[i] for i in range(len(trimmed))}
     b_hashes = [graph.message_hash(m) for m in before]
-    a_hashes = [graph.message_hash(m) for m in trimmed]
+    a_hashes = [graph.message_hash(_strip_notice(m)) for m in trimmed]
     mapping: dict[int, int] = {}
     for tag, i1, i2, j1, j2 in SequenceMatcher(
         None, b_hashes, a_hashes, autojunk=False
@@ -591,23 +610,18 @@ class RolloutSession:
             self.pinned_rewrites = [
                 item for item in self.pinned_rewrites if item[0] not in replaced
             ]
-            unpinned: list[PendingRewrite] = []
             for pos, rec in records:
                 if pos in pinned_positions:
                     self.pinned_rewrites.append((pinned_positions[pos], rec))
-                    unpinned.append((None, rec))
-                else:
-                    unpinned.append((pos, rec))
-            records = unpinned
         return current, records, None
 
     def stage_rewrites(
         self, replay_key: str, records: Iterable[PendingRewrite]
     ) -> None:
-        """Hold unpinned in-request rewrites in case the model call fails before commit."""
-        unpinned = [(pos, rec) for pos, rec in records if pos is not None]
-        if unpinned:
-            self.inflight_rewrites[replay_key] = unpinned
+        """Hold in-request rewrites in case the model call fails before commit."""
+        staged = [(pos, rec) for pos, rec in records if pos is not None]
+        if staged:
+            self.inflight_rewrites[replay_key] = staged
         else:
             self.inflight_rewrites.pop(replay_key, None)
 
@@ -622,13 +636,12 @@ class RolloutSession:
         pre_request: Request | None = None,
         replay_key: str | None = None,
     ) -> None:
-        """Consume prepared user turns and attach committed node ids to buffered rewrites."""
-        if replay_key is not None:
-            pending_in_turn: Iterable[PendingRewrite] = self.inflight_rewrites.pop(
-                replay_key, ()
-            )
-        else:
-            pending_in_turn = request_rewrites
+        """Consume prepared user turns and attach committed node ids in execution order."""
+        pending_in_turn = list(
+            self.inflight_rewrites.pop(replay_key, ())
+            if replay_key is not None
+            else request_rewrites
+        )
         for message in turn.tail:
             if isinstance(message, UserMessage) and self.prepared_users:
                 key = graph.message_hash(message)
@@ -642,7 +655,8 @@ class RolloutSession:
         tail_nodes = prompt_nodes[turn.tail_start :]
         base = pre_request if pre_request is not None else Request(messages=turn.prompt)
         node_by_pos = _align_nodes(base.messages, turn.prompt, prompt_nodes)
-        in_turn: list[tuple[int, InterceptRecord]] = []
+        in_turn: list[InterceptRecord] = []
+        in_turn_ids: set[int] = set()
         in_turn_nodes: set[int] = set()
         for pos, rec in pending_in_turn:
             if pos is None:
@@ -651,8 +665,8 @@ class RolloutSession:
             rec.node = nid
             if nid is not None:
                 in_turn_nodes.add(nid)
-            in_turn.append((-1 if nid is None else nid, rec))
-        staged: list[tuple[int, InterceptRecord]] = []
+            in_turn.append(rec)
+            in_turn_ids.add(id(rec))
         aligned_nodes = set(node_by_pos.values())
         users = [
             nid
@@ -665,12 +679,10 @@ class RolloutSession:
             if self.prepared_rewrites:
                 targets = users[-self._prepared_user_count :]
                 for slot, rec in self.prepared_rewrites:
-                    nid = targets[min(slot, len(targets) - 1)]
-                    rec.node = nid
-                    staged.append((nid, rec))
+                    rec.node = targets[min(slot, len(targets) - 1)]
+                    self.trace.request_rewrites.append(rec)
                 self.prepared_rewrites.clear()
             self._prepared_user_count = 0
-        staged.extend(in_turn)
         if self.pinned_rewrites:
             tool_nodes = {
                 tkey: node_by_pos[pos]
@@ -688,14 +700,15 @@ class RolloutSession:
                         tool_nodes.setdefault(tkey, node_by_pos[pos])
             remaining: list[tuple[ToolResultKey, InterceptRecord]] = []
             for tkey, rec in self.pinned_rewrites:
+                if id(rec) in in_turn_ids:
+                    continue
                 if (nid := tool_nodes.get(tkey)) is None:
                     remaining.append((tkey, rec))
                     continue
                 rec.node = nid
-                staged.append((nid, rec))
+                self.trace.request_rewrites.append(rec)
             self.pinned_rewrites = remaining
-        staged.sort(key=lambda item: item[0])
-        self.trace.request_rewrites.extend(rec for _, rec in staged)
+        self.trace.request_rewrites.extend(in_turn)
         for rec in response_rewrites:
             rec.node = assistant_node
             self.trace.response_rewrites.append(rec)
@@ -705,10 +718,13 @@ class RolloutSession:
         self.trace.request_rewrites.extend(rec for _, rec in self.prepared_rewrites)
         self.prepared_rewrites.clear()
         self._prepared_user_count = 0
+        pinned_ids = {id(rec) for _, rec in self.pinned_rewrites}
         self.trace.request_rewrites.extend(rec for _, rec in self.pinned_rewrites)
         self.pinned_rewrites.clear()
         self.trace.request_rewrites.extend(
-            rec for _, rec in chain.from_iterable(self.inflight_rewrites.values())
+            rec
+            for _, rec in chain.from_iterable(self.inflight_rewrites.values())
+            if id(rec) not in pinned_ids
         )
         self.inflight_rewrites.clear()
 
