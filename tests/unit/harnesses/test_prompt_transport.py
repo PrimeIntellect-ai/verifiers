@@ -41,8 +41,6 @@ from verifiers.v1.harnesses import (
     RLMHarnessConfig,
     StirrupHarness,
     StirrupHarnessConfig,
-    Terminus2Harness,
-    Terminus2HarnessConfig,
 )
 from verifiers.v1.runtimes import ProgramResult
 
@@ -53,7 +51,6 @@ HARNESSES = {
     "null": (NullHarness, NullHarnessConfig),
     "bash": (BashHarness, BashHarnessConfig),
     "browser_use": (BrowserUseHarness, BrowserUseHarnessConfig),
-    "terminus_2": (Terminus2Harness, Terminus2HarnessConfig),
     "mini_swe_agent": (MiniSWEAgentHarness, MiniSWEAgentHarnessConfig),
     "stirrup": (StirrupHarness, StirrupHarnessConfig),
     "pi": (PiHarness, PiHarnessConfig),

@@ -24,8 +24,8 @@ Every cell carries its axes' marks, so `-m` selects subsets:
     uv run pytest tests/integration -n 8 -m "prime and codex"
     uv run pytest tests/integration -n 8 -m prime
 
-`terminus-2` (drives the host tmux) and `browser-use` (needs its Playwright image, which
-prime cannot pull) stay outside the grid.
+`browser-use` (needs its Playwright image, which prime cannot pull) stays outside the
+grid.
 """
 
 from collections.abc import Sequence

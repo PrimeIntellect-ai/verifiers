@@ -639,7 +639,6 @@ def test_unsaveable_names_what_rules_memory_snapshots_out():
     assert reason("bash", vf.SubprocessConfig()) == (
         "the 'subprocess' runtime takes no memory snapshots"
     )
-    assert reason("terminus-2", vf.PrimeConfig()) is None
     assert reason("browser-use", vf.PrimeConfig()) == (
         "harness 'browser-use' cannot continue from a memory snapshot"
     )
