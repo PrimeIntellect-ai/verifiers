@@ -57,3 +57,25 @@ async def test_split_execution(run, harness, harness_runtime):
     assert trace.agent.runtime.type == trace.agent.harness_runtime.type == "prime"
     assert trace.agent.runtime.id != trace.agent.harness_runtime.id
     assert trace.reward == 1.0, trace.info.get("workspace_report")
+
+
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(needs=("shell", "split")), indirect=True
+)
+async def test_split_workspace_loss(run, harness, harness_runtime):
+    """A workspace the agent powers off ends the rollout as a valid zero sample."""
+    (episode,) = await run(
+        "split-execution-v1",
+        harness=harness,
+        taskset_overrides={"scenario": "loss"},
+        runtime={**harness_runtime, "workdir": "/workspace"},
+        env={"agent": {**SPLIT, "scoring": {"skip_on_workspace_loss": True}}},
+        max_turns=10,
+        max_tokens=8192,
+    )
+    (trace,) = episode.traces
+    assert trace.ok
+    assert trace.stop_condition == "workspace_lost"
+    assert trace.info["scoring_skipped"] == "workspace_lost"
+    assert trace.info["workspace_loss"]["status"] == "TERMINATED"
+    assert not trace.rewards and trace.reward == 0.0
