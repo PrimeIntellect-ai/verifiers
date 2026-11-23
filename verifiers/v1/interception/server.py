@@ -923,6 +923,7 @@ class InterceptionServer(Interception):
             logger.debug("Replayed an idempotent request")
             idempotent.completed_at = now
             await session.flowing.wait()
+            idempotent.sent = True
             return _replay_response(idempotent.response)
 
         try:
@@ -961,6 +962,7 @@ class InterceptionServer(Interception):
             if response is None:
                 return _error_response(dialect, "upstream attempt failed", status=503)
             await session.flowing.wait()
+            idempotent.sent = True
             return _replay_response(response)
 
         if idempotent.inflight is not None:

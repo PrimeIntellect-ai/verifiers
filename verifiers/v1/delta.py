@@ -56,9 +56,11 @@ def dump(model: BaseModel, **kwargs: Any) -> dict:
 class TraceCursor:
     """What of one trace has been sent."""
 
-    def __init__(self, attempt: int) -> None:
+    def __init__(self, attempt: int, generation: int = 0) -> None:
         self.attempt = attempt
         """The attempt this cursor diffs: a retry keeps the trace id but not the attempt."""
+        self.generation = generation
+        """The rewind generation this cursor diffs: a rewind shrinks the graph in place."""
         self.sent = dict.fromkeys(LIST_FIELDS, 0)
         self.links: list[int] = []
         """Per sent node, how many of its semantic links have been sent."""
@@ -67,7 +69,7 @@ class TraceCursor:
 
     def copy(self) -> TraceCursor:
         """A copy safe to advance; the stored values themselves are never mutated."""
-        cursor = TraceCursor(self.attempt)
+        cursor = TraceCursor(self.attempt, self.generation)
         cursor.sent, cursor.links, cursor.scalars = (
             dict(self.sent),
             list(self.links),
@@ -182,11 +184,19 @@ class DeltaStreamer:
         for trace in traces:
             delta: dict[str, Any] = {"trace": trace.id}
             sent = self.cursors.get(trace.id)
-            if sent is not None and sent.attempt != trace.attempt:
-                sent = None  # a retry's fresh trace under the same id: reopen it from scratch
+            if sent is not None and (
+                sent.attempt != trace.attempt or sent.generation != trace.generation
+            ):
+                sent = (
+                    None  # a retry or rewind under the same id: reopen it from scratch
+                )
             if sent is not None and not everything and trace.id not in self._dirty:
                 continue  # nothing announced since its last delta
-            cursor = sent.copy() if sent is not None else TraceCursor(trace.attempt)
+            cursor = (
+                sent.copy()
+                if sent is not None
+                else TraceCursor(trace.attempt, trace.generation)
+            )
             if sent is None:
                 delta["open"] = dump(trace, include=set(HEADER_FIELDS))
             links = {}  # str keys: binary wire formats forbid int map keys

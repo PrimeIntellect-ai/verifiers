@@ -124,17 +124,14 @@ async def resolve_agent_runtime(
 def kept(checkpoints: list[Checkpoint], keep: Literal["last"] | int) -> set[str]:
     """The ids of the restorable `checkpoints` (durable, not deleted) that the `keep`
     policy holds on to (`RolloutCheckpointConfig.keep`): the newest always, plus every
-    k-th (by position, the 1st, the 1+k-th, ...) for `k`."""
-    live = [
-        (index, c)
-        for index, c in enumerate(checkpoints)
-        if c.time.end and not c.deleted and not c.pinned
-    ]
+    k-th (by position among restorable non-pinned checkpoints, the 1st, the 1+k-th, ...)
+    for `k`."""
+    live = [c for c in checkpoints if c.time.end and not c.deleted and not c.pinned]
     if not live:
         return set()
-    held = {live[-1][1].id}
+    held = {live[-1].id}
     if keep != "last":
-        held.update(c.id for index, c in live if index % keep == 0)
+        held.update(c.id for index, c in enumerate(live) if index % keep == 0)
     return held
 
 
@@ -561,13 +558,20 @@ class Rollout:
                 # A harness restored from memory still sends the secret it got at its
                 # launch; the relay swaps it for this session's.
                 self._secret = self._live("secret") if restored else model_secret
+                upstream_base = base_url.rstrip("/")
                 if self._relay is not None:
-                    # The harness holds the model secret anyway; the relay gets
-                    # nothing more, so reading its config grants no capability.
-                    async with boundary(RelayError, "starting the relay"):
-                        harness_base = await self._relay.connect(
-                            base_url.rstrip("/"), {self._secret: model_secret}
-                        )
+                    # On a restored box, the relay is already running with its URL
+                    # known; apply egress policy before rerouting it so a restricted
+                    # box can reach the new tunnel host on its first retry.
+                    if restored:
+                        harness_base = self._relay.url
+                    else:
+                        # The harness holds the model secret anyway; the relay gets
+                        # nothing more, so reading its config grants no capability.
+                        async with boundary(RelayError, "starting the relay"):
+                            harness_base = await self._relay.connect(
+                                upstream_base, {self._secret: model_secret}
+                            )
                 self._endpoint = f"{harness_base}/v1"
                 services = (
                     {
@@ -611,12 +615,17 @@ class Rollout:
                         for url in [
                             self._endpoint,
                             *self._urls.values(),
-                            *([self._relay.upstream] if self._relay else []),
+                            *([upstream_base] if self._relay else []),
                         ]
                         if urlsplit(url).hostname not in internal
                     ],
-                    state_route=f"{base_url.rstrip('/')}/state",
+                    state_route=f"{upstream_base}/state",
                 )
+                if self._relay is not None and restored:
+                    async with boundary(RelayError, "starting the relay"):
+                        await self._relay.connect(
+                            upstream_base, {self._secret: model_secret}
+                        )
                 async with (
                     boundary(HarnessError, "opening harness session"),
                 ):
