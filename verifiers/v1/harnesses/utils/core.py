@@ -2,14 +2,19 @@
 
 import argparse
 import asyncio
+import fcntl
 import json
 import logging
 import os
+import select
 import selectors
+import struct
 import subprocess
+import termios
+import threading
 import time
 import traceback
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -199,25 +204,94 @@ class _BashOutput:
         self.size += len(chunk)
 
 
+BASH_TIMEOUT = 3600
+
+EXIT_GRACE = 0.5
+"""Seconds to keep reading after bash exits, e.g. for a process substitution."""
+
+BACKGROUND_NOTE = "[a process started by this command is still running and holds its output; later output is not shown]"
+
+
+def _pending(fd: int) -> int:
+    """Bytes waiting in a pipe right now."""
+    return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
+
+
+def _at_end(fd: int) -> bool:
+    """Whether every writer has closed the pipe; late bytes read here are dropped."""
+    poller = select.poll()  # select.select rejects fds >= 1024
+    poller.register(fd, select.POLLIN)
+    if not poller.poll(0):
+        return False
+    return not os.read(fd, 65536)
+
+
+def _discard_until_eof(fd: int) -> None:
+    """Read a held pipe to EOF, so its writer neither blocks nor gets SIGPIPE."""
+    with open(fd, "rb", buffering=0) as pipe:
+        while pipe.read(65536):
+            pass
+
+
+def _drain_in_background(fd: int) -> None:
+    """Drain a held pipe on a daemon thread; never raises."""
+    try:
+        copy = os.dup(fd)
+    except OSError:
+        return
+    try:
+        threading.Thread(target=_discard_until_eof, args=(copy,), daemon=True).start()
+    except Exception:  # noqa: BLE001 - e.g. no more threads
+        with suppress(OSError):
+            os.close(copy)
+
+
 def run_bash(command: str) -> str:
+    held_open = False
     try:
         with subprocess.Popen(
             ["bash", "-c", command],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         ) as process:
             stdout, stderr = _BashOutput(), _BashOutput()
-            deadline = time.monotonic() + 3600
+            deadline = time.monotonic() + BASH_TIMEOUT
+            exited = None
             try:
                 with selectors.DefaultSelector() as selector:
                     assert process.stdout is not None and process.stderr is not None
                     selector.register(process.stdout, selectors.EVENT_READ, stdout)
                     selector.register(process.stderr, selectors.EVENT_READ, stderr)
                     while selector.get_map():
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise subprocess.TimeoutExpired(process.args, 3600)
-                        for key, _ in selector.select(remaining):
+                        now = time.monotonic()
+                        if exited is None and process.poll() is not None:
+                            exited = now
+                        if exited is None:
+                            if now >= deadline:
+                                raise subprocess.TimeoutExpired(
+                                    process.args, BASH_TIMEOUT
+                                )
+                            wait = min(deadline - now, 0.1)
+                        elif now - exited < EXIT_GRACE:
+                            # A process bash did not wait for may still be writing.
+                            wait = exited + EXIT_GRACE - now
+                        else:
+                            # A pipe still open is held by a job left running.
+                            for key in list(selector.get_map().values()):
+                                pending = _pending(key.fd)
+                                while pending > 0:
+                                    chunk = os.read(key.fd, min(pending, 65536))
+                                    if not chunk:
+                                        break
+                                    pending -= len(chunk)
+                                    key.data.add(chunk)
+                                selector.unregister(key.fileobj)
+                                if not _at_end(key.fd):
+                                    held_open = True
+                                    _drain_in_background(key.fd)
+                            break
+                        for key, _ in selector.select(wait):
                             chunk = os.read(key.fd, 8192)
                             if chunk:
                                 key.data.add(chunk)
@@ -230,19 +304,29 @@ def run_bash(command: str) -> str:
                     process.kill()
                     process.wait()
         size = stdout.size + stderr.size
-        if size <= TOOL_OUTPUT_MAX_BYTES:
+        # Leave room for the note.
+        budget = TOOL_OUTPUT_MAX_BYTES - (
+            len(BACKGROUND_NOTE.encode()) + 1 if held_open else 0
+        )
+        if size <= budget:
+            # A held pipe may be cut mid-character.
             text = "".join(
-                output.head.decode().replace("\r\n", "\n").replace("\r", "\n")
+                output.head.decode(errors="replace")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
                 for output in (stdout, stderr)
             )
         else:
             marker = f"\n[... bash output truncated; {size} bytes total ...]\n"
-            keep = (TOOL_OUTPUT_MAX_BYTES - len(marker.encode())) // 2
+            keep = (budget - len(marker.encode())) // 2
             # Preserve stdout-then-stderr ordering, including when just one is large.
             head = (stdout.head + stderr.head)[:keep].decode(errors="ignore")
             tail = (stdout.tail + stderr.tail)[-keep:].decode(errors="ignore")
             text = head + marker + tail
-        return text.replace("\r\n", "\n").replace("\r", "\n")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if held_open:
+            text += ("\n" if text and not text.endswith("\n") else "") + BACKGROUND_NOTE
+        return text
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
