@@ -169,10 +169,8 @@ def _pending(fd: int) -> int:
 
 
 def _at_end(fd: int) -> bool:
-    """Whether every process has closed a pipe whose waiting bytes were just read. Bytes
-    that arrived since are a leftover child's, written after the call stopped reading,
-    and dropped."""
-    poller = select.poll()  # not select.select, which rejects fds >= FD_SETSIZE (1024)
+    """Whether every writer has closed the pipe; late bytes read here are dropped."""
+    poller = select.poll()  # select.select rejects fds >= 1024
     poller.register(fd, select.POLLIN)
     if not poller.poll(0):
         return False
@@ -180,8 +178,7 @@ def _at_end(fd: int) -> bool:
 
 
 def _discard_until_eof(fd: int) -> None:
-    """Read a pipe a leftover child still holds to its end, so the child's writes neither
-    block on a full pipe nor fail on a closed one once the call has returned."""
+    """Read a held pipe to EOF, so its writer neither blocks nor gets SIGPIPE."""
     try:
         with open(fd, "rb", buffering=0) as pipe:
             while pipe.read(65536):
@@ -191,16 +188,14 @@ def _discard_until_eof(fd: int) -> None:
 
 
 def _drain_in_background(fd: int) -> None:
-    """Hand a pipe a leftover child holds to a daemon thread that reads it to its end.
-    Never raises: if the fd or the thread cannot be had, the pipe is closed with the
-    call instead."""
+    """Drain a held pipe on a daemon thread; never raises."""
     try:
         copy = os.dup(fd)
     except OSError:
         return
     try:
         threading.Thread(target=_discard_until_eof, args=(copy,), daemon=True).start()
-    except Exception:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
+    except Exception:  # noqa: BLE001 - e.g. no more threads
         os.close(copy)
 
 
@@ -210,10 +205,7 @@ def _text(output: bytes | bytearray) -> str:
 
 
 MAX_KEPT_BYTES = 1 << 20
-"""Bytes of each stream a call keeps: 1 MiB, some hundreds of thousands of tokens and
-well above a page's printed text or a typical page's HTML. Beyond it the head and the
-tail are kept and the rest is read and dropped. Per stream, so a traceback on stderr
-still shows when stdout floods."""
+"""Bytes of each stream a call keeps, as its head and tail."""
 
 
 def _cut_sequence(data: bytes | bytearray) -> int:
@@ -250,11 +242,7 @@ class _KeptOutput:
         self.size += len(chunk)
 
     def text(self) -> str:
-        """The stream as text; beyond MAX_KEPT_BYTES, its head and tail around a marker.
-
-        The cuts are moved off a UTF-8 character and a CRLF they would split, so neither
-        leaves a replacement character or an extra blank line; the moved bytes count as
-        omitted."""
+        """The stream as text; if longer, its head and tail around a marker."""
         head, tail = self.head, self.tail
         if self.size == len(head) + len(tail):
             return _text(head + tail)
@@ -263,7 +251,7 @@ class _KeptOutput:
         head = head[: len(head) - _cut_sequence(head)]
         if tail[:1] == b"\n" and self.before_tail == ord("\r"):
             start = 1
-        else:  # skip the rest of a character the cut split (at most 3 bytes)
+        else:  # skip the rest of a split character
             start = 0
             while start < min(3, len(tail)) and tail[start] & 0xC0 == 0x80:
                 start += 1
@@ -275,11 +263,9 @@ class _KeptOutput:
 
 
 EXIT_GRACE = 0.5
-"""Seconds to keep reading after the program exits, for short-lived children it
-started (a pipeline through a shell, a quick `Popen`) to finish and close its pipes."""
+"""Seconds to keep reading after the program exits, for short-lived children."""
 
 HELD_OUTPUT_NOTE = "[a process started by this code is still running and holds its output; later output is not shown]"
-"""Ends a result whose output a child the program left running still holds open."""
 
 
 def run_program(
@@ -287,20 +273,11 @@ def run_program(
 ) -> str:
     """Run a program with `stdin` as its input and return its stdout then stderr.
 
-    Returns once both pipes reach EOF, or, if a child the program left running still
-    holds them, EXIT_GRACE seconds after the program's exit is seen (the check runs
-    each time the read loop wakes, at most 0.1 s apart). In that case what is in the
-    pipes then is included, later writes are not, the pipes are drained in the
-    background instead of being waited on, and the result ends with HELD_OUTPUT_NOTE.
-    Of each stream at most MAX_KEPT_BYTES are kept (its head and tail); the rest is
-    still read, so writers never block, and replaced by a marker that says how much.
-    After `timeout` seconds the program is killed, its pipes are closed rather than
-    drained (a child still writing to them then fails on its next write), and
-    TimeoutExpired is raised. The program and its children stay in the caller's process
-    group, so a runtime that kills that group on cancellation reaps them too.
+    Pipes a leftover child still holds EXIT_GRACE after the program exits are drained
+    in the background, and the result ends with HELD_OUTPUT_NOTE.
     """
     held_open = False
-    # The encoding text=True used for stdin; text it cannot encode fails the call.
+    # As with text=True: code it cannot encode fails the call.
     data = memoryview(stdin.encode(locale.getpreferredencoding(False)))
     with subprocess.Popen(
         args,
@@ -333,13 +310,10 @@ def run_program(
                         if remaining <= 0:
                             raise subprocess.TimeoutExpired(process.args, timeout)
                     else:
-                        # The program has exited; children it started may still be
-                        # writing. Give them EXIT_GRACE to close the pipes.
+                        # Children the program started may still be writing.
                         remaining = exited_at + EXIT_GRACE - now
                         if remaining <= 0:
-                            # A pipe still open is held by a child left running: read
-                            # what is in it now, then drain it off the call instead of
-                            # waiting for it or closing it under the child.
+                            # A pipe still open is held by a child left running.
                             for key in list(selector.get_map().values()):
                                 pending = _pending(key.fd)
                                 while pending > 0:
@@ -370,17 +344,13 @@ def run_program(
                             key.data.extend(chunk)
                         else:
                             selector.unregister(key.fileobj)
-            # Both pipes can close while the program still runs (it redirected or
-            # closed its stdout and stderr): let it finish within the deadline.
+            # The program may have closed its stdout and stderr and still be running.
             try:
                 process.wait(timeout=max(0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 raise subprocess.TimeoutExpired(process.args, timeout) from None
         finally:
-            # On a timeout (or any error) the program still runs: kill it, as
-            # subprocess.run does. Its pipes are then closed with the Popen, not
-            # drained. Do not communicate() here: leftover children may still hold
-            # the pipes.
+            # Do not communicate() here: leftover children may still hold the pipes.
             if process.returncode is None:
                 process.kill()
                 process.wait()

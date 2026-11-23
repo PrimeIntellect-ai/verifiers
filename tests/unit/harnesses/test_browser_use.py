@@ -23,8 +23,7 @@ from verifiers.v1.harnesses.browser_use.program import (
 
 @pytest.fixture
 def env(tmp_path):
-    """A stand-in for browser-harness's CLI that runs the code on stdin, so no browser
-    is needed."""
+    """A stand-in for browser-harness's CLI that runs the code on stdin."""
     package = tmp_path / "browser_harness"
     package.mkdir()
     (package / "__init__.py").write_text("")
@@ -61,8 +60,7 @@ HELD = {HELD_OUTPUT_NOTE}
     [
         ('import os; os.system("sleep {s} &")', HELD),
         ('import subprocess; subprocess.Popen(["sleep", "{s}"])', HELD),
-        # bash's subshell for the && list keeps the pipes; dash execs `nohup` in it,
-        # and the redirects then close them.
+        # Held under bash; dash execs nohup in the subshell, which closes the pipes.
         (
             'import os; os.system("cd /tmp && nohup sleep {s} >/dev/null 2>&1 &")',
             HELD | {"(no output)"},
@@ -72,7 +70,6 @@ HELD = {HELD_OUTPUT_NOTE}
 def test_leftover_child_does_not_hold_the_call_open(code, results, env, length):
     elapsed, out = timed(code.format(s=length), env)
     assert out in results
-    # A held pipe is given EXIT_GRACE to close before the call returns.
     assert (EXIT_GRACE if out == HELD_OUTPUT_NOTE else 0) <= elapsed < 5
     assert running(f"sleep {length}")
 
@@ -97,8 +94,7 @@ def test_output_written_after_the_program_exits_is_not_shown(env):
 
 def test_leftover_child_that_writes_after_the_call_finishes_cleanly(env, tmp_path):
     status = tmp_path / "status"
-    # Writes far more than a pipe holds, after the call has returned, then records
-    # whether the write succeeded (a closed pipe fails it, an unread one blocks it).
+    # A closed pipe would fail the late write, and an unread one would block it.
     child = (
         "import sys, time\n"
         "time.sleep(1.5)\n"
@@ -140,13 +136,11 @@ def test_ordinary_calls_return_their_output(env):
         == "a\nc\nb\n"
     )
     assert run_browser("pass", env) == "(no output)"
-    # Code larger than a pipe's capacity reaches the program whole.
     assert run_browser(f"print(len({'x' * 200_000!r}))", env) == "200000\n"
     assert run_browser("raise ValueError('boom')", env).endswith("ValueError: boom\n")
 
 
 def test_code_that_cannot_be_encoded_is_an_error(env):
-    # As with text=True, which encoded the input strictly in the locale's encoding.
     code = "print('\udc80')"
     with pytest.raises(UnicodeEncodeError) as error:
         code.encode(locale.getpreferredencoding(False))
@@ -194,8 +188,7 @@ def test_program_running_past_the_timeout_is_an_error(code, env, monkeypatch):
 
 
 def test_timeout_closes_the_pipes_instead_of_draining_them(env, monkeypatch):
-    # A child that keeps writing dies on its first write after the call closes the
-    # pipes; were they drained instead, it would keep running.
+    # A drained pipe would keep the writer running.
     monkeypatch.setattr(program, "BROWSER_TOOL_TIMEOUT", 1)
     word = f"writer{uuid.uuid4().hex}"
     loop = "while :; do echo tick; sleep 0.05; done"
@@ -219,8 +212,6 @@ def test_timeout_closes_the_pipes_instead_of_draining_them(env, monkeypatch):
 
 
 def test_program_stays_in_the_callers_process_group(env):
-    # A runtime that kills its program's process group then reaps the tool's
-    # processes too.
     assert run_browser("import os; print(os.getpgrp())", env) == f"{os.getpgrp()}\n"
 
 
