@@ -53,20 +53,15 @@ from stirrup.tools.mcp import MCPConfig, MCPToolProvider
 
 COMMAND_CLEANUP_TIMEOUT = 5.0
 OUTPUT_GRACE = 0.5
-"""How long to keep reading once bash exits, for processes that finish just after it."""
+"""Seconds to keep reading after bash exits, e.g. for a process substitution."""
 PIPE_READ_SIZE = 65536
 MAX_KEPT_BYTES = 1 << 20
-"""How much of each output stream a call keeps: its first and last halves. Stirrup's
-format_result shows the model only the first and last 10,000 characters of each."""
+"""Bytes of each stream a call keeps, as its first and last halves."""
 BACKGROUND_NOTE = "[a process started by this command is still running and holds its output; later output is not shown]"
-"""Ends the stderr of a result whose pipes a process the command left running holds."""
 
 
 class OutputPipe:
-    """A command's stdout or stderr, read on the event loop while the command runs.
-
-    Reading never stops, so the writer never blocks, but at most `MAX_KEPT_BYTES` of
-    it is kept: a process the command leaves running may flood the pipe."""
+    """A command's stdout or stderr, read on the event loop while the command runs."""
 
     def __init__(self):
         self.fd, self.write_fd = os.pipe()
@@ -107,8 +102,7 @@ class OutputPipe:
         omitted = self.size - len(self.head) - min(len(self.tail), half)
         if omitted <= 0:
             return (self.head + self.tail).decode(errors="replace")
-        # Cut at character boundaries: the bytes of a character cut in two are
-        # omitted with the middle.
+        # Cut at character boundaries.
         head = self.head[: _complete_utf8(self.head)]
         tail = self.tail[-half:]
         start = 0
@@ -134,12 +128,9 @@ class OutputPipe:
                 os.close(fd)
 
     def finish(self, *, drain: bool = True) -> str:
-        """Take the output waiting in the pipe now and stop collecting. Never raises.
+        """Take the output waiting in the pipe now and stop collecting; never raises.
 
-        A process the command left running may still hold the pipe. Its later
-        output is dropped. With `drain`, the pipe is then read to its end off the
-        loop, so that process neither blocks on a full pipe nor dies of SIGPIPE;
-        without it, the pipe is closed.
+        With `drain`, a pipe still held open is read to EOF off the loop; else closed.
         """
         if self.fd is not None:
             fd, self.fd = self.fd, None
@@ -187,18 +178,16 @@ def _pending(fd: int) -> int:
 
 
 def _at_end(fd: int) -> bool:
-    """Whether every process has closed a pipe whose waiting bytes were just read. Bytes
-    that arrived since are written by a process left running, and dropped."""
-    poller = select.poll()  # not select.select, which rejects fds >= FD_SETSIZE (1024)
+    """Whether every writer has closed the pipe; late bytes read here are dropped."""
+    poller = select.poll()  # select.select rejects fds >= 1024
     poller.register(fd, select.POLLIN)
     return bool(poller.poll(0)) and not os.read(fd, PIPE_READ_SIZE)
 
 
 def _discard_until_eof(fd: int) -> None:
-    """Read a pipe a process left running still holds to its end, then close it."""
+    """Read a held pipe to EOF, so its writer neither blocks nor gets SIGPIPE."""
     try:
-        # An event loop such as uvloop may have made the fd non-blocking; an empty
-        # non-blocking read is not EOF.
+        # uvloop may leave the fd non-blocking, where an empty read is not EOF.
         os.set_blocking(fd, True)
         while os.read(fd, PIPE_READ_SIZE):
             pass
@@ -259,17 +248,14 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
                     if pipe is not None:
                         pipe.close_write_end()
             try:
-                # Wait for Bash, not for EOF: a process it leaves running keeps
-                # the pipes open after Bash exits.
+                # Wait for bash, not for EOF on its pipes.
                 await asyncio.wait_for(process.wait(), timeout)
             except TimeoutError:
                 pass  # The command is killed below, and the timeout result follows.
             else:
-                # A process substitution or a short-lived child may still be
-                # writing the command's output: give the pipes a moment to close.
+                # A process bash did not wait for may still be writing.
                 await asyncio.wait([stdout.closed, stderr.closed], timeout=OUTPUT_GRACE)
-                # Only now: a cancellation during the grace kills the process
-                # group, so a job the command started does not outlive it.
+                # Only now, so a cancellation during the grace kills the group.
                 completed = True
                 out, err = stdout.finish(), stderr.finish()
                 if stdout.held_open or stderr.held_open:
@@ -299,8 +285,7 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
                 for pipe in (stdout, stderr):
                     if pipe is not None:
                         pipe.finish(drain=completed)
-        # Timed out. Not an error result: Stirrup shows only stderr for those, and
-        # the output so far is worth keeping. 124 is timeout(1)'s exit code.
+        # Timed out: exit 124, as timeout(1). Not an error result, which hides stdout.
         err = stderr.finish()
         if err and not err.endswith("\n"):
             err += "\n"

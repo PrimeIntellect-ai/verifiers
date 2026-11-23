@@ -80,7 +80,7 @@ def length():
 
 
 def sleep_pattern(length: str) -> str:
-    # The whole command line: a prefix could match another run's longer length.
+    # The whole command line, not a prefix.
     return f"^sleep {re.escape(length)}$"
 
 
@@ -102,8 +102,7 @@ async def timed(shell, command: str, timeout=None) -> tuple[float, CommandResult
 @pytest.mark.parametrize(
     "command",
     [
-        # `&` puts the whole && list in the background, and bash's subshell for the
-        # list keeps the pipes although the job's own output is redirected.
+        # bash forks a subshell for the backgrounded && list, which keeps the pipes.
         "cd /tmp && nohup sleep {s} >/dev/null 2>&1 &",
         "sleep {s} &",
         "nohup sleep {s} &",
@@ -140,7 +139,6 @@ async def test_output_written_after_bash_exits_is_not_shown(program, shell):
 @pytest.mark.parametrize(
     ("command", "stdout"),
     [
-        # A process substitution outlives bash by the time it takes to finish.
         ("echo hello > >(cat)", "hello\n"),
         ("seq 1 2000 > >(grep -c .)", "2000\n"),
         ("exec > >(tee -a run.log) 2>&1; echo A", "A\n"),
@@ -164,8 +162,7 @@ async def test_a_plain_command_does_not_wait_for_the_grace(program, shell):
 async def test_a_process_writing_after_the_call_is_not_blocked_or_killed(
     program, shell, tmp_path
 ):
-    # More than a pipe holds, written after the call returned: the pipe must be
-    # read for the writer to finish, and kept open for it not to get SIGPIPE.
+    # A closed pipe would fail the late write, and an unread one would block it.
     result = await shell.run_command(
         "echo fg; (sleep 0.8; head -c 3000000 /dev/zero; echo $? > rc) &"
     )
@@ -208,8 +205,7 @@ async def test_timeout_keeps_the_output_so_far_and_stops_the_command(shell, leng
 async def test_timeout_closes_a_pipe_an_escaped_process_holds(
     program, shell, length, monkeypatch
 ):
-    # setsid takes the process out of the group the timeout kills; its pipe is
-    # closed, not read on a thread for as long as the process lives.
+    # setsid escapes the timeout's group kill; its pipe is closed, not drained.
     drained = []
     monkeypatch.setattr(program, "_discard_until_eof", drained.append)
     escape = f"import os; os.setsid(); os.execvp('sleep', ['sleep', '{length}'])"
@@ -362,11 +358,11 @@ HALF = 1 << 19  # MAX_KEPT_BYTES // 2, checked below.
             b"a" * (2 * HALF + 1),
             f"{'a' * HALF}\n[... 1 byte of output omitted ...]\n{'a' * HALF}",
         ),
-        (  # A character cut at the end of the head is omitted.
+        (
             b"a" * (HALF - 1) + "\u00e9".encode() + b"b" * HALF,
             f"{'a' * (HALF - 1)}\n[... 2 bytes of output omitted ...]\n{'b' * HALF}",
         ),
-        (  # So is one cut at the start of the tail.
+        (
             b"a" * HALF + b"c" + "\u20ac".encode() + b"b" * (HALF - 2),
             f"{'a' * HALF}\n[... 4 bytes of output omitted ...]\n{'b' * (HALF - 2)}",
         ),
@@ -374,15 +370,15 @@ HALF = 1 << 19  # MAX_KEPT_BYTES // 2, checked below.
             b"a" * (HALF - 2) + "\U0001f600".encode() + b"b" * (HALF + 1),
             f"{'a' * (HALF - 2)}\n[... 5 bytes of output omitted ...]\n{'b' * HALF}",
         ),
-        (  # Invalid bytes are replaced, not omitted.
+        (
             b"\xff" + b"a" * (2 * HALF),
             f"\ufffd{'a' * (HALF - 1)}\n[... 1 byte of output omitted ...]\n{'a' * HALF}",
         ),
-        (  # Line breaks at the cut are not doubled.
+        (
             b"a" * (HALF - 2) + b"\r\n-\r\n" + b"b" * (HALF - 2),
             f"{'a' * (HALF - 2)}\r\n[... 1 byte of output omitted ...]\r\n{'b' * (HALF - 2)}",
         ),
-        (  # Nor is the line feed of a CRLF split at the cut.
+        (
             b"a" * HALF + b"\r\n" + b"b" * (HALF - 1),
             f"{'a' * HALF}\n[... 1 byte of output omitted ...]\n{'b' * (HALF - 1)}",
         ),
