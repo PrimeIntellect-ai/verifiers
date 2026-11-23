@@ -176,8 +176,9 @@ class FakeRelay:
         self.state = {"dir": "/tmp/vf-relay/t", "url": "http://127.0.0.1:4000"}
         self.rerouted: list[str] = []
 
-    async def reroute(self, upstream: str) -> None:
-        self.rerouted.append(upstream)
+    async def reroute(self, upstream: str | None = None) -> None:
+        # Without an upstream the relay reloads where it is.
+        self.rerouted.append(upstream or self.upstream)
 
 
 def make_rollout(
