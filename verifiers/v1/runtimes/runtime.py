@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import shlex
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -90,11 +90,13 @@ class Runtime:
     async def expose(self, port: int) -> str:
         return await self.backend.expose(port)
 
-    async def set_network(self, network: NetworkPolicyConfig) -> None:
+    async def set_network(
+        self, network: NetworkPolicyConfig, *, routes: Sequence[str] = ()
+    ) -> None:
         """Enforce `network` as given, in place of the policy the runtime started with,
         on the whole runtime rather than only this view; return once the provider
-        enforces it. Framework routes are not added. A runtime that started without a
-        policy can only stay open."""
+        enforces it. Framework routes are only added when passed in `routes`. A runtime
+        that started without a policy can only stay open."""
         if not network.network_restricted:
             await self.backend.prepare_execution(None)
             return
@@ -109,7 +111,7 @@ class Runtime:
         policy = type(config).model_validate(
             {**config.model_dump(), "allow": network.allow, "block": network.block}
         )
-        await self.backend.prepare_execution([], policy)
+        await self.backend.prepare_execution(list(routes), policy)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run `argv` to completion and collect its output."""
