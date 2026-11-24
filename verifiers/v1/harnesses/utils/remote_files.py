@@ -13,6 +13,28 @@ MAX_FILE_BYTES = 16 * 1024 * 1024
 TRUNCATED = "\n[Output truncated; narrow the query or read a smaller range]"
 
 
+async def run_shell(
+    runtime: Runtime, command: str, env: dict[str, str], *, shell: str = "bash"
+):
+    """Run a shell command, piping oversized scripts on stdin to avoid MAX_ARG_STRLEN."""
+    if len(command.encode()) <= 65536:
+        return await runtime.run([shell, "-c", command], env)
+    process = await runtime.exec([shell, "-s"], env)
+    drain = asyncio.create_task(collect_process(process))
+    try:
+        data = command.encode()
+        for offset in range(0, len(data), 65536):
+            await process.write(data[offset : offset + 65536])
+        if not data.endswith(b"\n"):
+            await process.write(b"\n")
+        await process.write(b"\nexit $?\n")
+        return await drain
+    finally:
+        if not drain.done():
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
+
+
 async def _command(runtime, *argv):
     result = await runtime.run(list(argv), {})
     if result.exit_code:
@@ -35,8 +57,8 @@ async def _append(runtime, path, data):
     )
     drain = asyncio.create_task(collect_process(process))
     try:
-        if data:
-            await process.write(data)
+        for offset in range(0, len(data), 65536):
+            await process.write(data[offset : offset + 65536])
         result = await drain
         if result.exit_code:
             raise ValueError(result.stderr.strip())

@@ -24,6 +24,7 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 
 
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
+    HARNESS_TARGET = "mini-swe-agent"
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
     SUPPORTS_TOOL_INTERCEPTION = True

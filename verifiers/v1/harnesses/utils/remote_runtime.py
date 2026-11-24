@@ -4,6 +4,7 @@ import asyncio
 import json
 import shlex
 
+from verifiers.v1.harnesses.utils.remote_files import run_shell
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.types import ToolCall, ToolMessage
 
@@ -75,7 +76,7 @@ def remote_shell_tools(runtime: Runtime):
             raise TypeError("remote command environment must contain strings")
         try:
             async with asyncio.timeout(args.get("timeout") or 86400):
-                result = await runtime.run(["sh", "-c", command], env)
+                result = await run_shell(runtime, command, env, shell="sh")
             output = {
                 "stdout": result.stdout,
                 "stderr": result.stderr,

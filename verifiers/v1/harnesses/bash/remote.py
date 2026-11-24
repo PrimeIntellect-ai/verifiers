@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
 from verifiers.v1.errors import HarnessError, SandboxError
-from verifiers.v1.harnesses.utils.remote_files import read_text
+from verifiers.v1.harnesses.utils.remote_files import read_text, run_shell
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.types import ToolCall, ToolMessage
 
@@ -74,8 +74,8 @@ class BashRemoteTools:
                     try:
                         async with asyncio.timeout(3600):
                             if isinstance(parsed, _BashArgs):
-                                result = await self.runtime.run(
-                                    ["bash", "-c", parsed.command], {}
+                                result = await run_shell(
+                                    self.runtime, parsed.command, {}
                                 )
                                 content = result.stdout + result.stderr
                             else:

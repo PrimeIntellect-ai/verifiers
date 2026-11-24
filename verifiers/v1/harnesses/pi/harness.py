@@ -12,7 +12,7 @@ from verifiers.v1.configs.harness import (
     PinnedVersion,
     skill_destination,
 )
-from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.harnesses.utils.remote import native_remote_tools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
@@ -59,6 +59,7 @@ class PiHarnessConfig(HarnessConfig):
 
 
 class PiHarness(ACPHarness[PiHarnessConfig]):
+    HARNESS_TARGET = "pi"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_TOOL_INTERCEPTION = True
@@ -110,16 +111,17 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         if runtime._execution_bridge is None:
             raise RuntimeError("Pi requires an execution bridge")
         agent_dir = f"{STATE_ROOT}/{trace.id}"
         skills_dir = f"{agent_dir}/skills"
-        await self.install_skills(runtime, skills_dir)
-        if self.config.skills:
-            # Pi puts skill file paths in its system prompt for the model to `read`.
-            await self.install_skills(runtime._execution_bridge.runtime, skills_dir)
+        # Pi puts skill file paths in its system prompt for the model to `read` in B.
+        await self.install_skills(
+            runtime, skills_dir, mirror_to=runtime._execution_bridge.runtime
+        )
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
@@ -205,10 +207,14 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             pi_args += ["--exclude-tools", ",".join(self.config.disabled_tools)]
         if system_prompt:
             # Pi reads a path argument as the file's contents, and rereads it on
-            # resource reloads, so the file stays until cleanup.
+            # resource reloads, so the file stays for the rollout.
             path = f"{agent_dir}/system-prompt.md"
             await runtime.write(path, system_prompt.encode())
             pi_args += ["--append-system-prompt", path]
+        if tool_interception_url is not None:
+            gate_path = f"{agent_dir}/gate.mjs"
+            await runtime.write(gate_path, GATE_EXTENSION.encode())
+            pi_args += ["--extension", gate_path]
         pi_wrapper = f"{agent_dir}/pi"
         await runtime.write(
             pi_wrapper,
@@ -223,20 +229,3 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             # Pi reads the task-scoped MCP configuration from its agent directory.
             mcp_urls={},
         )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"{STATE_ROOT}/{trace.id}", "Pi state")
-
-    async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
-    ) -> None:
-        agent_dir = config.env["PI_CODING_AGENT_DIR"]
-        await runtime.write(f"{agent_dir}/gate.mjs", GATE_EXTENSION.encode())
-        gated = f"{agent_dir}/pi-gated"
-        await runtime.write(
-            gated,
-            f"#!/bin/sh\nexec {config.env['PI_ACP_PI_COMMAND']} "
-            f'--extension {agent_dir}/gate.mjs "$@"\n'.encode(),
-        )
-        await runtime.run(["chmod", "+x", gated], {})
-        config.env["PI_ACP_PI_COMMAND"] = gated

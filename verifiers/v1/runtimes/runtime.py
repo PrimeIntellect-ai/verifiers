@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import shlex
+import tomllib
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -22,7 +24,31 @@ from verifiers.v1.runtimes.base import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.runtimes.bridge import ExecutionBridge
+    from verifiers.v1.runtimes.deployment import ExecutionConnection
+
+
+def _pep723_requirements(data: bytes) -> tuple[str | None, list[str]]:
+    lines = []
+    in_meta = False
+    for line in data.decode(errors="replace").splitlines():
+        if line.strip() == "# /// script":
+            in_meta = True
+            continue
+        if in_meta:
+            if line.strip() == "# ///":
+                break
+            if line.startswith("#"):
+                lines.append(line[1:].lstrip(" "))
+    if not lines:
+        return None, []
+    try:
+        meta = tomllib.loads("\n".join(lines))
+    except tomllib.TOMLDecodeError:
+        return None, []
+    deps = meta.get("dependencies", [])
+    if any("@" in str(d) for d in deps):
+        return None, []
+    return meta.get("requires-python"), [str(d) for d in deps]
 
 
 @dataclass(frozen=True, eq=False)
@@ -38,7 +64,7 @@ class Runtime:
     env: Mapping[str, str] = field(default_factory=dict)
     user: str | None = None
     home: str | None = None
-    _execution_bridge: ExecutionBridge | None = None
+    _execution_bridge: ExecutionConnection | None = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -266,16 +292,34 @@ class Runtime:
                             if self.user is None
                             else ""
                         )
+                        req_py, req_deps = _pep723_requirements(data)
+                        sys_probe = ""
+                        if not self.is_local and req_deps:
+                            check_code = (
+                                "import sys; from packaging.requirements import Requirement; "
+                                "from packaging.specifiers import SpecifierSet; "
+                                "import importlib.metadata as m; "
+                                "py_ver = '.'.join(map(str, sys.version_info[:3])); "
+                                f"req_py = {json.dumps(req_py)}; "
+                                "assert not req_py or py_ver in SpecifierSet(req_py); "
+                                f"reqs = [Requirement(r) for r in {json.dumps(req_deps)}]; "
+                                "assert all(m.version(r.name) in r.specifier for r in reqs)"
+                            )
+                            sys_probe = (
+                                "sys_py=$(command -v python3 || command -v python || true); "
+                                f'if [ -n "$sys_py" ] && "$sys_py" -I -c {shlex.quote(check_code)} >/dev/null 2>&1; then '
+                                f'printf "%s" "$sys_py" > {ready_q} && printf "%s\\n" "$sys_py"{chmod_cmd}; exit 0; fi; '
+                            )
                         command = (
                             f"mv -f {shlex.quote(tmp)} {path_q} "
-                            f"&& {{ {_ENSURE_UV}; }} "
+                            f"&& {{ {sys_probe}{{ {_ENSURE_UV}; }} "
                             f"&& uv sync --script {path_q} -q --no-config "
                             f"&& python=$(uv python find --script {path_q} --no-config) "
                             f'&& venv=$(dirname "$(dirname "$python")") '
                             '&& chmod -R a+rX "$venv"'
                             f"{chmod_cmd} "
                             f'&& printf "%s" "$python" > {ready_q} '
-                            '&& printf "%s\\n" "$python"'
+                            '&& printf "%s\\n" "$python"; }'
                         )
                         # Bootstrap dependencies before task networking is restricted;
                         # keep task offline settings on the returned program's processes.

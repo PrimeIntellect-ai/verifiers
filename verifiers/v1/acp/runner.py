@@ -5,13 +5,14 @@ import json
 import os
 import sys
 from contextlib import AsyncExitStack, suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import httpx
 from acp import (
     PROTOCOL_VERSION,
     Client,
+    RequestError,
     image_block,
     spawn_agent_process,
     text_block,
@@ -373,3 +374,117 @@ class ACPSession:
                     self.client.gate = None
                 self._reset()
         return response_metadata
+
+
+MAX_FRAME = 32 * 1024 * 1024
+
+
+def _encode_frame(message: dict) -> bytes:
+    data = json.dumps(message).encode()
+    if len(data) > MAX_FRAME:
+        raise RuntimeError("ACP runner frame exceeds 32 MiB")
+    return len(data).to_bytes(4, "big") + data
+
+
+async def _serve_stdio() -> None:
+    session: ACPSession | None = None
+    prompt_task: asyncio.Task | None = None
+    reader = asyncio.StreamReader(limit=MAX_FRAME + 4)
+    protocol = asyncio.StreamReaderProtocol(reader)
+    await asyncio.get_running_loop().connect_read_pipe(
+        lambda: protocol, sys.stdin.buffer
+    )
+    tasks: set[asyncio.Task] = set()
+    write_lock = asyncio.Lock()
+
+    async def close_session(graceful: bool) -> dict:
+        nonlocal session
+        if session is None:
+            return {}
+        active, session = session, None
+        if prompt_task is not None:
+            prompt_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await prompt_task
+        return await active.close(graceful=graceful)
+
+    async def dispatch(message: dict[str, Any]) -> Any:
+        nonlocal session, prompt_task
+        op = message["operation"]
+        if op == "ready":
+            return None
+        if op == "acp_prompt":
+            if prompt_task is not None:
+                raise RuntimeError("an ACP prompt is already in progress")
+            if session is None:
+                session = ACPSession(env=message["env"])
+            active = session
+            prompt_task = asyncio.current_task()
+            try:
+                turn = await active.run(message["config"])
+                return {"ok": True, "result": asdict(turn)}
+            except Exception as error:  # noqa: BLE001
+                resp: dict[str, Any] = {
+                    "ok": False,
+                    "error": f"{type(error).__name__}: {error}",
+                }
+                if isinstance(error, RequestError) and isinstance(error.data, dict):
+                    resp["error"] = error.data.get("details") or str(error)
+                    resp["error_data"] = error.data
+                resp["result"] = asdict(active.client.turn_result())
+                return resp
+            finally:
+                prompt_task = None
+        if op == "acp_steer":
+            if session is None:
+                return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+            try:
+                return {
+                    "ok": True,
+                    "result": await session.steer(
+                        message["message"], message.get("message_id")
+                    ),
+                }
+            except NotImplementedError as error:
+                return {"ok": False, "not_implemented": str(error)}
+        if op == "acp_close":
+            return await close_session(message["graceful"])
+        raise RuntimeError(f"unknown ACP runner operation: {op!r}")
+
+    async def reply(message: dict[str, Any]) -> None:
+        try:
+            packet = _encode_frame(
+                {"id": message["id"], "result": await dispatch(message)}
+            )
+        except Exception as error:  # noqa: BLE001
+            packet = _encode_frame(
+                {"id": message["id"], "error": f"{type(error).__name__}: {error}"}
+            )
+        async with write_lock:
+            sys.stdout.buffer.write(packet)
+            sys.stdout.buffer.flush()
+
+    buffer = bytearray()
+    try:
+        while chunk := await reader.read(65536):
+            buffer.extend(chunk)
+            while len(buffer) >= 4:
+                size = int.from_bytes(buffer[:4], "big")
+                if size > MAX_FRAME:
+                    raise RuntimeError("ACP runner frame exceeds 32 MiB")
+                if len(buffer) < size + 4:
+                    break
+                msg = json.loads(buffer[4 : 4 + size])
+                del buffer[: 4 + size]
+                task = asyncio.create_task(reply(msg))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await close_session(False)
+
+
+if __name__ == "__main__":
+    asyncio.run(_serve_stdio())

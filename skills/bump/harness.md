@@ -6,11 +6,13 @@ re-verify the harness after every bump.
 
 ## 1. Find the pins
 
-The pins are in `verifiers/v1/harnesses/<harness>/harness.py`:
+The pins are in `verifiers/v1/harnesses/<harness>/harness.py` and the matching
+build stage in `images/harness/Dockerfile`:
 
-- The `version: PinnedVersion` field of the harness config.
+- The `version: PinnedVersion` field of the harness config (and `ARG VERSION`
+  in `images/harness/Dockerfile`).
 - Module constants for companion packages, such as `ACP_VERSION` or
-  `PRIME_AGENT_VERSION`.
+  `PRIME_AGENT_VERSION` (and matching `ARG`s in `images/harness/Dockerfile`).
 
 Update each pin to a released upstream version. Bump one harness per PR.
 

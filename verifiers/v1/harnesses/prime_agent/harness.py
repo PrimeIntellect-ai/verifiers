@@ -8,7 +8,7 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
-from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
@@ -112,6 +112,7 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
+    HARNESS_TARGET = "prime-agent"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
@@ -230,6 +231,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         if self.config.disabled_tools:
             raise ValueError(
@@ -258,10 +260,10 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             )
         if runtime._execution_bridge is None:
             raise RuntimeError("Prime Agent requires an execution bridge")
-        await self.install_skills(runtime, skills_dir)
-        if self.config.skills:
-            # Prime Agent puts skill file paths in its system prompt for the kernel to read.
-            await self.install_skills(runtime._execution_bridge.runtime, skills_dir)
+        # Prime Agent puts skill file paths in its system prompt for the kernel to read.
+        await self.install_skills(
+            runtime, skills_dir, mirror_to=runtime._execution_bridge.runtime
+        )
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
@@ -399,10 +401,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             prompt=prompt,
             mcp_urls=bridge_mcp_urls,
         )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        root = self._root(trace)
-        await remove_dir(runtime, root, "prime-agent state")
 
     def _bin(self) -> str:
         return f"{PRIME_AGENT_DIR}/{self.config.commit}/bin/prime-agent"

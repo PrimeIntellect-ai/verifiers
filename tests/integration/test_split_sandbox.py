@@ -157,9 +157,9 @@ async def test_split_bash_boundary(tmp_path, monkeypatch, provider):
     harness_backend, workspace_backend = backends[-2:]
     assert trace.agent.harness_runtime.id != trace.agent.runtime.id
     if provider == "docker":
-        from verifiers.v1.configs.deployment import DOCKER_HARNESS_IMAGE
-
-        assert harness_backend.info.image == DOCKER_HARNESS_IMAGE
+        assert harness_backend.info.image == BashHarness(
+            BashHarnessConfig()
+        ).harness_image("docker")
         assert workspace_backend.info.image == "python:3.13-slim"
     for backend in backends:
         await backend.verify_stopped()

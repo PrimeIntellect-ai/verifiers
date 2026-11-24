@@ -135,12 +135,8 @@ def mark(name: str) -> pytest.MarkDecorator:
 
 
 def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
-    config: dict = {"type": runtime}
-    program = harness is not None and harness_class(harness_id(harness)).NEEDS_CONTAINER
-    # Prime's default 1 CPU / 2 GB is too small to install and run an agent CLI.
-    if runtime == "prime" and program:
-        config.update(cpu=2.0, memory=4.0)
-    return config
+    _ = harness
+    return {"type": runtime}
 
 
 def runtime_cls(runtime: str) -> type:

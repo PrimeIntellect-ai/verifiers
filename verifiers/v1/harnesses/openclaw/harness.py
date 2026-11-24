@@ -8,7 +8,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.openclaw.remote import OpenClawRemoteTools
-from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.harnesses.utils.remote import native_tool_names
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
@@ -155,6 +155,7 @@ class OpenClawHarnessConfig(HarnessConfig):
 
 
 class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
+    HARNESS_TARGET = "openclaw"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
@@ -192,48 +193,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         )
         await super().setup(runtime)
 
-    async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
-    ) -> None:
-        directory = f"{config.env['OPENCLAW_STATE_DIR']}/execution-gate"
-        ready = f"{directory}/ready"
-        native = sorted(native_tool_names("openclaw") | {"exec", "process"})
-        await runtime.write(
-            f"{directory}/index.mjs",
-            GATE_SOURCE.replace("__URL__", json.dumps(url))
-            .replace("__SECRET__", json.dumps(secret))
-            .replace("__NATIVE_TOOLS__", json.dumps(native))
-            .replace("__READY__", json.dumps(ready))
-            .encode(),
-        )
-        await runtime.write(
-            f"{directory}/package.json",
-            json.dumps(
-                {
-                    "name": "execution-gate",
-                    "type": "module",
-                    "openclaw": {"extensions": ["./index.mjs"]},
-                }
-            ).encode(),
-        )
-        await runtime.write(
-            f"{directory}/openclaw.plugin.json",
-            json.dumps(
-                {
-                    "id": "execution-gate",
-                    "activation": {"onStartup": True},
-                    "configSchema": {"type": "object", "additionalProperties": False},
-                }
-            ).encode(),
-        )
-        path = config.env["OPENCLAW_CONFIG_PATH"]
-        settings = json.loads(await runtime.read(path))
-        plugins = settings.setdefault("plugins", {})
-        plugins.setdefault("load", {}).setdefault("paths", []).append(directory)
-        plugins.setdefault("entries", {})["execution-gate"] = {"enabled": True}
-        await runtime.write(path, json.dumps(settings).encode())
-        config.env["AGENT_OPENCLAW_GATE_READY"] = ready
-
     async def _in_catalog(self, runtime: Runtime, model: str, state_dir: str) -> bool:
         """Whether OpenClaw's model catalog knows `model`, checked once per model."""
         if model not in self._cataloged:
@@ -260,6 +219,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         provider, _, model_id = ctx.model.partition("/")
@@ -338,6 +298,46 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         if not self.config.use_bundled_skill:
             # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
             config.setdefault("skills", {})["allowBundled"] = ["__none__"]
+        gate_ready = None
+        if tool_interception_url is not None:
+            gate_dir = f"{state_dir}/execution-gate"
+            gate_ready = f"{gate_dir}/ready"
+            native = sorted(native_tool_names("openclaw") | {"exec", "process"})
+            await runtime.write(
+                f"{gate_dir}/index.mjs",
+                GATE_SOURCE.replace("__URL__", json.dumps(tool_interception_url))
+                .replace("__SECRET__", json.dumps(secret))
+                .replace("__NATIVE_TOOLS__", json.dumps(native))
+                .replace("__READY__", json.dumps(gate_ready))
+                .encode(),
+            )
+            await runtime.write(
+                f"{gate_dir}/package.json",
+                json.dumps(
+                    {
+                        "name": "execution-gate",
+                        "type": "module",
+                        "openclaw": {"extensions": ["./index.mjs"]},
+                    }
+                ).encode(),
+            )
+            await runtime.write(
+                f"{gate_dir}/openclaw.plugin.json",
+                json.dumps(
+                    {
+                        "id": "execution-gate",
+                        "activation": {"onStartup": True},
+                        "configSchema": {
+                            "type": "object",
+                            "additionalProperties": False,
+                        },
+                    }
+                ).encode(),
+            )
+            config["plugins"] = {
+                "load": {"paths": [gate_dir]},
+                "entries": {"execution-gate": {"enabled": True}},
+            }
         await runtime.write(config_path, json.dumps(config).encode())
         await self.install_skills(runtime, skills_dir)
 
@@ -351,6 +351,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             "OPENCLAW_SUPPRESS_NOTES": "1",
             "NO_COLOR": "1",
             "VF_OPENCLAW_BIN": OPENCLAW_BIN.format(version=self.config.version),
+            **({"AGENT_OPENCLAW_GATE_READY": gate_ready} if gate_ready else {}),
         }
         # OpenClaw rejects ACP per-session MCP declarations; the isolated Gateway
         # config owns the equivalent task-scoped server definitions.
@@ -361,7 +362,3 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             mcp_urls={},
             system_prompt=system_prompt,
         )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        state_dir = f"/tmp/vf-openclaw/{trace.id}"
-        await remove_dir(runtime, state_dir, "OpenClaw state")

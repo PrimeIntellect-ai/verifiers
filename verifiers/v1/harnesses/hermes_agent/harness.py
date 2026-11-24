@@ -7,9 +7,8 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.hermes_agent.remote import _TOOLS as _HERMES_TOOLS
-from verifiers.v1.harnesses.hermes_agent.remote import HermesRemoteTools
-from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed
+from verifiers.v1.harnesses.utils.remote import native_remote_tools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import strip_text
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
@@ -53,40 +52,14 @@ class HermesAgentHarnessConfig(HarnessConfig):
 
 
 class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
+    HARNESS_TARGET = "hermes-agent"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        directory = HERMES_DIR.format(version=self.config.version)
-        # Install only tool code in B; no model credentials or A configuration.
-        await ensure_installed(
-            runtime,
-            directory=directory,
-            ready=f"test -f {directory}/.ready",
-            install=INSTALL,
-            env={
-                "AGENT_HERMES_DIR": directory,
-                "AGENT_HERMES_VERSION": self.config.version,
-            },
-            label="Hermes execution tools",
-            shell=("bash", "-o", "pipefail", "-c"),
-        )
-        home = "/tmp/verifiers-hermes-tools"
-        await runtime.write(f"{home}/config.yaml", b"{}")
-        return RemoteToolsSpec(
-            HermesRemoteTools,
-            {"python": f"{directory}/.venv/bin/python", "home": home},
-            native_tools=_HERMES_TOOLS,
-        )
-
-    async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
-    ) -> None:
-        config.env["VF_TOOL_GATE_URL"] = url
-        config.env["VF_TOOL_GATE_SECRET"] = secret
-        config.env["VF_NATIVE_TOOLS"] = json.dumps(sorted(_HERMES_TOOLS))
+        return native_remote_tools(runtime, "hermes_agent", self.config.disabled_tools)
 
     # Hermes strips stored assistant text and pads missing reasoning with " " on
     # routes requiring reasoning replay. Recheck on version bumps:
@@ -122,6 +95,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         if self.config.disabled_tools:
             raise ValueError("Hermes Agent ACP does not support disabling tools")
@@ -180,6 +154,12 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             "HERMES_HOME": home,
             "HERMES_INFERENCE_MODEL": ctx.model,
         }
+        if tool_interception_url is not None:
+            env["VF_TOOL_GATE_URL"] = tool_interception_url
+            env["VF_TOOL_GATE_SECRET"] = secret
+            env["VF_NATIVE_TOOLS"] = json.dumps(
+                sorted(native_tool_names("hermes_agent"))
+            )
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
             env=env,
@@ -193,6 +173,3 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             system_prompt=system_prompt,
             mcp_urls={},
         )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"/tmp/vf-hermes/{trace.id}", "Hermes home")

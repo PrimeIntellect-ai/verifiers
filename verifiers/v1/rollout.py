@@ -200,7 +200,6 @@ class Rollout:
         self._opened = False
         self._deployment_started = False
         self._closed = False
-        self._harness_cleaned = False
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
@@ -344,6 +343,7 @@ class Rollout:
                     borrowed_runtime=self._borrowed_runtime,
                     for_agent=True,
                     execution_network=self.runtime_config,
+                    harness_image=self.harness.harness_image,
                 )
                 try:
                     await self.deployment.start()
@@ -599,15 +599,6 @@ class Rollout:
                                 state_route=f"{base_url.rstrip('/')}/state",
                             )
                         )
-                        if isinstance(self._session.remote_tool_handler, SandboxTools):
-                            group.create_task(
-                                self._session.remote_tool_handler.connect(
-                                    self._agent_runtime.host_url(
-                                        f"{base_url.rstrip('/')}/execution"
-                                    ),
-                                    model_secret,
-                                )
-                            )
                         group.create_task(open_session())
                 except ExceptionGroup as failed:
                     raise failed.exceptions[0]
@@ -650,7 +641,7 @@ class Rollout:
         adapter = await self.harness.remote_tools(workspace, self.task.data)
         if adapter is not None:
             handler = self._session.remote_tool_handler = SandboxTools(
-                self.deployment._harness_runtime, bridge, adapter
+                workspace, adapter
             )
             self._stack.push_async_callback(handler.aclose)
         self._agent_runtime = replace(
@@ -664,8 +655,6 @@ class Rollout:
                 group.create_task(
                     self.harness.setup_execution(self._agent_runtime, bridge)
                 )
-                if adapter is not None:
-                    group.create_task(handler.prepare())
         except ExceptionGroup as failed:
             raise failed.exceptions[0]
 
@@ -789,30 +778,6 @@ class Rollout:
         ):
             self._harness_session._graceful_close = False
 
-    async def _cleanup_harness(
-        self, runtime: Runtime, *, runtime_stopping: bool = False
-    ) -> None:
-        if self._harness_cleaned:
-            return
-        target = self._agent_runtime or runtime
-        if (
-            runtime_stopping
-            and self._borrowed_runtime is None
-            and target.type in ("prime", "docker")
-        ):
-            self._harness_cleaned = True
-            return
-        try:
-            await self.harness.cleanup(self.trace, target)
-        except Exception as e:
-            logger.warning(
-                "Failed to clean up harness - %s: %s",
-                type(e).__name__,
-                e,
-                exc_info=logger.isEnabledFor(logging.DEBUG),
-            )
-        self._harness_cleaned = True
-
     async def abort(self) -> None:
         """Free everything this run holds — the entered servers and an owned
         runtime — without finalizing or scoring: the escape path when an exception
@@ -825,9 +790,6 @@ class Rollout:
                 await self._harness_session.close()
         with contextlib.suppress(Exception):
             await self._stack.aclose()
-        if self.runtime is not None:
-            with contextlib.suppress(Exception):
-                await self._cleanup_harness(self.runtime, runtime_stopping=True)
         if self.deployment is not None:
             with contextlib.suppress(Exception):
                 await self.deployment.close()
@@ -1024,7 +986,6 @@ class Rollout:
                             asyncio.timeout_at(finalize_deadline),
                             boundary(TaskError, "task finalize"),
                         ):
-                            await self._cleanup_harness(runtime)
                             await self.deployment.stop_execution()
                             await self.task.finalize_services(
                                 trace,
@@ -1157,8 +1118,6 @@ class Rollout:
                 if span.start and not span.end:
                     span.end = now
             trace.split_agent_time()
-            if runtime is not None:
-                await self._cleanup_harness(runtime, runtime_stopping=True)
             # Tear down here — the env's `finalize()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

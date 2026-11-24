@@ -2,11 +2,17 @@
 
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 
-from verifiers.v1.configs.deployment import DOCKER_HARNESS_IMAGE, HARNESS_IMAGE
+from verifiers.v1.configs.deployment import (
+    DOCKER_HARNESS_IMAGE,
+    DOCKER_HARNESS_IMAGE_PREFIX,
+    HARNESS_IMAGE,
+)
 from verifiers.v1.configs.runtime import DockerConfig, NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import DockerBackend, PrimeBackend, PrimeConfig, make_backend
+from verifiers.v1.runtimes.backends.docker import cli as docker_cli
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
 from verifiers.v1.runtimes.private_network import (
@@ -17,35 +23,105 @@ from verifiers.v1.runtimes.private_network import (
 from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
+_DOCKER_IMAGE_LOCKS: dict[tuple[asyncio.AbstractEventLoop, str], asyncio.Lock] = {}
+
+
+async def _ensure_docker_harness_image(image: str) -> str:
+    """Use an existing local image, pull it, or build from `images/harness/Dockerfile`."""
+    if not image.startswith(f"{DOCKER_HARNESS_IMAGE_PREFIX}-"):
+        return image
+    lock = _DOCKER_IMAGE_LOCKS.setdefault(
+        (asyncio.get_running_loop(), image), asyncio.Lock()
+    )
+    async with lock:
+        if (await docker_cli("docker", "image", "inspect", image)).exit_code == 0:
+            return image
+        if (await docker_cli("docker", "pull", image)).exit_code == 0:
+            return image
+        dockerfile = Path(__file__).resolve().parents[3] / "images" / "harness"
+        if (dockerfile / "Dockerfile").is_file():
+            target = image.removeprefix(f"{DOCKER_HARNESS_IMAGE_PREFIX}-").partition(
+                ":"
+            )[0]
+            built = await docker_cli(
+                "docker",
+                "build",
+                "--target",
+                target,
+                "--tag",
+                image,
+                str(dockerfile),
+            )
+            if built.exit_code == 0:
+                return image
+            raise SandboxError(
+                f"docker harness image build failed for {image!r}: {built.stderr.strip()[-1000:]}"
+            )
+        return image
 
 
 def _make_harness(d):
-    """Place the harness beside the workspace using the harness image and its own resources."""
+    """Place the harness beside the workspace using its dedicated image and resources."""
     workspace = d.execution_backend.config
     policy = d.execution_network
     if isinstance(workspace, PrimeConfig):
-        config = PrimeConfig(
-            image=HARNESS_IMAGE,
-            cpu=2,
-            memory=4,
-            workdir=workspace.workdir,
-            region=workspace.region,
-            labels=workspace.labels,
-            creates_per_min=workspace.creates_per_min,
-            allow=policy.allow,
-            block=policy.block,
+        base = d.config.harness
+        explicit = base.model_fields_set
+        default_image = (
+            d.harness_image("prime") if d.harness_image is not None else HARNESS_IMAGE
+        )
+        config = base.model_copy(
+            update={
+                "image": base.image
+                if "image" in explicit or base.checkpoint
+                else default_image,
+                "workdir": workspace.workdir,
+                "mounts": {},
+                "region": base.region if "region" in explicit else workspace.region,
+                "labels": list(dict.fromkeys([*workspace.labels, *base.labels])),
+                "idle_timeout": (
+                    base.idle_timeout
+                    if "idle_timeout" in explicit
+                    else workspace.idle_timeout
+                ),
+                "creates_per_min": (
+                    base.creates_per_min
+                    if "creates_per_min" in explicit
+                    else workspace.creates_per_min
+                ),
+                "allow": policy.allow
+                if isinstance(policy, NetworkPolicyConfig)
+                else base.allow,
+                "block": policy.block
+                if isinstance(policy, NetworkPolicyConfig)
+                else base.block,
+            }
         )
     elif isinstance(workspace, DockerConfig):
+        base = d.config.harness
+        explicit = base.model_fields_set
+        image = (
+            base.image
+            if "image" in explicit
+            else (
+                d.harness_image("docker")
+                if d.harness_image is not None
+                else DOCKER_HARNESS_IMAGE
+            )
+        )
         config = DockerConfig(
-            image=DOCKER_HARNESS_IMAGE,
-            cpu=2,
-            memory=4,
+            image=image,
+            cpu=base.cpu if "cpu" in explicit else 2,
+            memory=base.memory if "memory" in explicit else 4,
             workdir=workspace.workdir,
-            allow=policy.allow,
-            block=policy.block,
+            allow=policy.allow if isinstance(policy, NetworkPolicyConfig) else ["*"],
+            block=policy.block if isinstance(policy, NetworkPolicyConfig) else [],
         )
     else:
-        config = workspace
+        updates = {}
+        if "mounts" in type(workspace).model_fields:
+            updates["mounts"] = {}
+        config = workspace.model_copy(update=updates) if updates else workspace
     return make_backend(config, name=f"{d.execution_backend.name}-harness")
 
 
@@ -87,6 +163,8 @@ class _SplitDeployment(_DeploymentStrategy):
                 "borrowed Docker workspace cannot enforce the agent network policy; provision it with agent.provision() or provision_runtime()"
             )
         d.harness_backend = _make_harness(d)
+        if isinstance(d.harness_backend, DockerBackend):
+            await _ensure_docker_harness_image(d.harness_backend.config.image)
         if d.borrowed_runtime is not None:
             await d.own(d.harness_backend)
         else:
@@ -99,6 +177,8 @@ class _SplitDeployment(_DeploymentStrategy):
                 raise failed.exceptions[0]
         if isinstance(d.execution_backend, PrimeBackend):
             await d.enter(keepalive(d.execution_backend))
+        if isinstance(d.harness_backend, PrimeBackend):
+            await d.enter(keepalive(d.harness_backend))
         d.target_backends = {"main": d.execution_backend}
 
     async def prepare_execution(self, d, routes, state_route=None):
@@ -144,7 +224,10 @@ class _ContainerDeployment(_DeploymentStrategy):
         d.target_backends = dict(services)
         d.execution_backend = services[d.spec.workspace]
         if d.for_agent:
-            d.harness_backend = await d.own(_make_harness(d))
+            harness = _make_harness(d)
+            if isinstance(harness, DockerBackend):
+                await _ensure_docker_harness_image(harness.config.image)
+            d.harness_backend = await d.own(harness)
 
     async def prepare_execution(self, d, routes, state_route=None):
         if d.harness_backend is not None:

@@ -184,9 +184,9 @@ jobs:
             ~/.cache/chroma
           key: wiki-search-${{ runner.os }}-${{ steps.wiki-corpus.outputs.revision }}-${{ hashFiles('uv.lock', 'environments/wiki_search/wiki_search/servers/wiki.py') }}
 
-      - name: Build harness image for Docker
+      - name: Build base harness image for Docker
         if: matrix.behavior == 'Sandbox Boundary' || matrix.behavior == 'Scoring Network'
-        run: docker build --tag ghcr.io/primeintellect-ai/verifiers-harness:v1 images/harness
+        run: docker build --target base --tag ghcr.io/primeintellect-ai/verifiers-harness-base:v1 images/harness
 
       - name: Run integration tests
         run: |

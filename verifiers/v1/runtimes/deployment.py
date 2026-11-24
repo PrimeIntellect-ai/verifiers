@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
+import json
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Collection, Mapping
+from collections.abc import AsyncIterator, Callable, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from verifiers.v1.configs.deployment import DeploymentConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import HarnessError, SandboxError
 from verifiers.v1.runtimes import (
     DockerBackend,
     PrimeConfig,
@@ -22,14 +25,17 @@ from verifiers.v1.runtimes import (
     provision_backend,
 )
 from verifiers.v1.runtimes.base import (
+    RuntimeProcess,
     register,
 )
-from verifiers.v1.runtimes.bridge import ExecutionBridge
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
+
+_MAX_RECEIPTS = 100_000
+_MAX_RECEIPT_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -150,26 +156,140 @@ class WorkerGroup:
             )
 
 
-class ExecutionConnection(ExecutionBridge):
-    """One execution connection and lifecycle for a split workspace.
+@dataclass
+class _Worker:
+    name: str
+    process: RuntimeProcess
+    stdout_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    stderr_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    stdin_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    eof: set[str] = field(default_factory=set)
 
-    Native workers and approved tool commands use the same bound workspace runtime.
-    Workspace-local listeners can outlive a session for grading.
+
+class ExecutionConnection:
+    """Host-owned registration, stdio relay, and lifecycle for worker-sandbox processes.
+
+    Harnesses can open only registered workers; neither model nor MCP credentials
+    enter the worker sandbox. Receipts preserve calls across transport retries.
     """
 
     def __init__(self, runtime: Runtime) -> None:
-        super().__init__(runtime)
+        self.runtime = runtime
+        self.commands: dict[str, tuple[list[str], dict[str, str]]] = {}
+        self.workers: dict[str, _Worker] = {}
+        self.receipts: dict[str, tuple[bytes, asyncio.Task]] = {}
+        self._open_lock = asyncio.Lock()
+        self._receipt_bytes = 0
+        self.closed = False
         self._workers = WorkerGroup()
         self._stdio_marker: dict[str, str] | None = None
         self._abandon_on_close = False
 
-    async def _exec(self, argv: list[str], env: dict[str, str]):
-        # Track descendants independently of worker process groups, so failed
-        # startup or forced worker termination still gets reaped before grading.
+    def _retain(self, size: int) -> None:
+        if self._receipt_bytes + size > _MAX_RECEIPT_BYTES:
+            raise HarnessError("split execution exceeded its replay buffer budget")
+        self._receipt_bytes += size
+
+    def register(self, name: str, argv: list[str], env: dict[str, str]) -> None:
+        if self.closed or name in self.commands or not argv:
+            raise HarnessError(f"invalid split worker registration {name!r}")
+        self.commands[name] = (list(argv), dict(env))
+
+    async def _exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
         if self._stdio_marker is None:
             self._stdio_marker = self._workers.mark(self.runtime)
-        env = {**env, **self._stdio_marker}
-        return await super()._exec(argv, env)
+        return await self.runtime.exec(argv, {**env, **self._stdio_marker})
+
+    async def handle(self, body: dict) -> dict:
+        if self.closed:
+            raise HarnessError("split execution bridge is closed")
+        request_id = body.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            raise HarnessError("split execution requires a request_id")
+        if body.get("operation") in {"kill", "wait"}:
+            return await self._handle(body)
+        encoded = json.dumps(body, sort_keys=True).encode()
+        fingerprint = hashlib.sha256(encoded).digest()
+        receipt = self.receipts.get(request_id)
+        if receipt is None:
+            if len(self.receipts) >= _MAX_RECEIPTS:
+                raise HarnessError(
+                    "split execution exceeded its request receipt budget"
+                )
+            size = len(encoded)
+            self._retain(size + len(fingerprint))
+
+            async def execute():
+                try:
+                    return await self._handle(body)
+                finally:
+                    self._receipt_bytes -= size
+
+            task = asyncio.create_task(execute())
+            self.receipts[request_id] = (fingerprint, task)
+        else:
+            previous, task = receipt
+            if previous != fingerprint:
+                raise HarnessError("split execution request_id was reused")
+        del encoded
+        return await asyncio.shield(task)
+
+    async def _handle(self, body: dict) -> dict:
+        operation = body.get("operation")
+        process_id = body.get("process_id")
+        if not isinstance(process_id, str) or not process_id:
+            raise HarnessError("split execution requires a process_id")
+        if operation == "open":
+            name = body.get("worker")
+            if not isinstance(name, str) or name not in self.commands:
+                raise HarnessError("split execution requested an unregistered worker")
+            argv, env = self.commands[name]
+            async with self._open_lock:
+                existing = self.workers.get(process_id)
+                if existing is not None and existing.name == name:
+                    return {"process_id": process_id}
+                if process_id in self.workers:
+                    raise HarnessError("split process_id was reused")
+
+                async def start() -> None:
+                    process = await self._exec(argv, env)
+                    self.workers[process_id] = _Worker(name, process)
+
+                await run_shielded(start())
+            return {"process_id": process_id}
+        worker = self.workers.get(process_id)
+        if worker is None:
+            raise HarnessError("split execution requested an unknown process")
+        if operation == "write":
+            try:
+                data = base64.b64decode(body["data"], validate=True)
+            except (KeyError, ValueError, TypeError) as error:
+                raise HarnessError("invalid split stdin payload") from error
+            async with worker.stdin_lock:
+                await worker.process.write(data)
+            return {}
+        if operation == "read":
+            stream = body.get("stream")
+            if stream not in ("stdout", "stderr"):
+                raise HarnessError("invalid split output stream")
+            async with getattr(worker, f"{stream}_lock"):
+                chunk = (
+                    None
+                    if stream in worker.eof
+                    else await anext(getattr(worker.process, stream), None)
+                )
+                if chunk is None:
+                    worker.eof.add(stream)
+            self._retain(((len(chunk) + 2) // 3) * 4 if chunk is not None else 0)
+            return {
+                "data": base64.b64encode(chunk).decode() if chunk is not None else None,
+                "eof": chunk is None,
+            }
+        if operation in {"wait", "kill"}:
+            if operation == "kill":
+                await worker.process.kill()
+            return {"exit_code": await worker.process.wait()}
+        raise HarnessError(f"unknown split execution operation {operation!r}")
 
     async def serve(
         self,
@@ -180,15 +300,7 @@ class ExecutionConnection(ExecutionBridge):
         *,
         keep_detached: bool = False,
     ) -> int:
-        """Start `argv` through `runtime`, a workspace view, and return the port it
-        listens on. The worker binds a port the kernel picks and prints it in a line
-        that `announce` matches, with the port as its first group.
-
-        `close` stops the worker and every process its tools started, detached or not;
-        with `keep_detached`, for a worker that stops what is still attached to a
-        session as the session closes, only the worker and its own process group, so
-        a daemon its tools started keeps running after the harness exits.
-        """
+        """Start `argv` in the worker sandbox and return the port it announces."""
         marker = self._workers.mark(runtime, keep_detached=keep_detached)
         log = runtime.temp_path(f"vf-exec-{marker[_MARK]}.log")
         await runtime.run_background(
@@ -200,9 +312,8 @@ class ExecutionConnection(ExecutionBridge):
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(60):
                 while True:
-                    with contextlib.suppress(SandboxError):  # not written yet
+                    with contextlib.suppress(SandboxError):
                         output = (await runtime.read(log)).decode(errors="replace")
-                    # A worker that crashed right after announcing has both lines.
                     if _EXITED in output:
                         break
                     if found := announce.search(output):
@@ -210,16 +321,55 @@ class ExecutionConnection(ExecutionBridge):
                     await asyncio.sleep(0.2)
         raise SandboxError(f"execution worker did not start: {output[-2000:]}")
 
+    async def abandon(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        tasks = [task for _, task in self.receipts.values()]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(
+            *(worker.process.abandon() for worker in self.workers.values()),
+            return_exceptions=True,
+        )
+        self.receipts.clear()
+        self.workers.clear()
+        self._receipt_bytes = 0
+
     async def close(self) -> None:
-        """Stop every worker, with the processes their tools started that `serve` says
-        to stop."""
         if self.closed:
             return
         if self._abandon_on_close:
             await self.abandon()
             self._workers._listeners.clear()
             return
-        await super().close()
+        self.closed = True
+        tasks = [task for _, task in self.receipts.values()]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        try:
+            async with asyncio.timeout(10):
+                await asyncio.gather(*tasks, return_exceptions=True)
+                processes = [worker.process for worker in self.workers.values()]
+                await asyncio.gather(
+                    *(proc.kill() for proc in processes),
+                    return_exceptions=True,
+                )
+                await asyncio.gather(
+                    *(proc.wait() for proc in processes),
+                    return_exceptions=True,
+                )
+        except TimeoutError:
+            logger.warning(
+                "Timed out waiting for split workers to exit",
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
+        self.receipts.clear()
+        self.workers.clear()
+        self._receipt_bytes = 0
         await self._workers.close()
 
 
@@ -274,6 +424,7 @@ class Deployment:
         borrowed_runtime: Runtime | None = None,
         for_agent: bool = False,
         execution_network: RuntimeConfig | None = None,
+        harness_image: Callable[[str], str] | None = None,
     ):
         self.backend = backend
         self.spec = spec
@@ -286,6 +437,7 @@ class Deployment:
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
         self.execution_network = execution_network or backend.config
+        self.harness_image = harness_image
         self.for_agent = for_agent
         self.control_routes: list[str] = []
         from verifiers.v1.runtimes.strategies import _deployment_strategy

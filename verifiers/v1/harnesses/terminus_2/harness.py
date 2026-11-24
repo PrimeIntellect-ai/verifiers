@@ -29,6 +29,7 @@ class Terminus2HarnessConfig(HarnessConfig):
 
 
 class Terminus2Harness(Harness[Terminus2HarnessConfig]):
+    HARNESS_TARGET = "terminus-2"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = False
     SUPPORTS_TOOL_INTERCEPTION = True

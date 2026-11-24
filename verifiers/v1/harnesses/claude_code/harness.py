@@ -6,7 +6,7 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.harnesses.utils.remote import native_remote_tools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
@@ -41,6 +41,7 @@ class ClaudeCodeHarnessConfig(HarnessConfig):
 
 
 class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
+    HARNESS_TARGET = "claude-code"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
@@ -84,12 +85,18 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        config_dir = self.config_dir(trace)
+        config_dir = f"{CLAUDE_CONFIG_ROOT}/{trace.id}"
+        permissions = (
+            {**CLAUDE_PERMISSIONS, "ask": ["*"]}
+            if tool_interception_url is not None
+            else CLAUDE_PERMISSIONS
+        )
         await runtime.write(
             f"{config_dir}/settings.json",
-            json.dumps({"permissions": CLAUDE_PERMISSIONS}).encode(),
+            json.dumps({"permissions": permissions}).encode(),
         )
         await self.install_skills(runtime, f"{config_dir}/skills")
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
@@ -125,21 +132,3 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             prompt=prompt or "",
             session_meta=session_meta,
         )
-
-    async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
-    ) -> None:
-        # An `ask` rule on every tool makes Claude Code raise a permission request for
-        # each call, read-only tools included; the ACP adapter hands it to the runner.
-        # `CLAUDE_CONFIG_DIR` holds the user settings, which the adapter loads by default.
-        await runtime.write(
-            f"{config.env['CLAUDE_CONFIG_DIR']}/settings.json",
-            json.dumps({"permissions": {**CLAUDE_PERMISSIONS, "ask": ["*"]}}).encode(),
-        )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, self.config_dir(trace), "Claude config")
-
-    @staticmethod
-    def config_dir(trace: Trace) -> str:
-        return f"{CLAUDE_CONFIG_ROOT}/{trace.id}"

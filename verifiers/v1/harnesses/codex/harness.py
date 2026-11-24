@@ -4,24 +4,22 @@ import asyncio
 import contextlib
 import gzip
 import hashlib
-import io
 import json
-import shutil
-import tarfile
-import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Literal
 from weakref import WeakValueDictionary
 
-import httpx
 import tomli_w
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.errors import HarnessError
-from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.install import (
+    cached_npm_tarball_members,
+    ensure_installed,
+)
 from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import ExecutionConnection
@@ -46,8 +44,7 @@ _LINUX_VENDOR = {
     "aarch64": ("linux-arm64", "aarch64-unknown-linux-musl"),
     "arm64": ("linux-arm64", "aarch64-unknown-linux-musl"),
 }
-_EXECUTOR_FILES: dict[tuple[str, str], dict[str, bytes]] = {}
-_EXECUTOR_LOCKS: WeakValueDictionary[
+_RAW_WRITE_LOCKS: WeakValueDictionary[
     tuple[asyncio.AbstractEventLoop, str, str], asyncio.Lock
 ] = WeakValueDictionary()
 
@@ -66,61 +63,6 @@ npm install --ignore-scripts --no-audit --no-fund \
 touch {ready}
 """
 
-
-def _executor_lock(version: str, triple: str) -> asyncio.Lock:
-    return _EXECUTOR_LOCKS.setdefault(
-        (asyncio.get_running_loop(), version, triple), asyncio.Lock()
-    )
-
-
-async def _executor_files(
-    version: str, tarball_suffix: str, triple: str
-) -> dict[str, bytes]:
-    """Cache the compressed worker executables once per evaluator process."""
-    key = (version, triple)
-    if key in _EXECUTOR_FILES:
-        return _EXECUTOR_FILES[key]
-    async with _executor_lock(version, triple):
-        if key in _EXECUTOR_FILES:
-            return _EXECUTOR_FILES[key]
-        url = f"https://registry.npmjs.org/@openai/codex/-/codex-{version}-{tarball_suffix}.tgz"
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-
-        def extract() -> dict[str, bytes]:
-            files = {}
-            prefix = f"package/vendor/{triple}/"
-            with tarfile.open(
-                fileobj=io.BytesIO(response.content), mode="r:gz"
-            ) as archive:
-                for member in archive:
-                    path = member.name.removeprefix(prefix)
-                    if path == member.name or path not in {
-                        "bin/codex",
-                        "codex-resources/bwrap",
-                        "codex-path/rg",
-                    }:
-                        continue
-                    source = archive.extractfile(member)
-                    if source is None:
-                        raise HarnessError(
-                            f"missing content for Codex executor file {path}"
-                        )
-                    buffer = io.BytesIO()
-                    with gzip.GzipFile(
-                        fileobj=buffer, mode="wb", compresslevel=1
-                    ) as encoded:
-                        shutil.copyfileobj(source, encoded, length=1024 * 1024)
-                    files[path] = buffer.getvalue()
-            if "bin/codex" not in files:
-                raise HarnessError("codex binary missing from archive")
-            return files
-
-        _EXECUTOR_FILES[key] = await asyncio.to_thread(extract)
-        return _EXECUTOR_FILES[key]
-
-
 _PUBLISH_EXECUTOR = """
 stage=$1; parent=$2; suffix=$3; shift 3
 for file do
@@ -130,6 +72,27 @@ done
 chmod -R a+rX "$stage"
 mv "$stage" "$parent/" || test -x "$parent/${stage##*/}/bin/codex"
 """
+
+
+async def _executor_files(
+    version: str, tarball_suffix: str, triple: str
+) -> dict[str, bytes]:
+    url = f"https://registry.npmjs.org/@openai/codex/-/codex-{version}-{tarball_suffix}.tgz"
+    prefix = f"package/vendor/{triple}/"
+    wanted = {"bin/codex", "codex-resources/bwrap", "codex-path/rg"}
+
+    def select(name: str) -> str | None:
+        rel = name.removeprefix(prefix)
+        return rel if rel != name and rel in wanted else None
+
+    files = await cached_npm_tarball_members(
+        url,
+        select,
+        transform=lambda raw: gzip.compress(raw, compresslevel=1),
+    )
+    if "bin/codex" not in files:
+        raise HarnessError("codex binary missing from archive")
+    return files
 
 
 async def _install_executor(
@@ -158,19 +121,19 @@ async def _install_executor(
             scratch = directory.parent / f".codex-{uuid.uuid4().hex}"
             staged = scratch / directory.name
             suffix = ".gz" if probe.stdout.strip() == "gzip" else ""
+            raw_lock = _RAW_WRITE_LOCKS.setdefault(
+                (asyncio.get_running_loop(), version, triple), asyncio.Lock()
+            )
             try:
                 for path, data in files.items():
                     target = str(staged / (path + suffix))
                     if suffix:
                         await runtime.write(target, data)
                     else:
-                        # Keep at most one large uncompressed executor in flight per pin.
-                        async with _executor_lock(version, triple):
+                        async with raw_lock:
                             await runtime.write(
                                 target, await asyncio.to_thread(gzip.decompress, data)
                             )
-                # Rename a complete package into its parent. A concurrent publisher can
-                # win the rename; its complete, versioned installation is equally usable.
                 result = await runtime.run(
                     [
                         "sh",
@@ -216,12 +179,12 @@ class CodexHarnessConfig(HarnessConfig):
 
 
 class CodexHarness(ACPHarness[CodexHarnessConfig]):
+    HARNESS_TARGET = "codex"
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
     _executor_cwd: str | None = None
-    _staged_configs: dict[str, dict] | None = None
 
     def can_gate_tool(self, call: ToolCall) -> bool:
         # 0.166.0 deliberately omits PreToolUse for write_stdin. Only these
@@ -276,7 +239,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     async def setup_execution(
         self, runtime: Runtime, connection: ExecutionConnection
     ) -> None:
-        """Install the static musl Codex binary in B without Node or npm."""
+        """Install the static musl Codex binary in the worker sandbox without Node or npm."""
         target_root = connection.runtime.with_user(None)
         arch = target_root.backend.cache.arch
         if not arch:
@@ -284,7 +247,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         b_vendor = _LINUX_VENDOR.get(arch)
         if b_vendor is None:
             raise HarnessError(
-                f"unsupported workspace architecture for Codex executor: {arch!r}"
+                f"unsupported worker architecture for Codex executor: {arch!r}"
             )
         tarball_suffix, triple = b_vendor
         directory = EXECUTOR_DIR.format(version=self.config.version)
@@ -311,12 +274,21 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         if data.system_prompt is not None and not isinstance(data.prompt, str):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)
-        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
+        env = await self.build_env(
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            tool_interception_url=tool_interception_url,
+        )
         return ACPConfig(
             env=env,
             command=[
@@ -342,52 +314,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             },
         )
 
-    async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
-    ) -> None:
-        # Codex asks its ACP client only when a command escapes the sandbox, and never in
-        # full access, so the gate is a PreToolUse hook instead.
-        home = config.env["CODEX_HOME"]
-        path = f"{home}/config.toml"
-        staged = (self._staged_configs or {}).pop(home, None)
-        if staged is not None:
-            settings = dict(staged)
-        else:
-            settings = tomllib.loads((await runtime.read(path)).decode())
-        # User hooks require a hash of Codex's normalized definition. Keeping the
-        # definition and its trust entry in this rollout's home avoids shared state.
-        # Include `/private/tmp` alongside `/tmp` for macOS symlinked temp roots without a shell probe.
-        identity = {"event_name": "pre_tool_use", "hooks": [GATE_HANDLER]}
-        digest = hashlib.sha256(
-            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        candidate_paths = [path]
-        if path.startswith("/tmp/"):
-            candidate_paths.append(f"/private{path}")
-        settings["hooks"] = {
-            "PreToolUse": [{"hooks": [GATE_HANDLER]}],
-            "state": {
-                f"{candidate}:pre_tool_use:0:0": {"trusted_hash": f"sha256:{digest}"}
-                for candidate in candidate_paths
-            },
-        }
-        await asyncio.gather(
-            runtime.write(
-                f"{home}/tool-gate.mjs",
-                GATE_HOOK.replace("__URL__", json.dumps(url))
-                .replace("__SECRET__", json.dumps(secret))
-                .encode(),
-            ),
-            runtime.write(path, tomli_w.dumps(settings).encode()),
-        )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, self.trace_home(trace), "Codex home")
-
-    @staticmethod
-    def trace_home(trace: Trace) -> str:
-        return f"/tmp/vf-codex-home-{trace.id}"
-
     async def build_env(
         self,
         ctx: ModelContext,
@@ -396,15 +322,15 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        *,
+        tool_interception_url: str | None = None,
     ) -> dict[str, str]:
-        home = self.trace_home(trace)
+        home = f"/tmp/vf-codex-home-{trace.id}"
         if runtime._execution_bridge is None:
             raise HarnessError("Codex requires an execution bridge")
-        await self.install_skills(runtime, f"{home}/skills")
-        if self.config.skills:
-            await self.install_skills(
-                runtime._execution_bridge.runtime, f"{home}/skills"
-            )
+        await self.install_skills(
+            runtime, f"{home}/skills", mirror_to=runtime._execution_bridge.runtime
+        )
         command = await prepare_remote_bridge(
             runtime,
             f"{endpoint.removesuffix('/v1')}/execution",
@@ -428,8 +354,9 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             )
         ]
         mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
+        config_path = f"{home}/config.toml"
         # The app server and its ACP sessions must start with the same provider.
-        settings = {
+        settings: dict[str, object] = {
             "model_provider": "custom-gateway",
             "model_providers": {
                 "custom-gateway": {
@@ -453,12 +380,34 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 for name, url in mcp_urls.items()
             },
         }
-        if self._staged_configs is None:
-            self._staged_configs = {}
-        self._staged_configs[home] = dict(settings)
-        writes.append(
-            runtime.write(f"{home}/config.toml", tomli_w.dumps(settings).encode())
-        )
+        if tool_interception_url is not None:
+            # Codex asks its ACP client only when a command escapes the sandbox, and never in
+            # full access, so the gate is a PreToolUse hook instead.
+            identity = {"event_name": "pre_tool_use", "hooks": [GATE_HANDLER]}
+            digest = hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            candidate_paths = [config_path]
+            if config_path.startswith("/tmp/"):
+                candidate_paths.append(f"/private{config_path}")
+            settings["hooks"] = {
+                "PreToolUse": [{"hooks": [GATE_HANDLER]}],
+                "state": {
+                    f"{candidate}:pre_tool_use:0:0": {
+                        "trusted_hash": f"sha256:{digest}"
+                    }
+                    for candidate in candidate_paths
+                },
+            }
+            writes.append(
+                runtime.write(
+                    f"{home}/tool-gate.mjs",
+                    GATE_HOOK.replace("__URL__", json.dumps(tool_interception_url))
+                    .replace("__SECRET__", json.dumps(secret))
+                    .encode(),
+                )
+            )
+        writes.append(runtime.write(config_path, tomli_w.dumps(settings).encode()))
         await asyncio.gather(*writes)
         disabled = set(self.config.disabled_tools or ())
         features: dict[str, object] = {

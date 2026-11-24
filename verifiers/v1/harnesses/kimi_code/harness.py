@@ -1,13 +1,11 @@
 """Run Kimi Code's native ACP server against interception."""
 
-import tomllib
-
 import tomli_w
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.harnesses.utils.remote import native_remote_tools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
@@ -44,6 +42,7 @@ class KimiCodeHarnessConfig(HarnessConfig):
 
 
 class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
+    HARNESS_TARGET = "kimi-code"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
@@ -84,6 +83,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         kimi_home = f"{KIMI_HOME}/{trace.id}"
         skills_dir = f"{kimi_home}/skills"
@@ -98,25 +98,20 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             if self.config.dialect == "anthropic_messages"
             else endpoint
         )
+        rules = [
+            {
+                "decision": "deny",
+                "scope": "user",
+                "pattern": tool,
+                "reason": "Disabled by the current configuration.",
+            }
+            for tool in self.config.disabled_tools or []
+        ]
+        if tool_interception_url is not None:
+            rules.append({"decision": "ask", "scope": "user", "pattern": "*"})
         config = {
             "extra_skill_dirs": [skills_dir] if self.config.skills else [],
-            **(
-                {
-                    "permission": {
-                        "rules": [
-                            {
-                                "decision": "deny",
-                                "scope": "user",
-                                "pattern": tool,
-                                "reason": "Disabled by the current configuration.",
-                            }
-                            for tool in self.config.disabled_tools
-                        ]
-                    }
-                }
-                if self.config.disabled_tools
-                else {}
-            ),
+            **({"permission": {"rules": rules}} if rules else {}),
         }
         await runtime.write(f"{kimi_home}/config.toml", tomli_w.dumps(config).encode())
 
@@ -136,18 +131,3 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             prompt=prompt,
             system_prompt=system_prompt,
         )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"{KIMI_HOME}/{trace.id}", "Kimi Code state")
-
-    async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
-    ) -> None:
-        # An `ask` rule for every tool routes each call through Kimi's approval bridge,
-        # which its ACP server turns into a permission request for the runner.
-        path = f"{config.env['KIMI_CODE_HOME']}/config.toml"
-        settings = tomllib.loads((await runtime.read(path)).decode())
-        settings.setdefault("permission", {}).setdefault("rules", []).append(
-            {"decision": "ask", "scope": "user", "pattern": "*"}
-        )
-        await runtime.write(path, tomli_w.dumps(settings).encode())

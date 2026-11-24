@@ -16,7 +16,7 @@ from typing import Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.harnesses.utils.remote_files import file_tool
+from verifiers.v1.harnesses.utils.remote_files import file_tool, run_shell
 from verifiers.v1.harnesses.utils.remote_search import prepare_ripgrep, ripgrep_path
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
@@ -81,13 +81,14 @@ class _Edit(_Path):
 class _Search(_Arguments):
     pattern: str
     path: str = "."
+    target: Literal["content", "files"] = "content"
     glob: str | None = Field(
-        default=None, validation_alias=AliasChoices("glob", "include")
+        default=None, validation_alias=AliasChoices("glob", "include", "file_glob")
     )
     caseSensitive: bool | None = None
-    output_mode: Literal["content", "files_with_matches", "count", "count_matches"] = (
-        "files_with_matches"
-    )
+    output_mode: Literal[
+        "content", "files_with_matches", "files_only", "count", "count_matches"
+    ] = "files_with_matches"
     ignore_case: bool = Field(
         default=False, validation_alias=AliasChoices("-i", "ignoreCase", "ignore_case")
     )
@@ -120,7 +121,19 @@ class _Task(_Arguments):
 
 
 class _Todos(_Arguments):
-    todos: list[dict]
+    todos: list[dict] | None = None
+    merge: bool = False
+
+
+class _ProcessManage(_Arguments):
+    action: Literal[
+        "list", "poll", "log", "wait", "kill", "write", "submit", "close", "handoff"
+    ]
+    session_id: str | None = None
+    data: str = ""
+    timeout: int = Field(default=30, ge=0)
+    offset: int | None = None
+    limit: int = Field(default=200, ge=1)
 
 
 class _Patch(_Arguments):
@@ -191,6 +204,22 @@ _NATIVE_NAMES: dict[str, frozenset[str]] = {
         }
     ),
     "openclaw": frozenset({"read", "write", "edit", "apply_patch"}),
+    "hermes_agent": frozenset(
+        {
+            "terminal",
+            "process",
+            "process_manage",
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
+            "todo",
+            "todo_list",
+            "todo_write",
+            "todo_read",
+            "read_image",
+        }
+    ),
 }
 
 
@@ -202,12 +231,12 @@ def native_remote_tools(
     runtime: Runtime, harness: str, disabled_tools: list[str] | None
 ) -> RemoteToolsSpec:
     names = native_tool_names(harness)
-    disabled = disabled_tools or []
+    disabled = tuple(disabled_tools or ())
     target = ripgrep_path(runtime)
 
     async def prepare(call: ToolCall) -> None:
         if (
-            call.name.lower() == "grep"
+            call.name.lower() in {"grep", "search_files"}
             and call.name in names
             and not any(fnmatch.fnmatchcase(call.name, pat) for pat in disabled)
         ):
@@ -256,7 +285,14 @@ class NativeRemoteTools:
         )
 
     async def _background(self, command: str, timeout: float) -> str:
-        process = await self.runtime.exec(["bash", "-c", command], {})
+        if len(command.encode()) <= 65536:
+            process = await self.runtime.exec(["bash", "-c", command], {})
+        else:
+            process = await self.runtime.exec(["bash", "-s"], {})
+            data = command.encode()
+            for offset in range(0, len(data), 65536):
+                await process.write(data[offset : offset + 65536])
+            await process.write(b"\nexit $?\n")
         task_id = uuid.uuid4().hex
         job = _Job(process, f"/tmp/verifiers-background-{task_id}.log")
         await self.runtime.write(job.log, b"")
@@ -305,9 +341,11 @@ class NativeRemoteTools:
             if cwd:
                 command = f"cd -- {shlex.quote(cwd)} && {command}"
             marker = "__vf_" + uuid.uuid4().hex + ":"
-            await self._shell.write(
-                f"eval -- {shlex.quote(command)}; printf '\\n{marker}%s\\n' \"$?\"\n".encode()
-            )
+            payload = (
+                f"eval -- {shlex.quote(command)}; printf '\\n{marker}%s\\n' \"$?\"\n"
+            ).encode()
+            for offset in range(0, len(payload), 65536):
+                await self._shell.write(payload[offset : offset + 65536])
             truncated = False
             try:
                 async with asyncio.timeout(timeout):
@@ -355,6 +393,7 @@ class NativeRemoteTools:
         operations = {
             "bash": (_Shell, "bash"),
             "shell": (_Shell, "bash"),
+            "terminal": (_Shell, "bash"),
             "read": (_Read, "read"),
             "read_file": (_Read, "read"),
             "write": (_Write, "write"),
@@ -363,6 +402,7 @@ class NativeRemoteTools:
             "glob": (_Search, "glob"),
             "find": (_Search, "glob"),
             "grep": (_Search, "grep"),
+            "search_files": (_Search, "grep"),
             "ls": (_List, "ls"),
             "read_image": (_Path, "image"),
             "readmediafile": (_Path, "image"),
@@ -371,12 +411,22 @@ class NativeRemoteTools:
             "taskstop": (_Task, "task_stop"),
             "killshell": (_Task, "task_stop"),
             "tasklist": (_Arguments, "task_list"),
+            "process": (_ProcessManage, "process_manage"),
+            "process_manage": (_ProcessManage, "process_manage"),
             "todowrite": (_Todos, "todos"),
             "todo": (_Todos, "todos"),
+            "todo_list": (_Todos, "todos"),
+            "todo_write": (_Todos, "todos"),
             "todoread": (_Arguments, "todo_read"),
+            "todo_read": (_Arguments, "todo_read"),
             "enterplanmode": (_Arguments, "plan"),
             "exitplanmode": (_Arguments, "plan"),
-            "patch": (_Patch, "patch"),
+            "patch": (
+                (_Edit, "edit")
+                if self.harness == "hermes_agent"
+                and '"patch"' not in (call.arguments or "")
+                else (_Patch, "patch")
+            ),
             "apply_patch": (_Patch, "patch"),
             "waitfor": (_Wait, "wait"),
         }
@@ -422,14 +472,14 @@ class NativeRemoteTools:
                     command = f"cd -- {shlex.quote(cwd)} && {command}"
                 if args.run_in_background:
                     content = await self._background(command, timeout)
-                elif self.harness == "deepseek":
+                elif self.harness in {"deepseek", "hermes_agent"}:
                     content = await self._persistent_bash(
                         args.command, timeout or None, args.cwd
                     )
                 else:
                     try:
                         async with asyncio.timeout(timeout or None):
-                            result = await self.runtime.run(["bash", "-c", command], {})
+                            result = await run_shell(self.runtime, command, {})
                         content = result.stdout + result.stderr
                         if result.exit_code:
                             content += f"\n[Command finished with exit code {result.exit_code}]"
@@ -490,9 +540,84 @@ class NativeRemoteTools:
                         if args.task_id is None or key == args.task_id
                     }
                 )
+            elif operation == "process_manage":
+                assert isinstance(args, _ProcessManage)
+                if args.action == "list":
+                    content = json.dumps(
+                        {
+                            "sessions": [
+                                {
+                                    "session_id": key,
+                                    "status": "running"
+                                    if job.status is None
+                                    else "completed",
+                                    "exit_code": job.status,
+                                }
+                                for key, job in self._jobs.items()
+                            ]
+                        }
+                    )
+                else:
+                    sid = next(
+                        (
+                            k
+                            for k in self._jobs
+                            if args.session_id and k.startswith(args.session_id)
+                        ),
+                        args.session_id or "",
+                    )
+                    job = self._jobs.get(sid)
+                    if job is None:
+                        content = f"error: session {args.session_id!r} not found"
+                    else:
+                        if args.action == "kill" and job.status is None:
+                            await job.process.kill()
+                            if job.done is not None:
+                                await asyncio.shield(job.done)
+                        elif args.action == "wait" and job.done is not None:
+                            try:
+                                await asyncio.wait_for(
+                                    asyncio.shield(job.done), args.timeout
+                                )
+                            except TimeoutError:
+                                pass
+                        elif args.action in {"write", "submit"} and job.status is None:
+                            payload = (
+                                args.data + ("\n" if args.action == "submit" else "")
+                            ).encode()
+                            await job.process.write(payload)
+                        text_out = job.output.decode(errors="replace")
+                        if args.action == "log":
+                            lines = text_out.splitlines()
+                            start = (
+                                args.offset
+                                if args.offset is not None
+                                else max(0, len(lines) - args.limit)
+                            )
+                            text_out = "\n".join(lines[start : start + args.limit])
+                        content = json.dumps(
+                            {
+                                "session_id": sid,
+                                "status": "running"
+                                if job.status is None
+                                else "completed",
+                                "exit_code": job.status,
+                                "output": text_out,
+                            }
+                        )
             elif operation == "todos":
                 assert isinstance(args, _Todos)
-                self._todos = args.todos
+                if args.todos is not None:
+                    if args.merge:
+                        by_id = {
+                            item.get("id", i): item
+                            for i, item in enumerate(self._todos)
+                        }
+                        for item in args.todos:
+                            by_id[item.get("id", len(by_id))] = item
+                        self._todos = list(by_id.values())
+                    else:
+                        self._todos = args.todos
                 content = json.dumps(self._todos)
             elif operation == "todo_read":
                 content = json.dumps(self._todos)
@@ -525,12 +650,20 @@ class NativeRemoteTools:
                         ]
             else:
                 if isinstance(args, _Search):
-                    if name == "find" and "/" not in args.pattern:
+                    if args.output_mode == "files_only":
+                        args.output_mode = "files_with_matches"
+                    if name == "search_files" and args.target == "files":
+                        operation = "glob"
+                    if (
+                        name in {"find", "search_files"}
+                        and operation == "glob"
+                        and "/" not in args.pattern
+                    ):
                         args.pattern = "**/" + args.pattern
                     if args.caseSensitive is not None:
                         args.ignore_case = not args.caseSensitive
                     if (
-                        self.harness in {"pi", "opencode"}
+                        self.harness in {"pi", "opencode", "hermes_agent"}
                         and "output_mode" not in args.model_fields_set
                     ):
                         args.output_mode = "content"

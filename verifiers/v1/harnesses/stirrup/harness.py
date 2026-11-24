@@ -1,4 +1,5 @@
 import json
+import shlex
 from pathlib import Path
 from typing import Literal
 
@@ -8,17 +9,19 @@ from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.errors import HarnessError
-from verifiers.v1.harnesses.utils.install import remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.harnesses.utils.remote_runtime import (
     REMOTE_TOOL_CLIENT_SOURCE,
     prepare_remote_bridge,
 )
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+STIRRUP_DIR = "/var/tmp/vf-stirrup"
 
 
 class StirrupHarnessConfig(HarnessConfig):
@@ -36,6 +39,7 @@ class StirrupHarnessConfig(HarnessConfig):
 
 
 class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
+    HARNESS_TARGET = "stirrup"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
@@ -46,13 +50,52 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
             "# REMOTE_TOOL_CLIENT", REMOTE_TOOL_CLIENT_SOURCE
         )
 
+    async def _prepare_runner(
+        self, runtime: Runtime, env: dict[str, str], *, label: str
+    ) -> list[str]:
+        source = self._source()
+        if getattr(runtime, "type", self.config.id) not in ("docker", "prime"):
+            return await runtime.prepare_uv_script(source, env, activate=False)
+        ver_q = shlex.quote(self.config.version)
+        dir_q = shlex.quote(STIRRUP_DIR)
+        script_path = f"{STIRRUP_DIR}/program-{self.config.version}.py"
+        install = (
+            f"set -e; {_ENSURE_UV}; "
+            f"UV_PYTHON_INSTALL_DIR={dir_q}/python uv venv --allow-existing --python 3.13 {dir_q}/venv -q; "
+            f"uv pip install --python {dir_q}/venv/bin/python -q "
+            f"'stirrup[mcp] @ https://github.com/ArtificialAnalysis/Stirrup/archive/'{ver_q}'.tar.gz' "
+            "'mcp==1.30.0' 'agent-client-protocol==1.0.0'; "
+            f"printf '%s' {ver_q} > {dir_q}/.version"
+        )
+        cache = getattr(getattr(runtime, "backend", None), "cache", None)
+        if cache is not None:
+            await ensure_installed(
+                runtime,
+                directory=STIRRUP_DIR,
+                ready=(
+                    f"[ -x {dir_q}/venv/bin/python ] && "
+                    f'[ "$(cat {dir_q}/.version 2>/dev/null)" = {ver_q} ]'
+                ),
+                install=install,
+                env=env,
+                label=label,
+            )
+        script_key = f"stirrup-script:{script_path}"
+        root_rt = runtime.with_user(None) if hasattr(runtime, "with_user") else runtime
+        if cache is None or script_key not in cache.installed:
+            await root_rt.write(script_path, source.encode())
+            await root_rt.run(["chmod", "644", script_path], {})
+            if cache is not None:
+                cache.installed.add(script_key)
+        return [f"{STIRRUP_DIR}/venv/bin/python", "-P", "-u", script_path]
+
     async def setup_execution(
         self, runtime: Runtime, connection: ExecutionConnection
     ) -> None:
-        await connection.runtime.prepare_uv_script(self._source(), {})
+        await self._prepare_runner(connection.runtime, {}, label="Stirrup worker")
 
     async def setup(self, runtime: Runtime) -> None:
-        await runtime.prepare_uv_script(self._source(), self.config.resolved_env)
+        await self._prepare_runner(runtime, self.config.resolved_env, label="Stirrup")
         await super().setup(runtime)
 
     async def prepare_acp(
@@ -64,19 +107,19 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_text_prompt(data)
         state_dir = f"/tmp/vf-stirrup-{trace.id}"
         skills_dir = f"{state_dir}/skills"
-        await self.install_skills(runtime, skills_dir)
         system_prompt_args = []
         if system_prompt:
             # Kept until cleanup, not deleted on read, so a restarted bridge finds it.
             path = f"{state_dir}/system-prompt.txt"
             await runtime.write(path, system_prompt.encode())
             system_prompt_args.append(f"--system-prompt-file={path}")
-        program = await runtime.prepare_uv_script(
-            self._source(), self.config.resolved_env, activate=False
+        program = await self._prepare_runner(
+            runtime, self.config.resolved_env, label="Stirrup"
         )
         if runtime._execution_bridge is None:
             raise HarnessError("Stirrup requires an execution bridge")
@@ -87,9 +130,9 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
             raise HarnessError(
                 "could not prepare the Stirrup supervisor working directory"
             )
-        await self.install_skills(bridge.runtime, skills_dir)
-        worker_program = await bridge.runtime.prepare_uv_script(
-            self._source(), {}, activate=False
+        await self.install_skills(runtime, skills_dir, mirror_to=bridge.runtime)
+        worker_program = await self._prepare_runner(
+            bridge.runtime, {}, label="Stirrup worker"
         )
         worker = f"stirrup-{trace.id}"
         bridge.register(
@@ -130,6 +173,3 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
             # The bridge owns system-prompt placement; the ACP runner must not
             # also fold it into the first user message.
         )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"/tmp/vf-stirrup-{trace.id}", "Stirrup skills")

@@ -4,7 +4,6 @@ import asyncio
 import base64
 import fnmatch
 import json
-import shlex
 import uuid
 from dataclasses import dataclass, field
 from typing import Literal
@@ -61,6 +60,11 @@ class _Process(BaseModel):
 # provider's control stream. A PTY receives the terminal's EOF character.
 _WORKER = r"""
 if [[ -n $1 ]]; then cd -- "$1" || exit; fi
+cmdfile=$(mktemp)
+while IFS= read -r data; do
+    [[ $data == . ]] && break
+    [[ -n $data ]] && { printf '%s' "$data" | base64 -d >> "$cmdfile" || exit; }
+done
 exec 0< <(
     while IFS= read -r data; do
         if [[ $data == . ]]; then
@@ -72,16 +76,16 @@ exec 0< <(
     done
 )
 reader=$!
-trap 'kill "$reader" 2>/dev/null || :' EXIT
+trap 'rm -f "$cmdfile"; kill "$reader" 2>/dev/null || :' EXIT
 if [[ $2 != pty ]]; then
-    bash -c "$3" 2>&1
+    bash "$cmdfile" 2>&1
 elif [[ $OSTYPE == darwin* ]] && command -v script >/dev/null; then
-    script -qe /dev/null bash -c "$3"
+    script -qe /dev/null bash "$cmdfile"
 elif script --version 2>/dev/null | grep -q util-linux; then
-    script -qe -c "$3" /dev/null
+    script -qe -c "bash $(printf '%q' "$cmdfile")" /dev/null
 else
     # Minimal images may have Python's standard library in place of script(1).
-    python3 -c 'import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))' bash -c "$3"
+    python3 -c 'import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))' bash "$cmdfile"
 fi
 """
 
@@ -198,16 +202,6 @@ class OpenClawRemoteTools:
         try:
             if call.name == "exec":
                 args = _Exec.model_validate_json(call.arguments)
-                command = shlex.join(
-                    [
-                        "env",
-                        "--",
-                        *(f"{k}={v}" for k, v in args.env.items()),
-                        "bash",
-                        "-c",
-                        args.command,
-                    ]
-                )
                 process = await self.runtime.exec(
                     [
                         "bash",
@@ -216,10 +210,15 @@ class OpenClawRemoteTools:
                         "openclaw",
                         args.workdir or "",
                         "pty" if args.pty else "pipe",
-                        command,
                     ],
-                    {},
+                    args.env,
                 )
+                raw = args.command.encode()
+                for offset in range(0, len(raw), 49152):
+                    await process.write(
+                        base64.b64encode(raw[offset : offset + 49152]) + b"\n"
+                    )
+                await process.write(b".\n")
                 session = _Session(process, args.command)
                 self.sessions[session_id := uuid.uuid4().hex] = session
                 session.done = asyncio.create_task(session.collect())

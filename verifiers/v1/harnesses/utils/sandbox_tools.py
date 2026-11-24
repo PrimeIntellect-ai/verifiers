@@ -1,14 +1,10 @@
-"""Run approved tools in the harness and relay their workspace operations to the evaluator."""
+"""Run approved workspace tools on the evaluator against the bound workspace."""
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+from verifiers.v1.harnesses.utils.compaction import bound_tool_message
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.runtimes.bridge import ExecutionBridge
-from verifiers.v1.runtimes.harness_daemon import (
-    HarnessDaemonClient,
-    ensure_backend_daemon,
-)
 from verifiers.v1.types import ToolCall, ToolMessage
 
 
@@ -17,37 +13,18 @@ class RemoteToolsSpec:
     factory: Callable
     kwargs: dict = field(default_factory=dict)
     defer_until_gate: bool = False
-
     native_tools: frozenset[str] | None = None
     prepare_tool: Callable[[ToolCall], Awaitable[None]] | None = None
 
 
 class SandboxTools:
-    def __init__(
-        self, runtime: Runtime, connection: ExecutionBridge, spec: RemoteToolsSpec
-    ):
-        self.runtime, self.connection, self.spec = runtime, connection, spec
+    def __init__(self, workspace: Runtime, spec: RemoteToolsSpec):
+        self.spec = spec
         self.defer_until_gate = spec.defer_until_gate
         self.native_tools = spec.native_tools
-        self._daemon: HarnessDaemonClient | None = None
-
-    async def prepare(self) -> None:
-        self._daemon = await ensure_backend_daemon(
-            self.runtime.backend, extra_cls=self.spec.factory
-        )
-
-    async def connect(self, url: str, secret: str) -> None:
-        assert self._daemon is not None
-        await self._daemon.configure_tools(
-            self.spec.factory,
-            self.spec.kwargs,
-            url,
-            secret,
-            self.connection.adapter_key,
-        )
+        self._adapter = spec.factory(workspace, **spec.kwargs)
 
     async def __call__(self, call: ToolCall) -> ToolMessage:
-        assert self._daemon is not None
         if self.spec.prepare_tool is not None:
             try:
                 await self.spec.prepare_tool(call)
@@ -57,9 +34,11 @@ class SandboxTools:
                     name=call.name,
                     content=f"error: could not prepare {call.name}: {error}",
                 )
-        return await self._daemon.execute_tool(call)
+        result = await self._adapter(call)
+        return ToolMessage.model_validate(
+            bound_tool_message(result.model_dump(exclude_none=True))
+        )
 
     async def aclose(self) -> None:
-        if self._daemon is not None:
-            daemon, self._daemon = self._daemon, None
-            await daemon.close_tools()
+        if close := getattr(self._adapter, "aclose", None):
+            await close()

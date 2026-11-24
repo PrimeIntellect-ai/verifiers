@@ -26,7 +26,6 @@ from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from verifiers.v1.runtimes.harness_daemon import HarnessDaemonClient
     from verifiers.v1.runtimes.runtime import Runtime
 
 logger = get_logger(__name__)
@@ -242,8 +241,6 @@ class RuntimeBackend(ABC):
         self.env: dict[str, str] = {}
         self.cache = RuntimeCache()
         self._setup_claimed = False
-        self._daemon_lock = asyncio.Lock()
-        self._daemon: HarnessDaemonClient | None = None
         self._workspace_routes: dict[object, tuple[str, ...]] = {}
         self._workspace_network_lock = asyncio.Lock()
         self._background: list[RuntimeProcess] = []
@@ -280,10 +277,6 @@ class RuntimeBackend(ABC):
         first = not self.stopped
         self.stopped = True  # before the await: no new borrows once teardown begins
         started = time.perf_counter()
-        if (daemon := self._daemon) is not None:
-            self._daemon = None
-            with contextlib.suppress(Exception):
-                await run_shielded(daemon.aclose())
         await run_shielded(self.teardown())
         if first:
             # A local runtime's id is its working directory; its last part is the name.

@@ -1,16 +1,14 @@
-"""Stage a native ripgrep when the workspace image lacks it, and stream its matches."""
+"""Stage a native ripgrep when the worker sandbox lacks it, and stream its matches."""
 
 import asyncio
 import base64
-import hashlib
-import io
 import json
-import tarfile
-import uuid
 from pathlib import PurePosixPath
 
-import httpx
-
+from verifiers.v1.harnesses.utils.install import (
+    cached_npm_tarball_members,
+    stage_executable,
+)
 from verifiers.v1.runtimes import Runtime
 
 _VERSION = "1.18.0"  # @vscode/ripgrep bundles static Linux binaries and PCRE2.
@@ -20,29 +18,17 @@ _INTEGRITY = {
     "darwin-arm64": "r3ktHSvbFycQNF6sl7sNDPocpsI7J+mEzh1IaZFkY0spm3k2Z9t8hPAeOK7+p0l6p6/swkQC14XWX01low+94Q==",
     "darwin-x64": "25b4gWbL138dGuQU244ebCKKc0q05ULBMoFSz9oAEUHNeqK/lOJViDS7DRvbDazzAzSEdan391Znks/R5mkaTQ==",
 }
-_binaries: dict[str, bytes] = {}
-_locks: dict[str, asyncio.Lock] = {}
 
 
 async def _binary(platform: str) -> bytes:
-    async with _locks.setdefault(platform, asyncio.Lock()):
-        if platform not in _binaries:
-            name = f"ripgrep-{platform}"
-            url = f"https://registry.npmjs.org/@vscode/{name}/-/{name}-{_VERSION}.tgz"
-            async with httpx.AsyncClient(timeout=60) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-            if hashlib.sha512(response.content).digest() != base64.b64decode(
-                _INTEGRITY[platform]
-            ):
-                raise ValueError(f"ripgrep package checksum mismatch for {platform}")
-            with tarfile.open(
-                fileobj=io.BytesIO(response.content), mode="r:gz"
-            ) as archive:
-                binary = archive.extractfile("package/bin/rg")
-                assert binary is not None
-                _binaries[platform] = binary.read()
-        return _binaries[platform]
+    name = f"ripgrep-{platform}"
+    url = f"https://registry.npmjs.org/@vscode/{name}/-/{name}-{_VERSION}.tgz"
+    files = await cached_npm_tarball_members(
+        url,
+        lambda member: "rg" if member == "package/bin/rg" else None,
+        sha512_b64=_INTEGRITY[platform],
+    )
+    return files["rg"]
 
 
 def ripgrep_path(runtime: Runtime) -> str:
@@ -74,7 +60,7 @@ async def _stage(runtime: Runtime, target: str) -> None:
     info = probe.stdout.strip().splitlines()
     if probe.exit_code or len(info) not in {1, 2}:
         raise ValueError(
-            f"could not locate workspace ripgrep or architecture: {probe.stderr.strip()}"
+            f"could not locate worker ripgrep or architecture: {probe.stderr.strip()}"
         )
     if len(info) == 1:
         return
@@ -85,21 +71,7 @@ async def _stage(runtime: Runtime, target: str) -> None:
         raise ValueError(
             f"no native ripgrep for {platform}; install rg with PCRE2 in the image"
         )
-    staged = f"{target}-{uuid.uuid4().hex}"
-    await runtime.write(staged, await _binary(platform))
-    install = await runtime.run(
-        [
-            "sh",
-            "-c",
-            'chmod 755 "$1" && mv -f -- "$1" "$2"',
-            "install-rg",
-            staged,
-            target,
-        ],
-        {},
-    )
-    if install.exit_code:
-        raise ValueError(f"could not install ripgrep: {install.stderr}")
+    await stage_executable(runtime, target, await _binary(platform))
 
 
 async def _records(stream, separators):

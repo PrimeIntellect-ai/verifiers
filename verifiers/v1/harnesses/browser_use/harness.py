@@ -57,6 +57,7 @@ class BrowserUseHarnessConfig(HarnessConfig):
 
 
 class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
+    HARNESS_TARGET = "browser-use"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True

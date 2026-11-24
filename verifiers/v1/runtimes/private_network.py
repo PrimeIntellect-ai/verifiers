@@ -190,5 +190,6 @@ async def private_network(
             await stack.enter_async_context(keepalive(backend))
         if harness is not None:
             await stack.enter_async_context(keepalive(workspace))
+            await stack.enter_async_context(keepalive(harness))
         logger.debug("Joined private LAN %s with %d VMs", network_id, len(targets))
         yield backends

@@ -20,7 +20,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
@@ -35,7 +35,7 @@ BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
 RLM_TARBALL_URL = "https://codeload.github.com/PrimeIntellect-ai/nano-rlm/tar.gz"
-RLM_CACHE_DIR = "/tmp/vf-rlm"
+RLM_CACHE_DIR = "/var/tmp/vf-rlm"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
@@ -184,6 +184,7 @@ class RLMHarnessConfig(HarnessConfig):
 
 
 class RLMHarness(ACPHarness[RLMHarnessConfig]):
+    HARNESS_TARGET = "rlm"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
@@ -381,6 +382,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         rlm_home = self._home(trace)
@@ -437,13 +439,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     def acp_close_result(self, trace: Trace, response_metadata: dict[str, Any]) -> None:
         if RLM_SESSION_METADATA_KEY in response_metadata:
             self._consume_snapshot(trace, response_metadata)
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
-        if self._skills_install_dir is not None:
-            await remove_dir(
-                runtime, self._skills_install_dir, "RLM skill installation"
-            )
 
     def _home(self, trace: Trace) -> str:
         return self._skills_home() or f"{RLM_STATE_DIR}/{trace.id}/home"

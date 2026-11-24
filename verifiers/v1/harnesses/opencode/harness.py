@@ -6,7 +6,7 @@ from pathlib import Path
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.harnesses.utils.remote import native_remote_tools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
@@ -37,6 +37,7 @@ class OpenCodeHarnessConfig(HarnessConfig):
 
 
 class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
+    HARNESS_TARGET = "opencode"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
@@ -48,32 +49,6 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     def can_gate_tool(self, call: ToolCall) -> bool:
         # OpenCode builds its Code Mode wrapper after registry transforms.
         return call.name != "execute"
-
-    async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
-    ) -> None:
-        plugin_dir = f"{config.env['XDG_CONFIG_HOME']}/tool-gate"
-        config.ready_file = f"{plugin_dir}/ready"
-        await runtime.write(f"{plugin_dir}/index.js", TOOL_GATE)
-        settings = json.loads(config.env["OPENCODE_CONFIG_CONTENT"])
-        # Upstream exposes Code Mode's catalog as direct tools when execute is
-        # disabled. Each such tool then passes the replacement executor in A;
-        # no model-authored JavaScript is evaluated by A's Code Mode runtime.
-        settings["permissions"].append(
-            {"action": "execute", "resource": "*", "effect": "deny"}
-        )
-        settings.setdefault("plugins", []).append(
-            {
-                "package": plugin_dir,
-                "options": {
-                    "url": url,
-                    "secret": secret,
-                    "nativeTools": sorted(native_tool_names("opencode")),
-                    "readyFile": config.ready_file,
-                },
-            }
-        )
-        config.env["OPENCODE_CONFIG_CONTENT"] = json.dumps(settings)
 
     # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
     # Recheck on version bumps:
@@ -108,6 +83,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ACPConfig:
         root = f"{STATE_ROOT}/{trace.id}"
         config_dir = f"{root}/config/opencode"
@@ -121,6 +97,43 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "responses": "openai-compatible/responses",
             "anthropic_messages": "anthropic-compatible",
         }[self.config.dialect]
+        permissions = [
+            {"action": "*", "resource": "*", "effect": "allow"},
+            *(
+                {"action": tool, "resource": "*", "effect": "deny"}
+                for tool in self.config.disabled_tools or []
+            ),
+        ]
+        plugins: list[dict] = []
+        ready_file = None
+        if mcp_urls:
+            plugin_dir = f"{root}/mcp-ready"
+            await runtime.write(f"{plugin_dir}/index.js", MCP_READY)
+            plugins.append(
+                {
+                    "package": plugin_dir,
+                    "options": {
+                        "servers": list(mcp_urls),
+                        "timeout": int(self.config.tool_timeout * 1000),
+                    },
+                }
+            )
+        if tool_interception_url is not None:
+            gate_dir = f"{root}/config/tool-gate"
+            ready_file = f"{gate_dir}/ready"
+            await runtime.write(f"{gate_dir}/index.js", TOOL_GATE)
+            permissions.append({"action": "execute", "resource": "*", "effect": "deny"})
+            plugins.append(
+                {
+                    "package": gate_dir,
+                    "options": {
+                        "url": tool_interception_url,
+                        "secret": secret,
+                        "nativeTools": sorted(native_tool_names("opencode")),
+                        "readyFile": ready_file,
+                    },
+                }
+            )
         settings = {
             "model": "intercept/model",
             "providers": {
@@ -134,29 +147,12 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "default_agent": "build",
             # Auxiliary title/summary model calls must not become rollout turns.
             "agents": {"title": {"disabled": True}, "summary": {"disabled": True}},
-            "permissions": [
-                {"action": "*", "resource": "*", "effect": "allow"},
-                *(
-                    {"action": tool, "resource": "*", "effect": "deny"}
-                    for tool in self.config.disabled_tools or []
-                ),
-            ],
+            "permissions": permissions,
             "update": "disable",
             "share": "disabled",
             "snapshots": False,
+            **({"plugins": plugins} if plugins else {}),
         }
-        if mcp_urls:
-            plugin_dir = f"{root}/mcp-ready"
-            await runtime.write(f"{plugin_dir}/index.js", MCP_READY)
-            settings["plugins"] = [
-                {
-                    "package": plugin_dir,
-                    "options": {
-                        "servers": list(mcp_urls),
-                        "timeout": int(self.config.tool_timeout * 1000),
-                    },
-                }
-            ]
         return ACPConfig(
             command=[
                 f"{OPENCODE_DIR}/{self.config.version}/node_modules/.bin/opencode",
@@ -175,7 +171,5 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
                 "OPENCODE_DISABLE_MODELS_FETCH": "1",
             },
             prompt=prompt,
+            ready_file=ready_file,
         )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"{STATE_ROOT}/{trace.id}", "OpenCode state")

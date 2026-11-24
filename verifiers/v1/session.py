@@ -33,7 +33,7 @@ from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
-from verifiers.v1.runtimes.bridge import ExecutionBridge
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -212,7 +212,7 @@ class RolloutSession:
     """The pre-execution verdict per proposed call occurrence: None to run it, else the result
     the policy put in its place — that call must not execute."""
     remote_tool_handler: Callable[[ToolCall], Awaitable[ToolMessage]] | None = None
-    execution_bridge: ExecutionBridge | None = None
+    execution_bridge: ExecutionConnection | None = None
     tool_gate_can_deny: Callable[[ToolCall], bool] | None = None
     check_tool_call: Callable | None = None
     # Retries for one call await the same task. Independent calls can run in parallel.
