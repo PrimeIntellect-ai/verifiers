@@ -47,10 +47,8 @@ async def prepare_agent_judge(task, runtime, trace, reward, authored, workspace)
     )
     network = None
     if task.scoring.mode == "shared":
-        network = (
-            scoring_network(trace.agent.config.runtime, task.scoring.network)
-            if task.scoring.network is not None
-            else NetworkPolicyConfig()
+        network = scoring_network(
+            trace.agent.config.runtime, task.scoring.network or NetworkPolicyConfig()
         )
 
     async def call(prompt, schema):
