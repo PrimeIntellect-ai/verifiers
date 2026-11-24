@@ -96,11 +96,18 @@ def bind_scoring_env(runtime: Runtime, policy: ScoringConfig) -> Runtime:
     return runtime.with_env({**runtime.env, **resolve_env(policy.env or {})})
 
 
-async def stage_verifier(task: Task, trace: Trace, runtime: Runtime) -> None:
+async def stage_verifier(
+    task: Task, trace: Trace, runtime: Runtime, *, restore_as_root: bool = False
+) -> None:
     artifacts = dict(trace.state.artifacts)
     async with boundary(TaskError, "verifier task setup"):
         await invoke(task.setup, {"trace": trace, "runtime": runtime})
-    await restore(runtime, artifacts)
+    artifact_runtime = runtime
+    if restore_as_root and runtime.user is not None:
+        # Prime's default user is privileged; Docker defaults to the image USER.
+        user = None if isinstance(runtime.config, PrimeConfig) else "0"
+        artifact_runtime = runtime.with_user(user)
+    await restore(artifact_runtime, artifacts)
     async with boundary(TaskError, "verifier staging"):
         await invoke(task.stage_verifier, {"trace": trace, "runtime": runtime})
 
@@ -172,7 +179,9 @@ async def grade_task(
                         )
                     runtime = bind_scoring_env(runtime, policy)
                     await runtime.backend.prepare_setup()
-                    await stage_verifier(grader, result, runtime)
+                    await stage_verifier(
+                        grader, result, runtime, restore_as_root=spec is not None
+                    )
                     await runtime.backend.prepare_execution([])
                 try:
                     async with (
