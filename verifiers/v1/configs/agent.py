@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import (
     BaseModel,
     Field,
+    PositiveFloat,
     PositiveInt,
     SerializationInfo,
     SerializeAsAny,
@@ -52,10 +53,9 @@ class RolloutCheckpointConfig(BaseConfig):
     of its own. Elsewhere a retry starts over. Every snapshot is deleted once the run
     is final."""
 
-    interval: PositiveInt | None = None
-    """Snapshot at every n-th model turn (the n-th, the 2n-th, ...), for failures
-    that leave no box to snapshot (the box died, the harness program crashed): a retry
-    then loses fewer than n turns instead of starting over. None takes none."""
+    interval: PositiveFloat | None = Field(default=None, allow_inf_nan=False)
+    """Seconds between memory snapshots during execution. A held owner save can
+    adopt a rollout snapshot younger than this interval."""
     keep: Literal["last"] | PositiveInt = "last"
     """Snapshots kept while the rollout runs: the newest (`"last"`), or every k-th plus
     the newest (`k`; 1 keeps every one). A failed restore falls back to an older kept

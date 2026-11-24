@@ -8,6 +8,8 @@ import time
 from types import SimpleNamespace
 from typing import Literal
 
+import pytest
+
 import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
 from verifiers.v1.clients import ModelContext, ModelRoute
@@ -126,7 +128,7 @@ def test_agent_time_splits_off_the_checkpoint_hold():
     trace.calls.append(ModelCall(time=TimeSpan(start=105.0, end=110.0)))
     trace.checkpoints += [
         Checkpoint(id="old", snapshot=vf.Snapshot(id="old"), captured=90.0, held=3.0),
-        Checkpoint(id="new", snapshot=vf.Snapshot(id="new"), captured=106.0, held=1.5),
+        Checkpoint(id="new", snapshot=vf.Snapshot(id="new"), captured=107.0, held=1.5),
     ]
     trace.split_agent_time()
     assert trace.timing.agent.checkpoint.duration == 1.5
@@ -182,7 +184,7 @@ class FakeRelay:
 
 
 def make_rollout(
-    interval: int = 1,
+    interval: float = 60,
     keep: Literal["last"] | int = "last",
     *,
     running: bool = True,
@@ -209,6 +211,7 @@ def make_rollout(
     run._relay = FakeRelay()  # type: ignore[assignment]
     run._secret = "box-secret"
     run._checkpointing = RolloutCheckpointConfig(interval=interval, keep=keep)
+    run._inherited_checkpoints = 0
     run._durable = {}
     run._captures = set()
     run._closed = False
@@ -216,11 +219,13 @@ def make_rollout(
     run._memory = True
     run.unsaveable = None
     run.save_skipped = None
-    run._held = False
+    run._hold_id = None
     run._release_timer = None
     run._unheld = asyncio.Event()
     run._unheld.set()
-    run._captured_turn = 0
+    run._last_capture = -float("inf")
+    run._snapshot_request = asyncio.Lock()
+    run._snapshot_timer = None
     run._agent_time_spent = 0.0
     run._segment_start = None
     run._deadline = None
@@ -235,27 +240,120 @@ def make_rollout(
     return run, backend, session
 
 
-async def test_checkpoint_interval_skips_turns():
-    run, backend, _ = make_rollout(interval=2)
-    assert await run._checkpoint() is not None  # turn 2: the 2nd
-    run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
-    run.trace.nodes.append(
-        MessageNode(parent=2, message=AssistantMessage(content="ok"), sampled=True)
-    )
-    assert await run._checkpoint() is None  # turn 3
-    assert backend.taken == 1
+async def test_timer_captures_without_a_model_call_and_owner_reuses_it():
+    run, backend, session = make_rollout()
+    backend.durable.set()
+    run._segment_start = asyncio.get_running_loop().time()
+    run._schedule_snapshot()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    await run._settle_checkpoints(wait=True)
+    run._snapshot_timer.cancel()
+    before = run._last_capture
+    saved = await run.save(hold=True)
+    assert saved is not None and restore_entry(saved)["id"] == "ck1"
+    assert backend.taken == 1 and run._last_capture == before
+    assert not session.flowing.is_set()
+    run.release()
+    assert session.flowing.is_set()
 
 
-async def test_the_restored_turn_is_not_snapshotted_again():
-    run, backend, _ = make_rollout(interval=2)
-    run.restored_turns = run.trace.num_turns
-    run._captured_turn = run.restored_turns + 1
-    assert await run._checkpoint() is None
-    assert backend.taken == 0
+async def test_held_save_only_exports_a_durable_snapshot_from_this_attempt():
+    run, backend, _ = make_rollout()
+    inherited = await run._checkpoint()
+    assert inherited is not None
+    backend.durable.set()
+    await run._settle_checkpoints(wait=True)
+    inherited.restored = True
+    run._inherited_checkpoints = len(run.trace.checkpoints)
+
+    backend.durable.clear()
+    backend.stopped.clear()
+    saving = asyncio.create_task(run.save(hold=True))
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    assert not saving.done() and not inherited.pinned
+    backend.durable.set()
+    saved = await saving
+    assert saved is not None
+    entry = restore_entry(saved)
+    assert entry["id"] != inherited.id and entry["time"]["end"] and entry["pinned"]
+    run.release()
+
+
+async def test_failed_fresh_upload_returns_no_trainer_restore_point():
+    run, backend, session = make_rollout()
+    backend.fail = True
+    backend.durable.set()
+    assert await run.save(hold=True) is None
+    assert not run.trace.checkpoints and session.flowing.is_set()
+
+
+async def test_cancelled_trainer_upload_stays_owned_by_the_rollout():
+    run, backend, session = make_rollout()
+    saving = asyncio.create_task(run.save(hold=True))
+    await backend.stopped.wait()
+    saving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await saving
+    backend.durable.set()
+    await run._settle_checkpoints(wait=True)
+    (point,) = run.trace.checkpoints
+    assert point.time.end and not point.pinned and session.flowing.is_set()
+
+
+async def test_released_save_does_not_reapply_its_hold_after_upload():
+    run, backend, session = make_rollout()
+    await run._checkpoint()
+    saving = asyncio.create_task(run.save(hold=True))
+    await asyncio.sleep(0)
+    assert not saving.done() and not run._unheld.is_set()
+
+    run.release()
+    backend.durable.set()
+    saved = await saving
+    assert saved is not None and restore_entry(saved)["id"] == "ck1"
+    assert session.flowing.is_set()
+    assert run._release_timer is None
+
+
+async def test_disowning_a_late_save_preserves_the_next_owners_hold():
+    run, backend, session = make_rollout()
+    await run._checkpoint()
+    first = asyncio.create_task(run.save(hold=True))
+    await asyncio.sleep(0)
+    run.release()
+    second = asyncio.create_task(run.save(hold=True))
+    await asyncio.sleep(0)
+    backend.durable.set()
+    old, current = await asyncio.gather(first, second)
+    assert old is not None and current is not None
+    assert restore_entry(old)["id"] != restore_entry(current)["id"]
+    run.disown(old)
+    assert not session.flowing.is_set() and not run._unheld.is_set()
+    run.release()
+    assert session.flowing.is_set()
+
+
+async def test_save_takes_fresh_snapshot_when_candidate_expires_during_upload(
+    monkeypatch,
+):
+    run, backend, _ = make_rollout(interval=60)
+    point = await run._checkpoint()
+    assert point is not None
+    saving = asyncio.create_task(run.save(hold=True))
+    await asyncio.sleep(0)
+    assert not saving.done() and not run._unheld.is_set()
+
+    monkeypatch.setattr("verifiers.v1.rollout.time.time", lambda: point.captured + 61)
+    backend.durable.set()
+    saved = await saving
+    assert saved is not None and restore_entry(saved)["id"] == "ck2"
+    assert not point.pinned and backend.taken == 2
+    run.release()
+    await run._settle_checkpoints(wait=True)
 
 
 async def test_checkpoint_becomes_durable_in_the_background():
-    run, backend, _ = make_rollout(interval=1)
+    run, backend, _ = make_rollout(interval=60)
     checkpoint = await run._checkpoint()
     assert checkpoint is not None and checkpoint.captured
     assert checkpoint.time.end == 0 and checkpoint.bytes is None
@@ -266,7 +364,7 @@ async def test_checkpoint_becomes_durable_in_the_background():
 
 
 async def test_a_checkpoint_that_never_becomes_durable_is_dropped():
-    run, backend, _ = make_rollout(interval=1)
+    run, backend, _ = make_rollout(interval=60)
     await run._checkpoint()
     backend.fail = True
     backend.durable.set()
@@ -275,7 +373,7 @@ async def test_a_checkpoint_that_never_becomes_durable_is_dropped():
 
 
 async def test_settling_without_a_retry_stops_waiting():
-    run, _, _ = make_rollout(interval=1)
+    run, _, _ = make_rollout(interval=60)
     checkpoint = await run._checkpoint()
     await asyncio.wait_for(run._settle_checkpoints(wait=False), timeout=1)
     assert run._durable == {}
@@ -283,7 +381,7 @@ async def test_settling_without_a_retry_stops_waiting():
 
 
 async def test_a_closing_run_takes_no_checkpoint():
-    run, backend, _ = make_rollout(interval=1)
+    run, backend, _ = make_rollout(interval=60)
     capture = asyncio.create_task(run._checkpoint())
     run._closed = True
     await run._settle_checkpoints(wait=True)
@@ -355,7 +453,7 @@ async def test_no_snapshot_at_turns_by_default():
 
 
 async def test_a_call_asked_again_takes_no_second_snapshot():
-    run, backend, _ = make_rollout(interval=1)
+    run, backend, _ = make_rollout(interval=60)
     first = await run._checkpoint()
     assert first is not None and backend.taken == 1
     # The same call comes again (the snapshot reset the box's connections).
@@ -513,6 +611,7 @@ async def test_save_returns_before_the_snapshot_is_durable():
 async def test_a_held_save_answers_the_box_only_after_release():
     run, backend, session = make_rollout()
     backend.running.set()
+    backend.durable.set()
     assert await run.save(hold=True) is not None
     assert not session.flowing.is_set()
     # A checkpoint of the run's own under the hold does not end it.
@@ -525,10 +624,12 @@ async def test_a_held_save_answers_the_box_only_after_release():
 async def test_a_release_does_not_answer_a_box_that_another_snapshot_stops():
     run, backend, session = make_rollout()
     backend.running.set()
+    backend.durable.set()
     assert await run.save(hold=True) is not None
     # A turn later the rollout takes a snapshot of its own, and the owner releases
     # while the box is stopped for it.
     run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
+    run._last_capture = -float("inf")
     backend.running.clear()
     backend.stopped.clear()
     capture = asyncio.create_task(run._checkpoint())
@@ -549,10 +650,10 @@ async def test_a_cancelled_held_save_does_not_hold_the_box():
     assert (await asyncio.gather(saving, return_exceptions=True))[0] is not None
     assert saving.cancelled()
     assert session.flowing.is_set()
-    assert not run._held and run._release_timer is None
+    assert run._hold_id is None and run._release_timer is None
 
 
-async def test_a_snapshot_waits_for_a_turn_that_is_committing():
+async def test_a_snapshot_waits_for_each_turn_that_is_committing():
     """A reply that is on the trace can always be sent again: the snapshot records
     the trace only once the turn has stored its reply for replay."""
     run, backend, session = make_rollout()
@@ -562,7 +663,11 @@ async def test_a_snapshot_waits_for_a_turn_that_is_committing():
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert backend.taken == 0 and not session.flowing.is_set()
+    # Another commit starts after the first wakes the snapshot and before it resumes.
+    with session.committing():
         run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
+        await asyncio.sleep(0)
+        assert not backend.stopped.is_set()
         session.idempotent_requests["k"] = IdempotentRequest(
             binding=binding,
             response=ReplayResponse(200, b"{}", "application/json"),
@@ -577,25 +682,21 @@ async def test_a_snapshot_waits_for_a_turn_that_is_committing():
     }
 
 
-async def test_snapshots_count_turns_from_the_newest_one():
-    run, backend, _ = make_rollout(interval=2)
-    assert await run._checkpoint() is not None  # turn 2
-    # Two conversations step the count from 2 to 4 before the next request.
-    for parent in (1, 2, 3, 4):
-        run.trace.nodes.append(
-            MessageNode(
-                parent=parent, message=AssistantMessage(content="ok"), sampled=True
-            )
-        )
-    assert run.trace.num_turns + 1 == 6
-    assert await run._checkpoint() is not None
+async def test_elapsed_interval_captures_again_on_the_same_node():
+    run, backend, _ = make_rollout(interval=120)
+    first = await run._checkpoint()
+    assert first is not None
+    run._last_capture -= 121
+    second = await run._checkpoint()
+    assert second is not None and first.node == second.node
     assert backend.taken == 2
 
 
 async def test_a_finished_segment_waits_for_the_owners_release():
     """An owner records a saved rollout as running, so the rollout does not finish
     while the owner still holds it."""
-    run, _, _ = make_rollout()
+    run, backend, _ = make_rollout()
+    backend.durable.set()
     assert await run.save(hold=True) is not None
 
     async def turn(messages):
@@ -610,13 +711,14 @@ async def test_a_finished_segment_waits_for_the_owners_release():
 
 
 async def test_a_save_whose_program_ended_is_skipped():
-    run, _, session = make_rollout()
+    run, backend, session = make_rollout()
+    backend.durable.set()
     states = iter([{"job": {"job_id": "j1"}}, {"job": {"job_id": "j1"}}, None])
     run._harness_session = SimpleNamespace(memory_state=lambda: next(states))  # type: ignore[assignment]
     assert await run.save(hold=True) is None
     assert run.save_skipped == "its harness program ended during the save"
     (checkpoint,) = run.trace.checkpoints
-    assert not checkpoint.pinned and session.flowing.is_set() and not run._held
+    assert not checkpoint.pinned and session.flowing.is_set() and run._hold_id is None
 
 
 async def test_a_failed_held_save_does_not_hold_the_box():
@@ -682,6 +784,7 @@ async def test_an_owners_snapshot_outlives_the_rollout():
     (pinned,) = run.trace.checkpoints
     # A newer snapshot of the run's own, a turn later, does not prune the owner's.
     run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
+    run._last_capture = -float("inf")
     newest = await run._checkpoint()
     await run._settle_checkpoints(wait=True)
     assert backend.deleted == []
@@ -876,7 +979,8 @@ async def test_restore_applies_egress_before_connecting_relay(monkeypatch):
 async def test_a_hold_stops_the_agent_deadline():
     """The time an owner holds the rollout is the owner's: the agent deadline stops
     from the save until the release, and the hold is not agent time."""
-    run, _, _ = make_rollout()
+    run, backend, _ = make_rollout()
+    backend.durable.set()
     loop = asyncio.get_running_loop()
     async with asyncio.timeout(0.05) as deadline:
         run._segment_start, run._deadline = loop.time(), deadline

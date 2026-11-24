@@ -920,6 +920,9 @@ class Agent:
                         for c in trace.checkpoints
                         if not c.pinned
                     )
+                    for c in trace.checkpoints:
+                        if c.pinned:
+                            snapshots.pop(c.id, None)
                     deleted.update(run.deleted_snapshots)
                     if target is not None and (
                         any(error.stage == "setup" for error in trace.errors[seen:])
@@ -972,7 +975,7 @@ class Agent:
                             and not c.deleted
                             # An owner's snapshot is the owner's to delete at any
                             # time, except the one it offered this run.
-                            and (not c.pinned or c.restored)
+                            and (not c.pinned or c.id == offered)
                             and c.id not in failed_restores
                         ),
                         None,
