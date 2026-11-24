@@ -80,18 +80,17 @@ def _validate_solver(saved: Trace, task: Task, policy: ScoringConfig) -> None:
         solver_completed = saved.solver_completed_before_scoring_timeout
     else:
         solver_completed = (
-            saved.stop_condition in {None, "agent_completed"} and not saved.is_timeout
+            saved.ok
+            and saved.stop_condition in {None, "agent_completed"}
+            and not saved.is_timeout
         )
-    if (
-        not saved.is_completed
-        or not saved.ok
-        or saved.is_format_violation
-        or not solver_completed
-    ):
+    if not saved.is_completed or saved.is_format_violation or not solver_completed:
         raise RequiresRerun("Original solver did not complete")
 
 
-def _solver_runtime_config(saved: Trace, base: RuntimeConfig) -> RuntimeConfig:
+def _solver_runtime_config(
+    saved: Trace, base: RuntimeConfig, workdir: str
+) -> RuntimeConfig:
     """Reconstruct the workspace's image and cwd without starting its runtime."""
     original = saved.agent.runtime
     if original is None:
@@ -114,7 +113,6 @@ def _solver_runtime_config(saved: Trace, base: RuntimeConfig) -> RuntimeConfig:
     image = getattr(original, "image", None)
     if not image:
         raise RequiresRerun("Saved submission has no resolved workspace image")
-    workdir = getattr(original, "workdir", None) or saved.task.data.workdir or "/app"
     # Supply only the recorded workspace coordinates. The current verifier's
     # image, resources and network policy are resolved separately.
     return base.model_copy(update={"image": image, "workdir": workdir})
@@ -210,22 +208,34 @@ def prepare_replay(
     """
     policy = scoring if scoring is not None else task.scoring
     _validate_solver(saved, task, policy)
-    solver = _solver_runtime_config(saved, runtime)
-    workdir = getattr(solver, "workdir", None) or "/app"
     workdirs = saved.info.get("harbor_artifact_workdirs", {})
+    workdir = workdirs.get("main", getattr(saved.agent.runtime, "workdir", None) or "/")
+    solver = _solver_runtime_config(saved, runtime, workdir)
     try:
-        declared = [
-            (artifact_source(entry, workdir, workdirs), entry.required)
-            for entry in (*saved.task.data.artifacts, *task.data.artifacts)
-        ]
-        grader_artifacts = [
-            entry
-            if getattr(entry, "service", "main") == "main"
-            else entry.model_copy(
-                update={"source": artifact_source(entry, workdir, workdirs)}
+        captured_by = {ARTIFACTS_DIR: "main"}
+        declared = []
+        for entry in saved.task.data.artifacts:
+            root = artifact_source(entry, workdir, workdirs)
+            service = getattr(entry, "service", "main")
+            if captured_by.setdefault(root, service) != service:
+                raise ValueError(
+                    f"Saved artifact {root!r} has ambiguous service provenance"
+                )
+            declared.append((root, entry.required))
+        grader_artifacts = []
+        for entry in task.data.artifacts:
+            root = artifact_source(entry, workdir, workdirs)
+            service = getattr(entry, "service", "main")
+            if captured_by.get(root, "main") != service:
+                raise ValueError(
+                    f"Artifact {root!r} was not captured from service {service!r}"
+                )
+            declared.append((root, entry.required))
+            grader_artifacts.append(
+                entry
+                if service == "main"
+                else entry.model_copy(update={"source": root})
             )
-            for entry in task.data.artifacts
-        ]
     except ValueError as exc:
         raise RequiresRerun(str(exc)) from exc
     if missing := ({root for root, _ in declared} | {ARTIFACTS_DIR}) - artifacts.keys():
@@ -261,7 +271,7 @@ def prepare_replay(
     trace.state = state_cls(type(task))(artifacts=dict(artifacts))
     trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
     trace.errors, trace.dropped = [], None
-    trace.is_timeout = False
+    trace.ok, trace.is_timeout = True, False
     trace.solver_completed_before_scoring_timeout = False
     if trace.stop_condition == "scoring_timeout":
         trace.stop_condition = "agent_completed"

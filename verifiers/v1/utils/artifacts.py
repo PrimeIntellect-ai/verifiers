@@ -237,8 +237,6 @@ async def collect(
                 f"declared artifact {source!r} does not exist in the runtime"
             )
         archive = await _tar_out(runtime, artifact, budget)
-        _validate_restore(source, archive)
-        archive = _rebuild(archive, max_bytes=budget)
         budget -= len(archive)
         collected[source] = archive
 
@@ -354,8 +352,6 @@ def save_artifacts(
                                 (Path(unpacked) / member.name).replace(path)
                     claims.append((target, artifact.destination is not None))
                     entry["status"] = "ok"
-            except _ArtifactSizeError:
-                raise
             except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
                 entry.update(status="failed", error=str(exc))
                 logger.warning("Failed to save artifact %s - %s", source, exc)

@@ -32,7 +32,7 @@ ASSIGNMENT = re.compile(
     r"""(?:[\w.\[\], \t|]|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')+?)=|[:=])\s*"""
     r'''(?P<value>(?i:fr|rf|br|rb|r|u|f|b)?(?:"""(?:\\.|(?!""")[^\\])*"""|'''
     r"'''(?:\\.|(?!''')[^\\])*'''|"
-    r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|[^\s,;#}\]"']+)""",
+    r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|[([{]|[^\s,;#}\]"']+)""",
     re.DOTALL,
 )
 F_STRING = re.compile(r"""(?i)(?:fr|rf|f)(?=["'])""")
@@ -49,9 +49,11 @@ LEGACY_ENV = re.compile(
 )
 
 
-def _group_end(text: str, start: int) -> int:
+def _group_end(text: str, start: int) -> int | None:
     """Find the extent of an expression starting with a grouped value."""
-    tail = text[start:]
+    # A malformed group in a trace can otherwise make tokenization, AST parsing,
+    # and echo discovery process the entire remainder of a large log.
+    tail = text[start : start + SOURCE_FILE_BYTES]
     closing = {"(": ")", "[": "]", "{": "}"}
     stack = []
     try:
@@ -65,7 +67,8 @@ def _group_end(text: str, start: int) -> int:
             ):
                 line, column = token.start
                 preceding = tail.split("\n", line - 1)[:-1]
-                return start + sum(len(part) + 1 for part in preceding) + column
+                end = start + sum(len(part) + 1 for part in preceding) + column
+                return end if end < start + len(tail) or end == len(text) else None
             if operator in closing:
                 stack.append(closing[operator])
             elif operator in {")", "]", "}"} and stack.pop() != operator:
@@ -73,7 +76,7 @@ def _group_end(text: str, start: int) -> int:
     except (tokenize.TokenError, SyntaxError):
         pass
     # An incomplete credential expression has no reliable value boundary.
-    return len(text)
+    return None
 
 
 def _source_configs(item):
@@ -209,6 +212,17 @@ def redact(value):
         return False
 
     def strings(item):
+        if isinstance(item, ast.JoinedStr):
+            for part in item.values:
+                # Literal separators and other short fragments of a template
+                # say nothing about the complete interpolated credential.
+                if (
+                    isinstance(part, ast.Constant)
+                    and len(part.value.strip()) >= 4
+                    and any(char.isalnum() for char in part.value)
+                ):
+                    strings(part.value)
+            return
         if isinstance(item, bytes):
             if item:
                 secrets.add(repr(item)[2:-1])
@@ -235,7 +249,11 @@ def redact(value):
                     for part in expression.values
                     if isinstance(part, ast.Constant)
                 ]
-                return parts if len(parts) != len(expression.values) else "".join(parts)
+                return (
+                    expression
+                    if len(parts) != len(expression.values)
+                    else "".join(parts)
+                )
             return ast.literal_eval(expression)
         except (ValueError, SyntaxError):
             # Shell quotes permit literal newlines that Python's single-quoted
@@ -244,7 +262,7 @@ def redact(value):
                 return raw[1:-1]
             return raw
 
-    def assignments(text: str) -> Iterator[tuple[re.Match[str], int]]:
+    def assignments(text: str) -> Iterator[tuple[re.Match[str], int | None]]:
         end = 0
         for match in ASSIGNMENT.finditer(text):
             if match.start() < end:
@@ -260,6 +278,15 @@ def redact(value):
                     except SyntaxError:
                         end = _group_end(text, start)
             yield match, end
+            if end is None:
+                break
+
+    def group_values(raw: str) -> None:
+        # A shell or JavaScript object is not necessarily a Python literal.
+        # Gather the values of its inner fields independently of parsing the group.
+        for match in ASSIGNMENT.finditer(raw):
+            if match["value"] not in ("(", "[", "{"):
+                strings(assignment_value(match["value"]))
 
     def discover(item):
         if isinstance(item, dict):
@@ -281,10 +308,21 @@ def redact(value):
                     if param["key"].lower() == "response":
                         strings(assignment_value(param["value"]))
             for match, end in assignments(item):
-                raw = item[match.start("value") : end]
+                start = match.start("value")
+                if end is None:
+                    group_values(item[start : start + SOURCE_FILE_BYTES])
+                    break
+                raw = item[start:end]
                 decoded = assignment_value(raw)
                 if sensitive(match["key"]):
-                    strings(decoded)
+                    if decoded == raw and raw.startswith(("(", "[", "{")):
+                        group_values(raw)
+                    else:
+                        strings(decoded)
+                elif isinstance(decoded, ast.JoinedStr):
+                    for part in decoded.values:
+                        if isinstance(part, ast.Constant):
+                            discover(part.value)
                 elif isinstance(decoded, str) and decoded != raw:
                     # A harmless outer key can hold commands or config text with
                     # its own credential assignments, including escaped quotes.
@@ -305,15 +343,16 @@ def redact(value):
     discover(value)
     marker = r"(?P<marker>\[redacted(?: URL)?\]|%5Bredacted%5D)"
     replacements = sorted(secrets, key=len, reverse=True)
-    echoes = re.compile("|".join([marker, *map(re.escape, replacements)]))
-    key_echoes = re.compile(
-        "|".join(
-            [
-                marker,
-                *(re.escape(secret) for secret in replacements if len(secret) >= 4),
-            ]
-        )
-    )
+    patterns = [marker]
+    for secret in replacements:
+        escaped = re.escape(secret)
+        if len(secret) < 4:
+            boundary = (
+                r"\w" if any(char.isalnum() for char in secret) else r"""[^\s"'\x60]"""
+            )
+            escaped = rf"(?<!{boundary}){escaped}(?!{boundary})"
+        patterns.append(escaped)
+    echoes = re.compile("|".join(patterns))
 
     def url(match):
         try:
@@ -339,7 +378,6 @@ def redact(value):
         cursor = 0
         for match, end in assignments(text):
             start = match.start("value")
-            raw = text[start:end]
             if sensitive(match["key"]):
                 # An annotation-shaped field may also be a credential-bearing
                 # string in a log. Remove it here without treating its type as
@@ -354,31 +392,35 @@ def redact(value):
                     )
                 )
             else:
+                raw = text[start:end]
                 decoded = assignment_value(raw)
-                if isinstance(decoded, str) and decoded != raw:
+                if isinstance(decoded, ast.JoinedStr):
+                    changed = False
+                    for part in decoded.values:
+                        if isinstance(part, ast.Constant):
+                            clean = scrub(part.value)
+                            changed |= clean != part.value
+                            part.value = clean
+                    if changed:
+                        raw = ast.unparse(decoded)
+                elif isinstance(decoded, str) and decoded != raw:
                     cleaned = scrub(decoded)
                     if cleaned != decoded:
                         raw = json.dumps(cleaned, ensure_ascii=False)
                 parts.extend((text[cursor:start], raw))
-            cursor = end
+            cursor = len(text) if end is None else end
         parts.append(text[cursor:])
         return "".join(parts)
 
-    def scrub_echoes(text: str, *, key: bool = False) -> str:
-        # A one-character credential can occur inside the audit's own field names.
-        if key and text in secrets:
-            return "[redacted]"
-        pattern = key_echoes if key else echoes
-        return pattern.sub(lambda match: match["marker"] or "[redacted]", text)
+    def scrub_echoes(text: str) -> str:
+        return echoes.sub(lambda match: match["marker"] or "[redacted]", text)
 
     def scrub(item):
         if isinstance(item, dict):
             cleaned = {}
             suffixes: dict[str, int] = {}
             for key, child in item.items():
-                safe = (
-                    scrub_echoes(key, key=True) if isinstance(key, str) else scrub(key)
-                )
+                safe = scrub_echoes(key) if isinstance(key, str) else scrub(key)
                 unique = safe
                 if unique in cleaned:
                     base = str(safe)
