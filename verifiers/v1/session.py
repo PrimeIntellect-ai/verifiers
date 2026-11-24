@@ -699,6 +699,7 @@ class RolloutSession:
                     if pos in node_by_pos:
                         tool_nodes.setdefault(tkey, node_by_pos[pos])
             remaining: list[tuple[ToolResultKey, InterceptRecord]] = []
+            committed_pinned: set[int] = set()
             for tkey, rec in self.pinned_rewrites:
                 if id(rec) in in_turn_ids:
                     continue
@@ -707,7 +708,20 @@ class RolloutSession:
                     continue
                 rec.node = nid
                 self.trace.request_rewrites.append(rec)
+                committed_pinned.add(id(rec))
             self.pinned_rewrites = remaining
+            if committed_pinned and self.inflight_rewrites:
+                self.inflight_rewrites = {
+                    key: kept
+                    for key, items in self.inflight_rewrites.items()
+                    if (
+                        kept := [
+                            item
+                            for item in items
+                            if id(item[1]) not in committed_pinned
+                        ]
+                    )
+                }
         self.trace.request_rewrites.extend(in_turn)
         for rec in response_rewrites:
             rec.node = assistant_node
@@ -715,17 +729,19 @@ class RolloutSession:
 
     def flush_rewrites(self) -> None:
         """Flush any request rewrites whose prompt never committed (`node=None`)."""
-        self.trace.request_rewrites.extend(rec for _, rec in self.prepared_rewrites)
+        seen = {id(rec) for rec in self.trace.request_rewrites}
+        pending = chain(
+            (rec for _, rec in self.prepared_rewrites),
+            (rec for _, rec in self.pinned_rewrites),
+            (rec for _, rec in chain.from_iterable(self.inflight_rewrites.values())),
+        )
+        for rec in pending:
+            if id(rec) not in seen:
+                seen.add(id(rec))
+                self.trace.request_rewrites.append(rec)
         self.prepared_rewrites.clear()
         self._prepared_user_count = 0
-        pinned_ids = {id(rec) for _, rec in self.pinned_rewrites}
-        self.trace.request_rewrites.extend(rec for _, rec in self.pinned_rewrites)
         self.pinned_rewrites.clear()
-        self.trace.request_rewrites.extend(
-            rec
-            for _, rec in chain.from_iterable(self.inflight_rewrites.values())
-            if id(rec) not in pinned_ids
-        )
         self.inflight_rewrites.clear()
 
     async def prepare_users(
