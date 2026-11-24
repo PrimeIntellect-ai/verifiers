@@ -1161,8 +1161,9 @@ class Rollout:
                 return None
             session.hold()
             try:
-                # A turn that is committing gets to store its reply for replay first.
-                await session.settled.wait()
+                # Another commit can begin after the previous one wakes this waiter.
+                while not session.settled.is_set():
+                    await session.settled.wait()
                 program = self._harness_session.memory_state()
                 if program is None:
                     return None

@@ -653,7 +653,7 @@ async def test_a_cancelled_held_save_does_not_hold_the_box():
     assert run._hold_id is None and run._release_timer is None
 
 
-async def test_a_snapshot_waits_for_a_turn_that_is_committing():
+async def test_a_snapshot_waits_for_each_turn_that_is_committing():
     """A reply that is on the trace can always be sent again: the snapshot records
     the trace only once the turn has stored its reply for replay."""
     run, backend, session = make_rollout()
@@ -663,7 +663,11 @@ async def test_a_snapshot_waits_for_a_turn_that_is_committing():
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert backend.taken == 0 and not session.flowing.is_set()
+    # Another commit starts after the first wakes the snapshot and before it resumes.
+    with session.committing():
         run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
+        await asyncio.sleep(0)
+        assert not backend.stopped.is_set()
         session.idempotent_requests["k"] = IdempotentRequest(
             binding=binding,
             response=ReplayResponse(200, b"{}", "application/json"),
