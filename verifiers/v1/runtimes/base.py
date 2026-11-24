@@ -209,6 +209,8 @@ class RuntimeBackend(ABC):
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
+        self.active_network: NetworkPolicyConfig | None = None
+        """Latest network policy applied via `Runtime.set_network`, if overridden."""
         self.cache = RuntimeCache()
         self._setup_claimed = False
         self._background: list[RuntimeProcess] = []

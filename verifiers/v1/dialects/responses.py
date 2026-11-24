@@ -750,17 +750,23 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         return ResponsesStreamParser()
 
     def apply_overrides(
-        self, body: RawRequest, model: str, sampling: SamplingConfig
+        self,
+        body: RawRequest,
+        model: str,
+        sampling: SamplingConfig,
+        *,
+        authoritative: bool = True,
     ) -> RawRequest:
-        # Preserve native fields except the eval's model + sampling, mapped to the Responses shape
-        # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
+        # Preserve native fields except `model` + `sampling`, mapped to the Responses shape
+        # (`max_tokens` -> `max_output_tokens`).
         s = sampling.model_dump(exclude_none=True)
         max_tokens = s.pop("max_tokens", None)
         reasoning_effort = s.pop("reasoning_effort", None)
         sampling_reasoning = s.pop("reasoning", None)
         name = model.rsplit("/", 1)[-1]
         reasoning_model = (
-            name.startswith(("gpt-5", "o1", "o3", "o4"))
+            authoritative
+            and name.startswith(("gpt-5", "o1", "o3", "o4"))
             and "-chat" not in name
             and ("/" not in model or model.startswith("openai/"))
         )
@@ -782,9 +788,16 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
             reasoning["effort"] = reasoning_effort
         if reasoning:
             overrides["reasoning"] = reasoning
+        drop = (
+            _SAMPLING_KEYS
+            if authoritative
+            else (
+                {"max_tokens", "max_output_tokens"}
+                if "max_output_tokens" in overrides
+                else set()
+            )
+        )
         steered = {
-            k: v
-            for k, v in body.items()
-            if k not in _SAMPLING_KEYS and k not in overrides
+            k: v for k, v in body.items() if k not in drop and k not in overrides
         }
         return {**steered, **overrides}

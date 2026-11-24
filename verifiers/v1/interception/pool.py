@@ -44,7 +44,7 @@ class StaticInterceptionPool(Interception):
         requires_tunnel: bool = False,
         state_service_secrets: tuple[str, ...] = (),
     ) -> None:
-        super().__init__()
+        super().__init__(requires_tunnel=requires_tunnel)
         self.config = config
         self.servers = [
             InterceptionServer(server, requires_tunnel, state_service_secrets)
@@ -80,9 +80,8 @@ class ElasticInterceptionPool(Interception):
         requires_tunnel: bool = False,
         state_service_secrets: tuple[str, ...] = (),
     ) -> None:
-        super().__init__()
+        super().__init__(requires_tunnel=requires_tunnel)
         self.config = config or ElasticInterceptionPoolConfig()
-        self.requires_tunnel = requires_tunnel
         self.state_service_secrets = state_service_secrets
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()

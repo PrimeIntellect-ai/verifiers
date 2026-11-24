@@ -88,7 +88,7 @@ class ModelContext:
     """Model, endpoint config, and sampling for one rollout."""
 
     model: str
-    client: ClientConfig
+    client: BaseClientConfig
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
 
 

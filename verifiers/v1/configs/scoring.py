@@ -2,12 +2,36 @@
 
 from typing import Literal
 
-from pydantic import SerializationInfo, field_serializer
+from pydantic import Field, SerializationInfo, field_serializer
 from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, RuntimeConfig
-from verifiers.v1.utils.generic import merge_defaults
+from verifiers.v1.configs.sampling import SamplingConfig
+from verifiers.v1.utils.generic import deep_merge, merge_defaults
+
+
+class ScoringJudgeConfig(BaseClientConfig):
+    """Host inference for a packaged grader, reached through a temporary endpoint."""
+
+    model: str | None = None
+    """Override the grader's model; None preserves each request's model."""
+    sampling: SamplingConfig = SamplingConfig()
+    """Explicit settings override the grader's request, including provider parameters."""
+    env: dict[str, Literal["base_url", "api_key"]] = Field(
+        default_factory=lambda: {
+            "OPENAI_BASE_URL": "base_url",
+            "OPENAI_API_BASE": "base_url",
+            "OPENAI_API_KEY": "api_key",
+        }
+    )
+    """Grader environment names mapped to the temporary endpoint or session token."""
+
+    @field_serializer("sampling")
+    def serialize_sampling(self, sampling: SamplingConfig) -> dict:
+        # Omitted settings must stay omitted after task/config transport.
+        return sampling.model_dump(exclude_unset=True)
 
 
 class ScoringConfig(BaseConfig):
@@ -17,6 +41,8 @@ class ScoringConfig(BaseConfig):
     """Fresh verifier provider/configuration. None uses the agent's provider policy."""
     env: dict[str, str] | None = None
     """Scoring-only variables, merged over task defaults and resolved at scoring time."""
+    judge: ScoringJudgeConfig | None = None
+    """Route a packaged grader's inference through the host; None leaves it unmanaged."""
     retries: RetryConfig = RetryConfig(max_retries=2)
     """Retry rules for fresh isolated scoring attempts; shared scoring is not retried."""
     network: NetworkPolicyConfig | None = None
@@ -63,4 +89,10 @@ def resolve_scoring(task: ScoringConfig, agent: ScoringConfig) -> ScoringConfig:
             else {},
         )
     )
+    if task.judge is not None and agent.judge is not None:
+        updates["judge"] = ScoringJudgeConfig.model_validate(
+            deep_merge(
+                task.judge.model_dump(), agent.judge.model_dump(exclude_unset=True)
+            )
+        )
     return task.model_copy(update=updates)
