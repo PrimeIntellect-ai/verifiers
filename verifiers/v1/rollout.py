@@ -809,11 +809,7 @@ class Rollout:
         trace.root_reply = None
         loop = asyncio.get_running_loop()
         segment_start = self._segment_start = loop.time()
-        if (
-            self._memory
-            and self._checkpointing
-            and self._checkpointing.interval_minutes
-        ):
+        if self._memory and self._checkpointing and self._checkpointing.interval:
             self._last_capture = self._last_capture or segment_start
             self._schedule_snapshot()
         self.deadline_at = (
@@ -976,10 +972,10 @@ class Rollout:
         return self._restore.session["live"][key]
 
     def _schedule_snapshot(self) -> None:
-        assert self._checkpointing and self._checkpointing.interval_minutes
+        assert self._checkpointing and self._checkpointing.interval
         loop = asyncio.get_running_loop()
         self._snapshot_timer = loop.call_at(
-            self._last_capture + self._checkpointing.interval_minutes * 60,
+            self._last_capture + self._checkpointing.interval * 60,
             self._start_periodic_snapshot,
         )
 
@@ -1007,11 +1003,11 @@ class Rollout:
             if (
                 self._closed
                 or not self._checkpointing
-                or not self._checkpointing.interval_minutes
+                or not self._checkpointing.interval
             ):
                 return None
             now = asyncio.get_running_loop().time()
-            if now - self._last_capture < self._checkpointing.interval_minutes * 60:
+            if now - self._last_capture < self._checkpointing.interval * 60:
                 return None
             # Pace failed attempts too, including a program that exited before capture.
             self._last_capture = now
@@ -1019,8 +1015,8 @@ class Rollout:
 
     async def _owner_checkpoint(self, reuse: bool) -> Checkpoint | None:
         async with self._snapshot_request:
-            if reuse and self._checkpointing and self._checkpointing.interval_minutes:
-                cutoff = time.time() - self._checkpointing.interval_minutes * 60
+            if reuse and self._checkpointing and self._checkpointing.interval:
+                cutoff = time.time() - self._checkpointing.interval * 60
                 point = next(
                     (
                         c

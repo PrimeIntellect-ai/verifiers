@@ -208,7 +208,7 @@ def make_rollout(
     )
     run._relay = FakeRelay()  # type: ignore[assignment]
     run._secret = "box-secret"
-    run._checkpointing = RolloutCheckpointConfig(interval_minutes=interval, keep=keep)
+    run._checkpointing = RolloutCheckpointConfig(interval=interval, keep=keep)
     run._durable = {}
     run._captures = set()
     run._closed = False
@@ -365,7 +365,7 @@ async def test_a_call_asked_again_takes_no_second_snapshot():
 
 def test_checkpointing_is_on_by_default():
     assert vf.AgentConfig().checkpoint == RolloutCheckpointConfig()
-    assert RolloutCheckpointConfig().interval_minutes is None
+    assert RolloutCheckpointConfig().interval is None
     assert gated("bash", vf.PrimeConfig())._checkpointing() is not None
 
 

@@ -202,7 +202,7 @@ async def test_retry_restores_checkpoint(run, taken, harness, harness_runtime):
     shell = harness_class(harness.id).EXECUTES_CODE
     fail_turn = 2 if shell else 1
     trace = await restored_trace(
-        run, harness, harness_runtime, fail_turn=fail_turn, interval_minutes=0.25
+        run, harness, harness_runtime, fail_turn=fail_turn, interval=0.25
     )
     if shell:
         assert trace.num_turns >= 2
