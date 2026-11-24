@@ -647,5 +647,7 @@ def test_server_keepalive_events_are_not_response_data():
     # A keepalive cut before its blank line is closed before the retry's body.
     cut = scanned(first[:-1])
     assert not cut.data and cut.line_break() == b"\n"
-    # A line cut before its end could be anything.
+    # A line cut before its end could be anything, and so could an event whose data
+    # did not come yet: real Responses events have the keepalives' names.
     assert scanned(first[:12]).data
+    assert scanned(b"event: response.created\n").data

@@ -867,3 +867,17 @@ async def test_restore_applies_egress_before_connecting_relay(monkeypatch):
         "prepare_execution:['http://127.0.0.1:4000/v1', 'https://new-tunnel.example']",
         "relay.connect:https://new-tunnel.example",
     ]
+
+
+async def test_a_hold_moves_the_agent_deadline_out():
+    """The time an owner holds the rollout is the owner's: the agent deadline moves out
+    by as long as the hold lasts, so a hold does not end the rollout as a timeout."""
+    run = SimpleNamespace(_unheld=asyncio.Event(), _deadline=None, deadline_at=None)
+    loop = asyncio.get_running_loop()
+    async with asyncio.timeout(0.05) as deadline:
+        run._deadline, run.deadline_at = deadline, deadline.when()
+        budget_end = deadline.when()
+        loop.call_later(0.15, run._unheld.set)
+        await Rollout._wait_unheld(run)  # type: ignore[arg-type]
+        assert deadline.when() > budget_end + 0.1
+        assert run.deadline_at == deadline.when()

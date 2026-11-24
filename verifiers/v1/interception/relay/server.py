@@ -266,7 +266,8 @@ KEEPALIVE_DATA = (b'"type": "ping"', b'"id": "resp_keepalive"')
 class Scanner:
     """Whether a response body forwarded anything but what a retry's body can still
     follow: SSE comment lines, blank lines, and the server's keepalive events. A
-    line not yet complete counts as data unless it is a comment."""
+    line not yet complete counts as data unless it is a comment, and so does an
+    event until its data line shows it is a keepalive: real events share the names."""
 
     def __init__(self) -> None:
         self.sse = False
@@ -275,10 +276,15 @@ class Scanner:
         self.in_event = False
         """A field line came since the last blank line: the event is still open."""
         self.keepalive = False
+        """The open event's name is a keepalive's."""
+        self.confirmed = False
+        """The open event's data is a keepalive's."""
 
     @property
     def data(self) -> bool:
-        return self.sent_data or (bool(self.line) and not self.line.startswith(b":"))
+        if self.sent_data or (self.in_event and not self.confirmed):
+            return True
+        return bool(self.line) and not self.line.startswith(b":")
 
     def feed(self, chunk: bytes) -> None:
         if self.sent_data or not chunk:
@@ -297,7 +303,7 @@ class Scanner:
 
     def end_line(self, line: bytes) -> None:
         if not line:
-            self.in_event = self.keepalive = False
+            self.in_event = self.keepalive = self.confirmed = False
             return
         if line.startswith(b":"):
             return
@@ -310,6 +316,7 @@ class Scanner:
             ok = self.keepalive and value in KEEPALIVE_EVENTS
         elif field == b"data":
             ok = self.keepalive and any(mark in value for mark in KEEPALIVE_DATA)
+            self.confirmed = ok
         else:
             ok = False
         if not ok:

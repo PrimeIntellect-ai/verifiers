@@ -55,6 +55,7 @@ close to its 30 s pool timeout, and the whole batch ran at 9.5 boxes per second.
 _snapshot_slots: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop, asyncio.Semaphore
 ] = weakref.WeakKeyDictionary()
+_DEAD_STATUSES = ("ERROR", "TERMINATED", "TIMEOUT")
 _PAUSE_SETTLE_SECONDS = 120
 """How long a pause or a resume gets to take effect. With 10,000 boxes paused together
 (2026-11-23), the platform paused them in about 28 s at the median."""
@@ -362,8 +363,12 @@ class PrimeBackend(RuntimeBackend):
                     paused = await self._client.pause(self.info.id)
                 except BaseException:
                     # The platform may have accepted a pause whose answer was lost:
-                    # the box must run again. A box that runs returns at once.
-                    await self._resume()
+                    # such a box must run again. One that runs, died or is gone is
+                    # left as it is, so a dead box costs no resume retries.
+                    with contextlib.suppress(Exception):
+                        status = (await self._client.get(self.info.id)).status
+                        if status not in ("RUNNING", *_DEAD_STATUSES):
+                            await self._resume()
                     raise
                 snapshot = Snapshot(id=paused.checkpoint_id)
                 # Kept whatever comes next: a pause that was not seen to finish can

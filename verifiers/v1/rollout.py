@@ -283,6 +283,8 @@ class Rollout:
         self._unheld = asyncio.Event()
         """Cleared while an owner holds the rollout at its checkpoint."""
         self._unheld.set()
+        self._deadline: asyncio.Timeout | None = None
+        """The running segment's agent deadline, which a hold moves out."""
         self._capturing = asyncio.Lock()
         if self._restore is not None:
             assert self._restore.session is not None
@@ -814,7 +816,7 @@ class Rollout:
             else segment_start + max(0.0, self._agent_time_remaining)
         )
         # Prefer an intercepted model/tool error to the harness exit it caused.
-        deadline = asyncio.timeout_at(self.deadline_at)
+        deadline = self._deadline = asyncio.timeout_at(self.deadline_at)
         try:
             async with deadline:
                 assert self._harness_session is not None
@@ -900,11 +902,33 @@ class Rollout:
             if not turn.cancelled():
                 turn.exception()  # the abort decides the outcome, whatever the turn did
             return True
+        if not turn.cancelled():
+            turn.exception()  # retrieved now, raised after the release
         # An owner that saved this rollout records it as running: it does not finish,
         # nor fail, before the owner lets it go on.
-        await self._unheld.wait()
+        await self._wait_unheld()
         turn.result()
         return False
+
+    async def _wait_unheld(self) -> None:
+        """Wait until an owner's hold ends. The hold is the owner's time, not the
+        agent's: the agent deadline moves out by as long as it lasts."""
+        if self._unheld.is_set():
+            return
+        deadline = self._deadline
+        when = deadline.when() if deadline is not None else None
+        if deadline is not None and when is not None:
+            deadline.reschedule(None)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            await self._unheld.wait()
+        finally:
+            if deadline is not None and when is not None:
+                held = loop.time() - started
+                deadline.reschedule(when + held)
+                if self.deadline_at is not None:
+                    self.deadline_at += held
 
     async def restore(self) -> bool:
         """Run the restored attempt's first segment: the box restored from the
@@ -1014,9 +1038,14 @@ class Rollout:
         """Give back a `save` whose owner never got it: the rollout goes on, and its
         teardown deletes the snapshot."""
         snapshot_id = restore_entry(saved)["snapshot"]["id"]
+        found = False
         for checkpoint in self.trace.checkpoints:
             if checkpoint.snapshot.id == snapshot_id:
                 checkpoint.pinned = False
+                found = True
+        if not found and self.runtime is not None:
+            # Its durable wait failed and dropped it: the box's teardown frees it.
+            self.runtime.backend.stray_snapshots.append(Snapshot(id=snapshot_id))
         self.release()
 
     def release(self) -> None:
