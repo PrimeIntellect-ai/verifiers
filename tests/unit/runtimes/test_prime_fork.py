@@ -12,9 +12,17 @@ from verifiers.v1.runtimes.backends import prime
 class FakeClient:
     """Creates boxes from a memory snapshot; the first one ends before it runs."""
 
-    def __init__(self):
+    def __init__(self, durable: bool = True):
         self.created: list[str] = []
         self.deleted: list[str] = []
+        self.durable = durable
+
+    async def wait_for_checkpoint(self, checkpoint_id, timeout_seconds):
+        if not self.durable:
+            raise RuntimeError(
+                f"Checkpoint {checkpoint_id} cannot become durable (state=FAILED)"
+            )
+        return SimpleNamespace(id=checkpoint_id, state="DURABLE")
 
     async def create(self, request):
         self.created.append(f"sb{len(self.created)}")
@@ -37,6 +45,18 @@ def test_a_memory_restore_retry_deletes_the_box_that_died(monkeypatch):
     assert client.created == ["sb0", "sb1"]
     assert client.deleted == ["sb0"]
     assert backend.info.id == "sb1"
+
+
+def test_a_memory_restore_waits_for_a_durable_snapshot(monkeypatch):
+    """A save returns before its snapshot is uploaded: a restore from one that never
+    becomes durable fails before it creates a box, and the rollout starts over."""
+    client = FakeClient(durable=False)
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(prime, "_lease_client", lambda: client)
+    backend = PrimeBackend(PrimeConfig(checkpoint="ckpt", restore_memory=True))
+    with pytest.raises(SandboxError, match="cannot become durable"):
+        asyncio.run(backend.start())
+    assert client.created == []
 
 
 def test_attach_waits_until_sandbox_is_awake(monkeypatch):

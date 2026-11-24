@@ -8,8 +8,6 @@ import time
 from types import SimpleNamespace
 from typing import Literal
 
-import pytest
-
 import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
 from verifiers.v1.clients import ModelContext, ModelRoute
@@ -149,6 +147,7 @@ class SlowBackend:
         self.fail = False
         self.taken = 0
         self.deleted: list[str] = []
+        self.stray_snapshots: list[vf.Snapshot] = []
 
     def snapshot_pace(self):
         return contextlib.nullcontext()
@@ -157,12 +156,16 @@ class SlowBackend:
         self.taken += 1
         self.stopped.set()
         await self.running.wait()
-        return vf.Snapshot(id=f"ck{self.taken}")
+        snapshot = vf.Snapshot(id=f"ck{self.taken}")
+        # Like a Prime box: teardown frees a snapshot until it is durable.
+        self.stray_snapshots.append(snapshot)
+        return snapshot
 
     async def wait_snapshot(self, snapshot: vf.Snapshot) -> int | None:
         await self.durable.wait()
         if self.fail:
             raise RuntimeError("upload failed")
+        self.stray_snapshots.remove(snapshot)
         return 1024
 
     async def discard_snapshots(self, snapshots: list[vf.Snapshot]) -> list[str]:
@@ -258,7 +261,10 @@ async def test_timer_captures_without_a_model_call_and_owner_reuses_it():
     assert session.flowing.is_set()
 
 
-async def test_held_save_only_exports_a_durable_snapshot_from_this_attempt():
+async def test_held_save_exports_a_fresh_snapshot_before_it_is_durable():
+    """A held save returns once the box runs again, not once its snapshot is uploaded:
+    a save of thousands of boxes would otherwise wait for every upload. It exports a
+    snapshot of this attempt, not one an earlier attempt restored from."""
     run, backend, _ = make_rollout()
     inherited = await run._checkpoint()
     assert inherited is not None
@@ -268,50 +274,43 @@ async def test_held_save_only_exports_a_durable_snapshot_from_this_attempt():
     run._inherited_checkpoints = len(run.trace.checkpoints)
 
     backend.durable.clear()
-    backend.stopped.clear()
-    saving = asyncio.create_task(run.save(hold=True))
-    await asyncio.wait_for(backend.stopped.wait(), 1)
-    assert not saving.done() and not inherited.pinned
-    backend.durable.set()
-    saved = await saving
-    assert saved is not None
+    saved = await asyncio.wait_for(run.save(hold=True), 1)
+    assert saved is not None and not inherited.pinned
     entry = restore_entry(saved)
-    assert entry["id"] != inherited.id and entry["time"]["end"] and entry["pinned"]
+    assert entry["id"] != inherited.id and entry["pinned"] and not entry["time"]["end"]
     run.release()
+    backend.durable.set()
+    await run._settle_checkpoints(wait=False)
 
 
-async def test_failed_fresh_upload_returns_no_trainer_restore_point():
+async def test_a_failed_upload_leaves_the_owners_snapshot_to_the_owner():
+    """A snapshot the owner holds is the owner's to delete, also when its upload
+    fails after the save returned: the box's teardown does not free it, and the
+    owner's restore finds it is not durable and starts the rollout over."""
     run, backend, session = make_rollout()
     backend.fail = True
+    saved = await run.save(hold=True)
+    assert saved is not None
+    snapshot = restore_entry(saved)["snapshot"]
+    run.release()
     backend.durable.set()
-    assert await run.save(hold=True) is None
+    await run._settle_checkpoints(wait=False)
     assert not run.trace.checkpoints and session.flowing.is_set()
+    assert all(stray.id != snapshot["id"] for stray in backend.stray_snapshots)
 
 
-async def test_cancelled_trainer_upload_stays_owned_by_the_rollout():
-    run, backend, session = make_rollout()
+async def test_released_save_does_not_reapply_its_hold():
+    """A release that arrives while the save still takes its snapshot ends the hold:
+    the save does not hold the box again when it returns."""
+    run, backend, session = make_rollout(stops=True)
     saving = asyncio.create_task(run.save(hold=True))
-    await backend.stopped.wait()
-    saving.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await saving
-    backend.durable.set()
-    await run._settle_checkpoints(wait=True)
-    (point,) = run.trace.checkpoints
-    assert point.time.end and not point.pinned and session.flowing.is_set()
-
-
-async def test_released_save_does_not_reapply_its_hold_after_upload():
-    run, backend, session = make_rollout()
-    await run._checkpoint()
-    saving = asyncio.create_task(run.save(hold=True))
-    await asyncio.sleep(0)
+    await asyncio.wait_for(backend.stopped.wait(), 1)
     assert not saving.done() and not run._unheld.is_set()
 
     run.release()
-    backend.durable.set()
+    backend.running.set()
     saved = await saving
-    assert saved is not None and restore_entry(saved)["id"] == "ck1"
+    assert saved is not None
     assert session.flowing.is_set()
     assert run._release_timer is None
 
@@ -334,22 +333,18 @@ async def test_disowning_a_late_save_preserves_the_next_owners_hold():
     assert session.flowing.is_set()
 
 
-async def test_save_takes_fresh_snapshot_when_candidate_expires_during_upload(
-    monkeypatch,
-):
+async def test_save_takes_a_fresh_snapshot_when_the_timed_one_expired(monkeypatch):
+    """A held save adopts a timed snapshot only while it is younger than the interval;
+    an older one would make a resume repeat more than an interval of work."""
     run, backend, _ = make_rollout(interval=60)
     point = await run._checkpoint()
     assert point is not None
-    saving = asyncio.create_task(run.save(hold=True))
-    await asyncio.sleep(0)
-    assert not saving.done() and not run._unheld.is_set()
-
     monkeypatch.setattr("verifiers.v1.rollout.time.time", lambda: point.captured + 61)
-    backend.durable.set()
-    saved = await saving
+    saved = await run.save(hold=True)
     assert saved is not None and restore_entry(saved)["id"] == "ck2"
     assert not point.pinned and backend.taken == 2
     run.release()
+    backend.durable.set()
     await run._settle_checkpoints(wait=True)
 
 

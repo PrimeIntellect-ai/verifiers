@@ -251,6 +251,11 @@ class PrimeBackend(RuntimeBackend):
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
+            if memory:
+                # A save returns before its snapshot is uploaded: a box on another
+                # node restores only a durable one. One that never gets there fails
+                # this boot, and the rollout starts over.
+                await self._wait_durable(self.config.checkpoint)
             attempts = _FORK_ATTEMPTS if memory else 1
             for attempt in range(attempts):
                 async with (
@@ -451,22 +456,27 @@ class PrimeBackend(RuntimeBackend):
         call is safe to repeat once the box runs again."""
         return not self._awake.is_set() or "sandbox is paused" in str(error).lower()
 
-    async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
-        started = time.monotonic()
-        deadline = started + _CHECKPOINT_DURABLE_SECONDS
+    async def _wait_durable(self, checkpoint_id: str) -> Any:
+        """The checkpoint once it is DURABLE, the only state a box on another node can
+        restore from."""
+        deadline = time.monotonic() + _CHECKPOINT_DURABLE_SECONDS
         while True:
             try:
-                durable = await self._client.wait_for_checkpoint(
-                    snapshot.id, timeout_seconds=max(1.0, deadline - time.monotonic())
+                return await self._client.wait_for_checkpoint(
+                    checkpoint_id,
+                    timeout_seconds=max(1.0, deadline - time.monotonic()),
                 )
-                break
             except Exception as e:
                 # The SDK gives up on a rate-limited lookup while the upload goes on.
                 # Spread the next waits out: thousands of boxes wait at once.
                 if "HTTP 429" in str(e) and time.monotonic() < deadline:
                     await asyncio.sleep(random.uniform(5, 15))
                     continue
-                raise SandboxError(f"prime checkpoint {snapshot.id}: {e}") from e
+                raise SandboxError(f"prime checkpoint {checkpoint_id}: {e}") from e
+
+    async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
+        started = time.monotonic()
+        durable = await self._wait_durable(snapshot.id)
         self.stray_snapshots.remove(snapshot)
         logger.debug(
             "prime: checkpoint %s durable after %.1fs on sandbox %s",
