@@ -1050,6 +1050,7 @@ class InterceptionServer(Interception):
             await session.flowing.wait()
             return _error_response(dialect, str(error), status=400)
         except RolloutError as error:
+            await session.flowing.wait()
             return self._fail(session, dialect, error)
         # The tail is what the harness added since the last turn (tool results, user
         # turns): live watchers see it now rather than with the model's reply.
