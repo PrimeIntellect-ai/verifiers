@@ -103,11 +103,25 @@ async def stage_verifier(
     async with boundary(TaskError, "verifier task setup"):
         await invoke(task.setup, {"trace": trace, "runtime": runtime})
     artifact_runtime = runtime
+    artifact_owner = None
     if restore_as_root and runtime.user is not None:
         # Prime's default user is privileged; Docker defaults to the image USER.
         user = None if isinstance(runtime.config, PrimeConfig) else "0"
         artifact_runtime = runtime.with_user(user)
-    await restore(artifact_runtime, artifacts)
+        if any(archive is not None for archive in artifacts.values()):
+            identity = await runtime.run(["sh", "-c", "id -u && id -g"], {})
+            ids = identity.stdout.split()
+            if (
+                identity.exit_code
+                or len(ids) != 2
+                or not all(value.isdecimal() for value in ids)
+            ):
+                raise TaskError("could not resolve verifier user ownership")
+            uid, gid = map(int, ids)
+            if uid != 0:
+                # Match extraction as the image user for the restored contents.
+                artifact_owner = (uid, gid)
+    await restore(artifact_runtime, artifacts, owner=artifact_owner)
     async with boundary(TaskError, "verifier staging"):
         await invoke(task.stage_verifier, {"trace": trace, "runtime": runtime})
 

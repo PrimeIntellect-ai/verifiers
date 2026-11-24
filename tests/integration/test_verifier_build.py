@@ -19,7 +19,9 @@ IMAGE = "python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f24314
 
 class SubmitHarness(vf.Harness):
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        return await runtime.run(["sh", "-c", "echo 42 > answer"], {})
+        return await runtime.run(
+            ["sh", "-c", "mkdir submission && echo 42 > submission/answer"], {}
+        )
 
 
 @pytest.mark.parametrize(
@@ -47,7 +49,11 @@ async def test_verifier_build(tmp_path, runtime):
         'test "$(pwd)" = /app\n'
         "test \"$BUILD_TOKEN\" = 'a$b'\n"
         'test "$(cat /tests/marker)" = "$EXPECTED"\n'
-        'test "$(cat answer)" = 42\n'
+        'test "$(cat submission/answer)" = 42\n'
+        'test "$(stat -c "%u:%g" submission)" = "10001:$EXPECTED_GID"\n'
+        'test "$(stat -c "%u:%g" submission/answer)" = "10001:$EXPECTED_GID"\n'
+        "echo 43 >> submission/answer\n"
+        "touch submission/grader-output\n"
         "python - <<'PY'\n"
         "import urllib.request\n"
         "try:\n"
@@ -63,8 +69,8 @@ async def test_verifier_build(tmp_path, runtime):
         f"FROM {IMAGE}\n"
         "RUN groupadd -g 10001 grader && groupadd -g 10002 verifier "
         "&& useradd -u 10001 -g grader -m grader "
-        "&& mkdir /app /tests && chown grader /tests "
-        "&& echo stale > /app/answer\n"
+        "&& mkdir -p /app/submission /tests && chown grader /tests "
+        "&& echo stale > /app/submission/answer\n"
         "COPY baked.sh /tests/test.sh\n"
         "COPY marker /tests/marker\n"
         "ENV BUILD_TOKEN=a\\$b\n"
@@ -99,7 +105,7 @@ async def test_verifier_build(tmp_path, runtime):
                 verifier=VerifierConfig(),
                 verifier_build=str(tests),
                 verifier_env={"EXPECTED": marker, "EXPECTED_GID": gid},
-                artifacts=[HarborArtifact(source="answer")],
+                artifacts=[HarborArtifact(source="submission")],
             )
         )
         async with vf.Agent(config) as agent:

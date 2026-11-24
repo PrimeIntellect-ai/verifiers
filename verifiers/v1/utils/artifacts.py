@@ -321,7 +321,12 @@ def save_artifacts(
         saved.replace(directory)
 
 
-async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
+async def restore(
+    runtime: Runtime,
+    collected: dict[str, bytes | None],
+    *,
+    owner: tuple[int, int] | None = None,
+) -> None:
     """Extract `collected` in `runtime` at the original absolute paths.
 
     Archive bytes are untrusted: the agent controls both their source files and the
@@ -342,7 +347,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     for root, archive in collected.items():
         _validate_restore(root, archive)
     collected = {
-        root: None if archive is None else _rebuild(archive)
+        root: None if archive is None else _rebuild(archive, owner=owner)
         for root, archive in collected.items()
     }
     # Clear every root up front, not per entry: a later nested root would otherwise
@@ -429,15 +434,15 @@ def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
     return out.getvalue(), dropped
 
 
-def _rebuild(archive: bytes) -> bytes:
+def _rebuild(archive: bytes, *, owner: tuple[int, int] | None = None) -> bytes:
     """Write a fresh archive holding exactly the members Python's tarfile reads.
 
     Validation reads archives with Python's tarfile, but the grading box extracts
     them with its own tar. An agent controls the archive bytes, and two tar parsers
     can disagree about the same bytes, so the box only ever extracts an archive
-    written here from the members validation saw. Owners and permission bits are
-    kept (tasks rely on ownership, e.g. git's safe.directory check); setuid,
-    setgid and sticky bits are not.
+    written here from the members validation saw. Preserve ownership unless the
+    caller supplies a numeric UID and GID. Preserve ordinary permission bits
+    and strip setuid, setgid and sticky bits.
     """
     out = io.BytesIO()
     with (
@@ -447,8 +452,11 @@ def _rebuild(archive: bytes) -> bytes:
         for member in source:
             info = tarfile.TarInfo(member.name)
             info.mode = member.mode & 0o777
-            info.uid, info.gid = member.uid, member.gid
-            info.uname, info.gname = member.uname, member.gname
+            if owner is None:
+                info.uid, info.gid = member.uid, member.gid
+                info.uname, info.gname = member.uname, member.gname
+            else:
+                info.uid, info.gid = owner
             info.mtime = member.mtime
             content = None
             if member.isfile():
