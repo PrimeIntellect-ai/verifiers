@@ -536,6 +536,8 @@ async def test_held_save_inside_rlm_cell(
                 owned.append(Snapshot(id=entry["id"]))
                 assert entry["pinned"] and taken == [*before, entry["id"]]
                 assert entry["id"] != recent[-1].id
+                async with AsyncSandboxClient() as client:
+                    assert (await client.get_checkpoint(entry["id"])).state == "DURABLE"
 
         second = load_environment(config.env)
         (task,) = list(second.taskset)

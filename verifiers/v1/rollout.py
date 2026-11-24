@@ -238,6 +238,8 @@ class Rollout:
             )
             if on_trace is not None:
                 on_trace(self.trace)
+        # Earlier attempts still own their snapshots and may clean them up on cancellation.
+        self._inherited_checkpoints = len(self.trace.checkpoints)
         self.trace._replay_view = harness.replay_view
         interceptors = [
             (hook_boundary(fn, allow_trace=False), fn)
@@ -1013,15 +1015,17 @@ class Rollout:
             self._last_capture = now
             return await self._take_snapshot()
 
-    async def _owner_checkpoint(self, reuse: bool) -> Checkpoint | None:
+    async def _owner_checkpoint(self, *, hold: bool) -> Checkpoint | None:
         async with self._snapshot_request:
-            if reuse and self._checkpointing and self._checkpointing.interval:
+            if hold and self._checkpointing and self._checkpointing.interval:
                 max_age = self._checkpointing.interval * 60
                 cutoff = time.time() - max_age
                 point = next(
                     (
                         c
-                        for c in reversed(self.trace.checkpoints)
+                        for c in reversed(
+                            self.trace.checkpoints[self._inherited_checkpoints :]
+                        )
                         if c.captured >= cutoff
                         and c.session is not None
                         and not c.deleted
@@ -1042,7 +1046,7 @@ class Rollout:
                         ):
                             point.pinned = True
                             return point
-            return await self._take_snapshot(pinned=True)
+            return await self._take_snapshot(pinned=True, wait_durable=hold)
 
     def _last_node(self) -> int | None:
         return len(self.trace.nodes) - 1 if self.trace.nodes else None
@@ -1051,8 +1055,8 @@ class Rollout:
         """Take a memory checkpoint of the running rollout now and return its trace as
         saved (`restorable`), for an owner that continues the rollout in another
         process (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`); it
-        becomes restorable from any node in the background, and this run's teardown
-        waits for that. With `hold`, nothing the box asked for is answered until
+        is durable before a held save returns. An unheld save lets the upload finish
+        in the background. With `hold`, nothing the box asked for is answered until
         `release`, so the rollout cannot move past its checkpoint while the owner
         records it.
         None when the rollout takes no memory snapshots (`unsaveable`), runs no
@@ -1079,7 +1083,7 @@ class Rollout:
             self._begin_hold()
         checkpoint = None
         try:
-            checkpoint = await self._owner_checkpoint(reuse=hold)
+            checkpoint = await self._owner_checkpoint(hold=hold)
             if checkpoint is None:
                 self._release_hold(hold_id)
                 self.save_skipped = "its memory snapshot failed"
@@ -1143,7 +1147,9 @@ class Rollout:
         if not self._capturing.locked():
             self._session.resume()
 
-    async def _take_snapshot(self, *, pinned: bool = False) -> Checkpoint | None:
+    async def _take_snapshot(
+        self, *, pinned: bool = False, wait_durable: bool = False
+    ) -> Checkpoint | None:
         """Hold replies and snapshot the box at a replayable trace boundary."""
         assert self.runtime is not None and self._relay is not None
         session = self._session
@@ -1205,8 +1211,8 @@ class Rollout:
             held=captured - started,
         )
         self.trace.checkpoints.append(checkpoint)
-        self._durable[checkpoint.id] = asyncio.create_task(
-            self._make_durable(checkpoint)
+        upload = self._durable[checkpoint.id] = asyncio.create_task(
+            self._make_durable(checkpoint, exported=pinned and not wait_durable)
         )
         logger.debug(
             "memory checkpoint %s taken in %s: id=%s node=%s",
@@ -1215,9 +1221,18 @@ class Rollout:
             self.trace.id,
             node,
         )
+        if wait_durable:
+            try:
+                await asyncio.shield(upload)
+            except BaseException:
+                # The save never transferred this reservation to its caller.
+                checkpoint.pinned = False
+                raise
+            if not checkpoint.time.end:
+                return None
         return checkpoint
 
-    async def _make_durable(self, checkpoint: Checkpoint) -> None:
+    async def _make_durable(self, checkpoint: Checkpoint, *, exported: bool) -> None:
         assert self.runtime is not None
         try:
             checkpoint.bytes = await self.runtime.backend.wait_snapshot(
@@ -1233,7 +1248,7 @@ class Rollout:
                 self.trace.id,
                 exc_info=True,
             )
-            if checkpoint.pinned:
+            if exported and checkpoint.pinned:
                 with contextlib.suppress(ValueError):
                     self.runtime.backend.stray_snapshots.remove(checkpoint.snapshot)
             with contextlib.suppress(ValueError):

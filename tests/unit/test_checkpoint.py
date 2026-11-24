@@ -8,6 +8,8 @@ import time
 from types import SimpleNamespace
 from typing import Literal
 
+import pytest
+
 import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
 from verifiers.v1.clients import ModelContext, ModelRoute
@@ -209,6 +211,7 @@ def make_rollout(
     run._relay = FakeRelay()  # type: ignore[assignment]
     run._secret = "box-secret"
     run._checkpointing = RolloutCheckpointConfig(interval=interval, keep=keep)
+    run._inherited_checkpoints = 0
     run._durable = {}
     run._captures = set()
     run._closed = False
@@ -252,6 +255,49 @@ async def test_timer_captures_without_a_model_call_and_owner_reuses_it():
     assert not session.flowing.is_set()
     run.release()
     assert session.flowing.is_set()
+
+
+async def test_held_save_only_exports_a_durable_snapshot_from_this_attempt():
+    run, backend, _ = make_rollout()
+    inherited = await run._checkpoint()
+    assert inherited is not None
+    backend.durable.set()
+    await run._settle_checkpoints(wait=True)
+    inherited.restored = True
+    run._inherited_checkpoints = len(run.trace.checkpoints)
+
+    backend.durable.clear()
+    backend.stopped.clear()
+    saving = asyncio.create_task(run.save(hold=True))
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    assert not saving.done() and not inherited.pinned
+    backend.durable.set()
+    saved = await saving
+    assert saved is not None
+    entry = restore_entry(saved)
+    assert entry["id"] != inherited.id and entry["time"]["end"] and entry["pinned"]
+    run.release()
+
+
+async def test_failed_fresh_upload_returns_no_trainer_restore_point():
+    run, backend, session = make_rollout()
+    backend.fail = True
+    backend.durable.set()
+    assert await run.save(hold=True) is None
+    assert not run.trace.checkpoints and session.flowing.is_set()
+
+
+async def test_cancelled_trainer_upload_stays_owned_by_the_rollout():
+    run, backend, session = make_rollout()
+    saving = asyncio.create_task(run.save(hold=True))
+    await backend.stopped.wait()
+    saving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await saving
+    backend.durable.set()
+    await run._settle_checkpoints(wait=True)
+    (point,) = run.trace.checkpoints
+    assert point.time.end and not point.pinned and session.flowing.is_set()
 
 
 async def test_released_save_does_not_reapply_its_hold_after_upload():
@@ -565,6 +611,7 @@ async def test_save_returns_before_the_snapshot_is_durable():
 async def test_a_held_save_answers_the_box_only_after_release():
     run, backend, session = make_rollout()
     backend.running.set()
+    backend.durable.set()
     assert await run.save(hold=True) is not None
     assert not session.flowing.is_set()
     # A checkpoint of the run's own under the hold does not end it.
@@ -577,6 +624,7 @@ async def test_a_held_save_answers_the_box_only_after_release():
 async def test_a_release_does_not_answer_a_box_that_another_snapshot_stops():
     run, backend, session = make_rollout()
     backend.running.set()
+    backend.durable.set()
     assert await run.save(hold=True) is not None
     # A turn later the rollout takes a snapshot of its own, and the owner releases
     # while the box is stopped for it.
@@ -643,7 +691,8 @@ async def test_elapsed_interval_captures_again_on_the_same_node():
 async def test_a_finished_segment_waits_for_the_owners_release():
     """An owner records a saved rollout as running, so the rollout does not finish
     while the owner still holds it."""
-    run, _, _ = make_rollout()
+    run, backend, _ = make_rollout()
+    backend.durable.set()
     assert await run.save(hold=True) is not None
 
     async def turn(messages):
@@ -658,7 +707,8 @@ async def test_a_finished_segment_waits_for_the_owners_release():
 
 
 async def test_a_save_whose_program_ended_is_skipped():
-    run, _, session = make_rollout()
+    run, backend, session = make_rollout()
+    backend.durable.set()
     states = iter([{"job": {"job_id": "j1"}}, {"job": {"job_id": "j1"}}, None])
     run._harness_session = SimpleNamespace(memory_state=lambda: next(states))  # type: ignore[assignment]
     assert await run.save(hold=True) is None
@@ -925,7 +975,8 @@ async def test_restore_applies_egress_before_connecting_relay(monkeypatch):
 async def test_a_hold_stops_the_agent_deadline():
     """The time an owner holds the rollout is the owner's: the agent deadline stops
     from the save until the release, and the hold is not agent time."""
-    run, _, _ = make_rollout()
+    run, backend, _ = make_rollout()
+    backend.durable.set()
     loop = asyncio.get_running_loop()
     async with asyncio.timeout(0.05) as deadline:
         run._segment_start, run._deadline = loop.time(), deadline

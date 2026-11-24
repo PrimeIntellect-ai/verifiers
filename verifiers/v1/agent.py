@@ -975,7 +975,7 @@ class Agent:
                             and not c.deleted
                             # An owner's snapshot is the owner's to delete at any
                             # time, except the one it offered this run.
-                            and (not c.pinned or c.restored)
+                            and (not c.pinned or c.id == offered)
                             and c.id not in failed_restores
                         ),
                         None,
