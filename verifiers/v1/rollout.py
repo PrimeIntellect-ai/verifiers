@@ -1052,14 +1052,18 @@ class Rollout:
     def _last_node(self) -> int | None:
         return len(self.trace.nodes) - 1 if self.trace.nodes else None
 
-    async def save(self, *, hold: bool = False) -> dict[str, Any] | None:
+    async def save(
+        self, *, hold: bool = False, watchdog: bool = True
+    ) -> dict[str, Any] | None:
         """Take a memory checkpoint of the running rollout now and return its trace as
         saved (`restorable`), for an owner that continues the rollout in another
         process (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`); it
         is durable before a held save returns. An unheld save lets the upload finish
         in the background. With `hold`, nothing the box asked for is answered until
         `release`, so the rollout cannot move past its checkpoint while the owner
-        records it.
+        records it; `watchdog` arms the release that ends a hold no owner ends
+        (`arm_hold_watchdog`), which an owner saving many rollouts arms only once it
+        has them all.
         None when the rollout takes no memory snapshots (`unsaveable`), runs no
         segment, or the snapshot failed; `save_skipped` then says which."""
         self.save_skipped = None
@@ -1109,13 +1113,20 @@ class Rollout:
         if hold_id is not None and self._hold_id == hold_id:
             self._hold_id = checkpoint.id
             self._session.hold()
-            if self._release_timer is not None:
-                self._release_timer.cancel()
-            # An owner that never releases must not stall the rollout for good.
-            self._release_timer = asyncio.get_running_loop().call_later(
-                HOLD_SECONDS, self._release_hold, checkpoint.id
-            )
+            if watchdog:
+                self.arm_hold_watchdog()
         return saved
+
+    def arm_hold_watchdog(self) -> None:
+        """Release the hold by itself after `HOLD_SECONDS`, unless the owner does first:
+        an owner that never releases must not stall the rollout for good."""
+        if self._hold_id is None:
+            return
+        if self._release_timer is not None:
+            self._release_timer.cancel()
+        self._release_timer = asyncio.get_running_loop().call_later(
+            HOLD_SECONDS, self._release_hold, self._hold_id
+        )
 
     def disown(self, saved: dict[str, Any]) -> None:
         """Give back a `save` whose owner never got it: the rollout goes on, and its

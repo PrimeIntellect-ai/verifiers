@@ -636,6 +636,35 @@ async def test_a_held_save_answers_the_box_only_after_release():
     assert session.flowing.is_set() and run._release_timer is None
 
 
+async def test_a_held_save_all_arms_the_watchdog_once_every_save_is_in(monkeypatch):
+    """A save of many rollouts takes minutes: a watchdog armed at each rollout's own
+    save would let the first ones go on before the owner has them all. `save_all`
+    arms the watchdogs when it returns, or leaves them to the owner."""
+    from verifiers.v1 import restore
+
+    first, first_backend, first_session = make_rollout()
+    second, second_backend, _ = make_rollout()
+    for backend in (first_backend, second_backend):
+        backend.running.set()
+        backend.durable.set()
+    monkeypatch.setattr(restore, "LIVE", {first, second})
+    armed = []
+    for run in (first, second):
+        monkeypatch.setattr(run, "arm_hold_watchdog", lambda run=run: armed.append(run))
+
+    saves = await restore.save_all(hold=True, watchdog=False)
+    assert len(saves) == 2 and armed == []
+    assert first._release_timer is None and not first_session.flowing.is_set()
+    restore.arm_hold_watchdogs()
+    assert set(armed) == {first, second}
+
+    armed.clear()
+    for run in (first, second):
+        run.release()
+    assert len(await restore.save_all(hold=True)) == 2
+    assert set(armed) == {first, second}
+
+
 async def test_a_release_does_not_answer_a_box_that_another_snapshot_stops():
     run, backend, session = make_rollout()
     backend.running.set()
