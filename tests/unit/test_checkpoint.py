@@ -216,7 +216,7 @@ def make_rollout(
     run._memory = True
     run.unsaveable = None
     run.save_skipped = None
-    run._held = False
+    run._hold_id = None
     run._release_timer = None
     run._unheld = asyncio.Event()
     run._unheld.set()
@@ -252,6 +252,58 @@ async def test_timer_captures_without_a_model_call_and_owner_reuses_it():
     assert not session.flowing.is_set()
     run.release()
     assert session.flowing.is_set()
+
+
+async def test_released_save_does_not_reapply_its_hold_after_upload():
+    run, backend, session = make_rollout()
+    await run._checkpoint()
+    saving = asyncio.create_task(run.save(hold=True))
+    await asyncio.sleep(0)
+    assert not saving.done() and not run._unheld.is_set()
+
+    run.release()
+    backend.durable.set()
+    saved = await saving
+    assert saved is not None and restore_entry(saved)["id"] == "ck1"
+    assert session.flowing.is_set()
+    assert run._release_timer is None
+
+
+async def test_disowning_a_late_save_preserves_the_next_owners_hold():
+    run, backend, session = make_rollout()
+    await run._checkpoint()
+    first = asyncio.create_task(run.save(hold=True))
+    await asyncio.sleep(0)
+    run.release()
+    second = asyncio.create_task(run.save(hold=True))
+    await asyncio.sleep(0)
+    backend.durable.set()
+    old, current = await asyncio.gather(first, second)
+    assert old is not None and current is not None
+    assert restore_entry(old)["id"] != restore_entry(current)["id"]
+    run.disown(old)
+    assert not session.flowing.is_set() and not run._unheld.is_set()
+    run.release()
+    assert session.flowing.is_set()
+
+
+async def test_save_takes_fresh_snapshot_when_candidate_expires_during_upload(
+    monkeypatch,
+):
+    run, backend, _ = make_rollout(interval=1)
+    point = await run._checkpoint()
+    assert point is not None
+    saving = asyncio.create_task(run.save(hold=True))
+    await asyncio.sleep(0)
+    assert not saving.done() and not run._unheld.is_set()
+
+    monkeypatch.setattr("verifiers.v1.rollout.time.time", lambda: point.captured + 61)
+    backend.durable.set()
+    saved = await saving
+    assert saved is not None and restore_entry(saved)["id"] == "ck2"
+    assert not point.pinned and backend.taken == 2
+    run.release()
+    await run._settle_checkpoints(wait=True)
 
 
 async def test_checkpoint_becomes_durable_in_the_background():
@@ -550,7 +602,7 @@ async def test_a_cancelled_held_save_does_not_hold_the_box():
     assert (await asyncio.gather(saving, return_exceptions=True))[0] is not None
     assert saving.cancelled()
     assert session.flowing.is_set()
-    assert not run._held and run._release_timer is None
+    assert run._hold_id is None and run._release_timer is None
 
 
 async def test_a_snapshot_waits_for_a_turn_that_is_committing():
@@ -612,7 +664,7 @@ async def test_a_save_whose_program_ended_is_skipped():
     assert await run.save(hold=True) is None
     assert run.save_skipped == "its harness program ended during the save"
     (checkpoint,) = run.trace.checkpoints
-    assert not checkpoint.pinned and session.flowing.is_set() and not run._held
+    assert not checkpoint.pinned and session.flowing.is_set() and run._hold_id is None
 
 
 async def test_a_failed_held_save_does_not_hold_the_box():

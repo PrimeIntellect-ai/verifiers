@@ -277,8 +277,8 @@ class Rollout:
         it takes them."""
         self.save_skipped: str | None = None
         """Why the last `save` returned nothing."""
-        self._held = False
-        """Whether an owner holds the box's replies past its save (`save(hold=True)`)."""
+        self._hold_id: str | None = None
+        """Identifies the pending owner save, then its exported snapshot, until release."""
         self._release_timer: asyncio.TimerHandle | None = None
         self._unheld = asyncio.Event()
         """Cleared while an owner holds the rollout at its checkpoint."""
@@ -1016,7 +1016,8 @@ class Rollout:
     async def _owner_checkpoint(self, reuse: bool) -> Checkpoint | None:
         async with self._snapshot_request:
             if reuse and self._checkpointing and self._checkpointing.interval:
-                cutoff = time.time() - self._checkpointing.interval * 60
+                max_age = self._checkpointing.interval * 60
+                cutoff = time.time() - max_age
                 point = next(
                     (
                         c
@@ -1034,9 +1035,12 @@ class Rollout:
                     if upload is not None:
                         await asyncio.shield(upload)
                     async with self._pruning:
-                        if point.time.end and not point.deleted:
+                        if (
+                            point.time.end
+                            and not point.deleted
+                            and time.time() - point.captured <= max_age
+                        ):
                             point.pinned = True
-                            self._session.hold()
                             return point
             return await self._take_snapshot(pinned=True)
 
@@ -1068,22 +1072,23 @@ class Rollout:
         if task is not None:
             self._captures.add(task)
         # A save without a hold does not end the hold of an earlier one.
-        self._held = hold or self._held
-        if self._held:
+        hold_id = uuid.uuid4().hex if hold else None
+        if hold_id is not None:
+            self._hold_id = hold_id
             self._unheld.clear()
             self._begin_hold()
         checkpoint = None
         try:
             checkpoint = await self._owner_checkpoint(reuse=hold)
             if checkpoint is None:
-                self.release()
+                self._release_hold(hold_id)
                 self.save_skipped = "its memory snapshot failed"
                 return None
             if self._harness_session.memory_state() is None:
                 # The program left while the box was being stopped: the snapshot may
                 # hold a box with nothing to continue.
                 checkpoint.pinned = False
-                self.release()
+                self._release_hold(hold_id)
                 self.save_skipped = "its harness program ended during the save"
                 return None
             saved = restorable(self.trace, checkpoint)
@@ -1092,16 +1097,18 @@ class Rollout:
             # the snapshot, so both go back to the rollout.
             if checkpoint is not None:
                 checkpoint.pinned = False
-            self.release()
+            self._release_hold(hold_id)
             raise
         finally:
             self._captures.discard(task)
-        if hold:
+        if hold_id is not None and self._hold_id == hold_id:
+            self._hold_id = checkpoint.id
+            self._session.hold()
             if self._release_timer is not None:
                 self._release_timer.cancel()
             # An owner that never releases must not stall the rollout for good.
             self._release_timer = asyncio.get_running_loop().call_later(
-                HOLD_SECONDS, self.release
+                HOLD_SECONDS, self._release_hold, checkpoint.id
             )
         return saved
 
@@ -1117,11 +1124,15 @@ class Rollout:
         if not found and self.runtime is not None:
             # Its durable wait failed and dropped it: the box's teardown frees it.
             self.runtime.backend.stray_snapshots.append(Snapshot(id=snapshot_id))
-        self.release()
+        self._release_hold(snapshot_id)
+
+    def _release_hold(self, hold_id: str | None) -> None:
+        if hold_id is not None and self._hold_id == hold_id:
+            self.release()
 
     def release(self) -> None:
         """Answer the box again after a `save(hold=True)`."""
-        self._held = False
+        self._hold_id = None
         self._unheld.set()
         self._end_hold()
         if self._release_timer is not None:
@@ -1180,7 +1191,7 @@ class Rollout:
                         exc_info=True,
                     )
             finally:
-                if not self._held:
+                if self._hold_id is None:
                     session.resume()
         checkpoint = Checkpoint(
             id=snapshot.id,
