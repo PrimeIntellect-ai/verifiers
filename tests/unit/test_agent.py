@@ -208,6 +208,8 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._hold_started = None
     run._hold_deadline = None
     run._held_time = 0.0
+    run._unheld = asyncio.Event()
+    run._unheld.set()
     run._timeouts = RolloutTimeouts()
     run._harness_session = session
     run._relay = None
