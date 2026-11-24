@@ -1,7 +1,8 @@
 """Decision-model judge using Prime's evaluations API by default."""
 
 import json
-from typing import Any, cast
+from collections.abc import Callable, Sequence
+from typing import Any, TypeVar, cast
 
 from pydantic import Field
 
@@ -17,7 +18,10 @@ from verifiers.v1.judge import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Usage
+from verifiers.v1.types import Messages, Usage
+
+_Result = TypeVar("_Result")
+_MAX_QUESTIONS = 64
 
 
 class DecisionScoreError(ValueError):
@@ -58,16 +62,62 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
         **fields: Any,
     ) -> JudgeResponse[float]:
         """Score fields with optional image evidence. Supply trace_state to log compact artifact metadata."""
+        return await self._evaluate_questions(
+            {"grade": self.build_messages(**fields)},
+            fields,
+            images,
+            trace,
+            trace_state,
+            lambda scores: scores[0],
+        )
+
+    async def evaluate_batch(
+        self,
+        questions: Sequence[str | Messages],
+        /,
+        *,
+        images: list[str] | None = None,
+        trace: Trace | None = None,
+        trace_state: dict[str, Any] | None = None,
+        **fields: Any,
+    ) -> list[float]:
+        """Score ordered question prompts against shared evidence, up to 64 questions per request."""
+        if isinstance(questions, str):
+            raise TypeError("evaluate_batch expects a sequence of question prompts")
+        scores = []
+        for start in range(0, len(questions), _MAX_QUESTIONS):
+            batch = {
+                f"criterion_{i}": prompt
+                for i, prompt in enumerate(
+                    questions[start : start + _MAX_QUESTIONS], start
+                )
+            }
+            result = await self._evaluate_questions(
+                batch, fields, images, trace, trace_state, list
+            )
+            scores.extend(cast(list[float], result.parsed))
+        return scores
+
+    async def _evaluate_questions(
+        self,
+        questions: dict[str, str | Messages],
+        fields: dict[str, Any],
+        images: list[str] | None,
+        trace: Trace | None,
+        trace_state: dict[str, Any] | None,
+        parse: Callable[[list[float]], _Result],
+    ) -> JudgeResponse[_Result]:
         request = {
             **self.config.sampling.model_dump(exclude_none=True),
             "model": self.config.model,
             "state": fields,
             "questions": {
-                "grade": {
+                key: {
                     "type": "score",
-                    "instructions": self.build_messages(**fields),
+                    "instructions": prompt,
                     "criteria": self.config.levels,
                 }
+                for key, prompt in questions.items()
             },
         }
         if images:
@@ -80,7 +130,9 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
         # Some providers echo the input state and image data in the response.
         compact = bool(images) or trace_state is not None
         answers = result.get("answers") if isinstance(result, dict) else None
-        response = JudgeResponse[float](text=json.dumps(answers if compact else raw))
+        response: JudgeResponse[_Result] = JudgeResponse(
+            text=json.dumps(answers if compact else raw)
+        )
         try:
             if isinstance(result, dict) and (usage := result.get("usage")):
                 response.usage = Usage(
@@ -92,12 +144,17 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
                     ),
                     cost=usage.get("cost"),
                 )
-            grade = answers.get("grade") if isinstance(answers, dict) else None
-            score = grade.get("score") if isinstance(grade, dict) else None
             maximum = len(self.config.levels) - 1
-            if type(score) not in (int, float) or not 0 <= score <= maximum:
-                raise DecisionScoreError(f"invalid decision judge score {score!r}")
-            response.parsed = score / maximum
+            scores = []
+            for key in questions:
+                grade = answers.get(key) if isinstance(answers, dict) else None
+                score = grade.get("score") if isinstance(grade, dict) else None
+                if type(score) not in (int, float) or not 0 <= score <= maximum:
+                    raise DecisionScoreError(
+                        f"invalid decision judge score for {key}: {score!r}"
+                    )
+                scores.append(score / maximum)
+            response.parsed = parse(scores)
             return response
         finally:
             # The call was billed even if the score could not be parsed.

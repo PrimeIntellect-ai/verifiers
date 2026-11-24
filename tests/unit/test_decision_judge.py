@@ -63,3 +63,41 @@ async def test_malformed_grade_keeps_usage_and_compact_trace(monkeypatch):
     assert logged["request"]["state"] == {}
     assert "large evidence" not in logged["response"].text
     assert logged["response"].usage.prompt_tokens == 5
+
+
+async def test_batch_shares_evidence_and_matches_scores_by_question(monkeypatch):
+    client = AsyncMock()
+    monkeypatch.setattr(
+        "verifiers.v1.judges.decision.build_async_openai", lambda _: client
+    )
+    post = client.__aenter__.return_value.post
+    images = ["data:image/png;base64,AQ=="]
+    criteria = [str(index) for index in range(65)]
+    judge = DecisionJudge()
+    trace = Mock()
+
+    async def evaluate(url, *, body, cast_to):
+        assert body["state"] == {"artifact": "figure"} and body["images"] == images
+        return {
+            "answers": {
+                key: {"score": int(question["instructions"]) / 64}
+                for key, question in reversed(body["questions"].items())
+            }
+        }
+
+    post.side_effect = evaluate
+    scores = await judge.evaluate_batch(
+        criteria, images=images, trace=trace, artifact="figure"
+    )
+    assert scores == [i / 64 for i in range(65)]
+    assert [len(call.kwargs["body"]["questions"]) for call in post.await_args_list] == [
+        64,
+        1,
+    ]
+    assert trace.record_judge_call.call_count == 2
+
+    post.side_effect = None
+    post.return_value = {"answers": {"criterion_0": {"score": 1}}}
+    with pytest.raises(DecisionScoreError, match="criterion_1"):
+        await judge.evaluate_batch(criteria[:2], trace=trace)
+    assert trace.record_judge_call.call_count == 3
