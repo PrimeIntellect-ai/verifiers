@@ -4,6 +4,8 @@ from verifiers.v1.runtimes import Runtime
 NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"
 NODE_VERSION = "24.22.3"
+# nodejs/unofficial-builds, linux-x64-glibc-217 release checksum for NODE_VERSION.
+GLIBC_217_SHA256 = "773167bade05e3b2a9b34a6a58ca176274818f45dbbbf13c9d81726a04b9b3b5"
 
 INSTALL = r"""
 set -e
@@ -19,14 +21,22 @@ install_node() {
     # Finish downloading, extracting and validating before replacing the shared installation.
     download_dir=$(mktemp -d "$node.XXXXXX")
     trap 'rm -rf "$download_dir"' EXIT
+    flavor=$1
+    dist=https://nodejs.org/dist
+    case "$flavor" in
+        linux-x64-glibc-217) dist=https://unofficial-builds.nodejs.org/download/release ;;
+    esac
+    url="$dist/v$AGENT_NODE_VERSION/node-v$AGENT_NODE_VERSION-$flavor.tar.gz"
     # Retry in the shell: task images may have curl older than 7.71.
     for attempt in 1 2 3 4 5 6; do
-        curl -fsSL "https://nodejs.org/dist/v$AGENT_NODE_VERSION/node-v$AGENT_NODE_VERSION-$1.tar.gz" \
-            -o "$download_dir/node.tar.gz" && break
+        curl -fsSL "$url" -o "$download_dir/node.tar.gz" && break
         [ "$attempt" -lt 6 ] || exit 1
         echo "Retrying Node.js download in ${attempt}s (attempt $((attempt + 1))/6)" >&2
         sleep "$attempt"
     done
+    if [ "$flavor" = linux-x64-glibc-217 ]; then
+        printf '%s  %s\n' "$AGENT_NODE_GLIBC_217_SHA256" "$download_dir/node.tar.gz" | sha256sum -c -
+    fi
     mkdir "$download_dir/node"
     tar -xzf "$download_dir/node.tar.gz" -C "$download_dir/node" --strip-components=1
     node_ok "$download_dir/node/bin/node"
@@ -95,7 +105,14 @@ else
     fi
     case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
     case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
-    install_node "$node_os-$node_arch"
+    flavor="$node_os-$node_arch"
+    if [ "$flavor" = linux-x64 ]; then
+        # The official Linux x64 binary requires glibc >= 2.28. Preserve the task's libc.
+        case "$(getconf GNU_LIBC_VERSION 2>/dev/null || true)" in
+            "glibc 2."1[7-9]|"glibc 2."2[0-7]) flavor=linux-x64-glibc-217 ;;
+        esac
+    fi
+    install_node "$flavor"
 fi
 node_ok "$node/bin/node" || { echo "ACP adapters require patched Node.js (24.22.1 or 26.12.1 minimum)" >&2; exit 1; }
 """
@@ -109,6 +126,9 @@ async def ensure_node(runtime: Runtime) -> None:
         directory=NODE_DIR,
         lock=f"{NODE_DIR}.install.lock",
         install=INSTALL,
-        env={"AGENT_NODE_VERSION": NODE_VERSION},
+        env={
+            "AGENT_NODE_VERSION": NODE_VERSION,
+            "AGENT_NODE_GLIBC_217_SHA256": GLIBC_217_SHA256,
+        },
         label="Node.js",
     )
