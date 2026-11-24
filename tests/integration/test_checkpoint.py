@@ -12,6 +12,8 @@ snapshot."""
 import asyncio
 import json
 import pickle
+import time
+from contextlib import asynccontextmanager
 
 import pytest
 from conftest import _eval_config
@@ -23,7 +25,7 @@ from tick_restore import COMMAND, TURNS
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.env import RunSlot
-from verifiers.v1.restore import restore_entry, save_all
+from verifiers.v1.restore import LIVE, release_all, restore_entry, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
 from verifiers.v1.utils.loaders import harness_class, load_environment
 
@@ -50,24 +52,24 @@ def taken(monkeypatch) -> list[str]:
 
 
 @pytest.fixture
-async def command_model():
-    """A scripted model for the bash harness: its k-th reply asks for the tick task's
-    command, and the reply after the last command says done. A box that asks again for
-    a turn gets the same reply. Yields a client config that points at it."""
+async def command_model(request):
+    """Replay one tool call per turn, then finish. Retries receive the same reply."""
     from aiohttp import web
 
+    calls = getattr(request, "param", [("bash", {"command": COMMAND})] * TURNS)
     dialect = ChatDialect()
 
     async def answer(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         turn = sum(m.get("role") == "assistant" for m in body["messages"]) + 1
-        if turn <= TURNS:
+        if turn <= len(calls):
+            name, arguments = calls[turn - 1]
             call = {
                 "id": f"call_{turn}",
                 "type": "function",
                 "function": {
-                    "name": "bash",
-                    "arguments": json.dumps({"command": COMMAND}),
+                    "name": name,
+                    "arguments": json.dumps(arguments),
                 },
             }
             message = {"role": "assistant", "content": None, "tool_calls": [call]}
@@ -82,7 +84,7 @@ async def command_model():
                 {
                     "index": 0,
                     "message": message,
-                    "finish_reason": "tool_calls" if turn <= TURNS else "stop",
+                    "finish_reason": "tool_calls" if turn <= len(calls) else "stop",
                 }
             ],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
@@ -424,4 +426,133 @@ async def test_every_saved_turn_continues_to_the_same_result(
     assert sorted(await PrimeBackend.discard(snapshots)) == sorted(
         snapshot.id for snapshot in snapshots
     )
+    await assert_no_leaks(taken)
+
+
+@asynccontextmanager
+async def running_slot(env, slot, ctx):
+    """Keep the rollout alive through the assertions and tear it down on any exit."""
+    async with env.serving(), asyncio.timeout(600):
+        running = asyncio.create_task(env.run_slot(slot, ctx))
+        try:
+            yield running
+        finally:
+            release_all()
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+
+
+async def live_rollout(slot, running, ready):
+    while not running.done():
+        for rollout in list(LIVE):
+            if slot.traces and rollout.trace is slot.traces[0] and ready(rollout.trace):
+                return rollout
+        await asyncio.sleep(0.25)
+    pytest.fail(f"Rollout ended before the expected state: {running.result().errors}")
+
+
+BLOCKED_CELL = """from pathlib import Path
+import time
+with open("nonce.fifo") as f:
+    nonce = f.read()
+with open("cell-started", "x") as f:
+    f.write("started")
+while not Path("continue-cell").exists():
+    time.sleep(0.25)
+cell_finished = True"""
+RLM_CALLS = [
+    ("ipython", {"code": BLOCKED_CELL, "timeout": 600}),
+    ("ipython", {"code": 'assert cell_finished; Path("done.txt").write_text(nonce)'}),
+]
+
+
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(["rlm"], needs=NEEDS), indirect=True
+)
+@pytest.mark.parametrize("command_model", [RLM_CALLS], indirect=True, ids=["ipython"])
+@pytest.mark.parametrize(
+    "already_owned", [False, True], ids=["recent", "already-pinned"]
+)
+async def test_held_save_inside_rlm_cell(
+    taken, harness, harness_runtime, command_model, already_owned
+):
+    """Fork a timed snapshot with an IPython cell on the stack. Its continuation
+    must finish that cell once and read the same kernel variable in the next cell."""
+    config = _eval_config(
+        "memory-restore-v1",
+        harness=harness,
+        runtime=harness_runtime,
+        taskset_overrides={"task": {"fail_turn": 99}},
+        env={"agent": {"checkpoint": {"interval": 2.5}, "retries": {"max_retries": 0}}},
+        client=command_model,
+        rollout_timeout=600,
+    )
+    ctx = ModelContext(
+        client=config.client, model=config.model, sampling=config.sampling
+    )
+    env = load_environment(config.env)
+    (task,) = list(env.taskset)
+    owned = []
+    try:
+        (slot,) = env.slots(task)
+        async with running_slot(env, slot, ctx) as running:
+            rollout = await live_rollout(
+                slot, running, lambda trace: trace.num_turns == 1
+            )
+            while (
+                await rollout.runtime.run(["test", "-s", "cell-started"], {})
+            ).exit_code:
+                assert not running.done(), (
+                    "the first IPython cell exited before the save"
+                )
+                await asyncio.sleep(1)
+            started = time.time()
+            while not (
+                recent := [
+                    c
+                    for c in rollout.trace.checkpoints
+                    if c.time.start >= started and c.time.end
+                ]
+            ):
+                if running.done():
+                    pytest.fail(
+                        f"Rollout ended before its timed snapshot: {running.result().traces[0].errors}"
+                    )
+                await asyncio.sleep(0.25)
+            assert rollout.trace.num_turns == 1
+            assert not recent[-1].pinned
+            before = taken.copy()
+            (point,) = await save_all(hold=True)
+            entry = restore_entry(point)
+            owned.append(Snapshot(id=entry["id"]))
+            assert entry["pinned"] and entry["id"] == recent[-1].id
+            assert taken == before
+            if already_owned:
+                # A second trainer checkpoint needs independent ownership. Either
+                # trainer checkpoint can expire while the other still owns its VM.
+                release_all()
+                (point,) = await save_all(hold=True)
+                entry = restore_entry(point)
+                owned.append(Snapshot(id=entry["id"]))
+                assert entry["pinned"] and taken == [*before, entry["id"]]
+                assert entry["id"] != recent[-1].id
+
+        second = load_environment(config.env)
+        (task,) = list(second.taskset)
+        fork = RunSlot(task, id=slot.id, restore=pickle.loads(pickle.dumps(point)))
+        async with running_slot(second, fork, ctx) as running:
+            restored = await live_rollout(
+                fork,
+                running,
+                lambda trace: trace.has_restored and trace.agent.runtime.id,
+            )
+            await restored.runtime.write("continue-cell", b"go")
+            (trace,) = (await running).traces
+        assert trace.ok, trace.errors
+        assert trace.agent.runtime.checkpoint == entry["id"]
+        assert trace.reward == trace.metrics["copied"] == 1.0
+        assert trace.num_turns == 3
+    finally:
+        if owned:
+            await PrimeBackend.discard(owned)
     await assert_no_leaks(taken)
