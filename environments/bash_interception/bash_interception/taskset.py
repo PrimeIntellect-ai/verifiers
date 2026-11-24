@@ -23,15 +23,18 @@ def command(message: vf.AssistantMessage, snippet: str) -> vf.ToolCall | None:
 
 class BashInterceptionTask(vf.Task):
     @vf.stop
-    def stop_bash(self, response: vf.Response) -> bool:
+    def stop_bash(self, response: vf.Response) -> tuple[bool, dict[str, str]]:
         # The response is still buffered here. Stopping prevents Bash from
         # receiving the proposed call, so the command cannot execute.
-        return (
+        matched = (
             self.data.idx == 0 and command(response.message, STOP_COMMAND) is not None
         )
+        return matched, {"rule": STOP_SENTINEL}
 
     @vf.intercept
-    def rewrite_git(self, request: vf.Request) -> vf.Request | None:
+    def rewrite_git(
+        self, request: vf.Request
+    ) -> tuple[vf.Request, dict[str, str]] | None:
         if self.data.idx != 1 or not request.messages:
             return None
         result = request.messages[-1]
@@ -58,8 +61,11 @@ class BashInterceptionTask(vf.Task):
                 "content": "This request is blocked. You should answer with something."
             }
         )
-        return request.model_copy(
-            update={"messages": [*request.messages[:-1], replacement]}
+        return (
+            request.model_copy(
+                update={"messages": [*request.messages[:-1], replacement]}
+            ),
+            {"rule": REWRITE_SENTINEL},
         )
 
     @vf.reward
@@ -67,12 +73,17 @@ class BashInterceptionTask(vf.Task):
         sentinel = STOP_SENTINEL if self.data.idx == 0 else REWRITE_SENTINEL
         executed = (await runtime.run(["test", "-e", sentinel], {})).exit_code == 0
         if self.data.idx == 0:
-            return float(not executed and trace.stop_condition == "stop_bash")
+            return float(
+                not executed
+                and trace.stop_condition == "stop_bash"
+                and trace.stop_info == {"rule": STOP_SENTINEL}
+            )
         return float(
             not executed
             and bool(trace.tool_messages)
             and "This request is blocked" in str(trace.tool_messages[-1].content)
             and trace.num_turns == 2
+            and [r.info for r in trace.request_rewrites] == [{"rule": REWRITE_SENTINEL}]
         )
 
 

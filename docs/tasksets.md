@@ -430,7 +430,7 @@ exact_match = { weight = 1.0 }
 
 ## Stops and interception
 
-Decorate a task method with `@vf.stop` (synchronous or async) and return `True` to end the agent run early and record the method's name as `trace.stop_condition`. The parameter's type annotation controls where in the model-call lifecycle the check runs:
+Decorate a task method with `@vf.stop` (synchronous or async) and return `True` — or `(True, metadata)` to also populate `trace.stop_info` — to end the agent run early and record the method's name as `trace.stop_condition`. The parameter's type annotation controls where in the model-call lifecycle the check runs:
 
 - `vf.Request` — before the outgoing request is sent to the model provider.
 - `vf.Response` — while the model's response is buffered, before it is returned to the harness.
@@ -438,7 +438,7 @@ Decorate a task method with `@vf.stop` (synchronous or async) and return `True` 
 
 A stop ends the run, but the task still scores it. Pass `@vf.stop(skip_scoring=True)` (or set `skip_scoring = true` on a plugged stop) to skip task scoring for a trace that this stop ends. The trace then keeps no task rewards, metrics, or judge scores, so its reward is 0. `trace.info["scoring_skipped"]` records the stop's name. Task finalization and harness metrics still run, as with `agent.scoring.skip_on_truncated` (see [the agent](agent.md)).
 
-When you want to inspect or rewrite traffic in flight without ending the rollout, use `@vf.intercept` on a method taking `vf.Request` or `vf.Response` (plus optional `trace`). Return a modified copy of the same type to replace the payload, or `None` to leave it untouched:
+When you want to inspect or rewrite traffic in flight without ending the rollout, use `@vf.intercept` on a method taking `vf.Request` or `vf.Response` (plus optional `trace`). Return a modified copy of the same type — or `(modified, metadata)` to attach a metadata dict to the trace's `InterceptRecord` (which also records `node` and `tool_call`) — or `None` to leave it untouched:
 
 - **Request interception** can rewrite new user or tool messages before the model sees them (without adding or removing messages, altering tool definitions, or changing tool-call names and IDs).
 - **Response interception** can replace the assistant's text reply before it reaches the harness (replacement responses cannot carry tool calls).
