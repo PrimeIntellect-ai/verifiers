@@ -178,7 +178,3 @@ RUN UV_PYTHON_INSTALL_DIR=/var/tmp/vf-stirrup/python UV_CACHE_DIR=/tmp/uv-cache 
  && rm -rf /tmp/uv-cache \
  && printf '%s' "$VERSION" > /var/tmp/vf-stirrup/.version \
  && chmod -R a+rX /var/tmp/vf-stirrup
-
-FROM base AS terminus-2
-ARG VERSION=0.26.0
-RUN uv pip install --system --no-cache "harbor==${VERSION}"

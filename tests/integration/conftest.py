@@ -70,7 +70,7 @@ def tool_runtime(request) -> dict:
 # Built-in harnesses are bundled in the `harnesses` package; the agent CLIs (`rlm` /
 # `kimi-code` / `openclaw` / `codex` / `claude-code` / `hermes-agent`) install their
 # dependencies at rollout.
-# `compact` (an example harness) and `terminus-2` (drives the host tmux) are outside the grid.
+# `compact` (an example harness) stays outside the grid.
 @pytest.fixture
 def harness(request) -> HarnessConfig:
     config = {"id": request.param} if isinstance(request.param, str) else request.param
@@ -84,9 +84,6 @@ def pytest_configure(config) -> None:
     resolves there too — an installed example package (e.g. `glossary`) already would."""
     config.addinivalue_line(
         "markers", "opencode: integration cells on the OpenCode harness"
-    )
-    config.addinivalue_line(
-        "markers", "terminus_2: integration cells on the Terminus 2 harness"
     )
     fixtures = str(Path(__file__).parent / "fixtures")
     existing = os.environ.get("PYTHONPATH", "")

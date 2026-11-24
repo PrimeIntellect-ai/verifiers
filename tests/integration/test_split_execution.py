@@ -99,7 +99,7 @@ server.run()
 @pytest.mark.parametrize(
     "harness,harness_runtime",
     grid(
-        [*HARNESSES, {"id": "kimi-code", "dialect": "responses"}, "terminus-2"],
+        [*HARNESSES, {"id": "kimi-code", "dialect": "responses"}],
         needs=("shell",),
     ),
     indirect=True,
