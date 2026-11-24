@@ -116,8 +116,11 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
     source = source_evidence(config.source) if config.source is not None else None
     # Discover credentials before scrubbing any record, including echoes in the
     # shared source or another trace. Redact the shared source only once.
-    evidence = redact({"records": records, "source": source})
-    records, source = evidence["records"], evidence["source"]
+    source, *record_values = redact([source, *(list(row.values()) for row in records)])
+    records = [
+        dict(zip(row, values, strict=True))
+        for row, values in zip(records, record_values, strict=True)
+    ]
     semaphore = asyncio.Semaphore(config.max_concurrent)
     question = TaskData(
         prompt=(
@@ -169,17 +172,29 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
         return result
 
     results = await asyncio.gather(*(one(record) for record in records))
-    report = redact(
-        {
-            "schema": 1,
-            "action": config.action,
-            "created_at": datetime.now(UTC).isoformat(),
-            "source_sha256": source_sha256,
-            "judge": config.judge.model_dump(mode="json"),
-            "criteria": criteria,
-            "results": results,
-        }
+    # Report field names and statuses are assigned by the audit CLI.
+    fields = [
+        {key: val for key, val in row.items() if key != "status"} for row in results
+    ]
+    judge_report, criteria, *row_values = redact(
+        [
+            config.judge.model_dump(mode="json"),
+            criteria,
+            *(list(row.values()) for row in fields),
+        ]
     )
+    report = {
+        "schema": 1,
+        "action": config.action,
+        "created_at": datetime.now(UTC).isoformat(),
+        "source_sha256": source_sha256,
+        "judge": judge_report,
+        "criteria": criteria,
+        "results": [
+            {**dict(zip(row, values, strict=True)), "status": result["status"]}
+            for row, values, result in zip(fields, row_values, results, strict=True)
+        ],
+    }
     # Never replace a run, previous review, or a symlink target.
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("xb") as stream:
