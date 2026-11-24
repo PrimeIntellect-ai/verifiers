@@ -184,7 +184,7 @@ class FakeRelay:
 
 
 def make_rollout(
-    interval: int = 1,
+    interval: float = 60,
     keep: Literal["last"] | int = "last",
     *,
     running: bool = True,
@@ -336,7 +336,7 @@ async def test_disowning_a_late_save_preserves_the_next_owners_hold():
 async def test_save_takes_fresh_snapshot_when_candidate_expires_during_upload(
     monkeypatch,
 ):
-    run, backend, _ = make_rollout(interval=1)
+    run, backend, _ = make_rollout(interval=60)
     point = await run._checkpoint()
     assert point is not None
     saving = asyncio.create_task(run.save(hold=True))
@@ -353,7 +353,7 @@ async def test_save_takes_fresh_snapshot_when_candidate_expires_during_upload(
 
 
 async def test_checkpoint_becomes_durable_in_the_background():
-    run, backend, _ = make_rollout(interval=1)
+    run, backend, _ = make_rollout(interval=60)
     checkpoint = await run._checkpoint()
     assert checkpoint is not None and checkpoint.captured
     assert checkpoint.time.end == 0 and checkpoint.bytes is None
@@ -364,7 +364,7 @@ async def test_checkpoint_becomes_durable_in_the_background():
 
 
 async def test_a_checkpoint_that_never_becomes_durable_is_dropped():
-    run, backend, _ = make_rollout(interval=1)
+    run, backend, _ = make_rollout(interval=60)
     await run._checkpoint()
     backend.fail = True
     backend.durable.set()
@@ -373,7 +373,7 @@ async def test_a_checkpoint_that_never_becomes_durable_is_dropped():
 
 
 async def test_settling_without_a_retry_stops_waiting():
-    run, _, _ = make_rollout(interval=1)
+    run, _, _ = make_rollout(interval=60)
     checkpoint = await run._checkpoint()
     await asyncio.wait_for(run._settle_checkpoints(wait=False), timeout=1)
     assert run._durable == {}
@@ -381,7 +381,7 @@ async def test_settling_without_a_retry_stops_waiting():
 
 
 async def test_a_closing_run_takes_no_checkpoint():
-    run, backend, _ = make_rollout(interval=1)
+    run, backend, _ = make_rollout(interval=60)
     capture = asyncio.create_task(run._checkpoint())
     run._closed = True
     await run._settle_checkpoints(wait=True)
@@ -453,7 +453,7 @@ async def test_no_snapshot_at_turns_by_default():
 
 
 async def test_a_call_asked_again_takes_no_second_snapshot():
-    run, backend, _ = make_rollout(interval=1)
+    run, backend, _ = make_rollout(interval=60)
     first = await run._checkpoint()
     assert first is not None and backend.taken == 1
     # The same call comes again (the snapshot reset the box's connections).
@@ -683,7 +683,7 @@ async def test_a_snapshot_waits_for_each_turn_that_is_committing():
 
 
 async def test_elapsed_interval_captures_again_on_the_same_node():
-    run, backend, _ = make_rollout(interval=2)
+    run, backend, _ = make_rollout(interval=120)
     first = await run._checkpoint()
     assert first is not None
     run._last_capture -= 121

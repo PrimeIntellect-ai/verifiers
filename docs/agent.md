@@ -91,7 +91,7 @@ skip_on_timeout = true
 
 Rollout checkpointing is on by default: a rollout can be snapshotted, and a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over.
 
-By default a rollout takes a snapshot only when its owner saves it (`save_all`, below). `interval` (in minutes) schedules periodic snapshots during harness execution, including long stretches without model calls. This covers failures that leave no box to snapshot: the box died, or the harness program crashed.
+By default a rollout takes a snapshot only when its owner saves it (`save_all`, below). `interval` (in seconds) schedules periodic snapshots during harness execution, including long stretches without model calls. This covers failures that leave no box to snapshot: the box died, or the harness program crashed.
 
 Without a snapshot, a retry starts over.
 
@@ -108,7 +108,7 @@ A retry also starts over when a restore fails before the restored attempt's firs
 
 ```toml
 [env.agent.checkpoint]
-# interval = 10    # capture every ten minutes during execution
+# interval = 600   # capture every ten minutes during execution
 keep = "last"  # snapshots kept while the rollout runs: "last", or every k-th plus the newest
 ```
 

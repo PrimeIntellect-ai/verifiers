@@ -977,7 +977,7 @@ class Rollout:
         assert self._checkpointing and self._checkpointing.interval
         loop = asyncio.get_running_loop()
         self._snapshot_timer = loop.call_at(
-            self._last_capture + self._checkpointing.interval * 60,
+            self._last_capture + self._checkpointing.interval,
             self._start_periodic_snapshot,
         )
 
@@ -1009,7 +1009,7 @@ class Rollout:
             ):
                 return None
             now = asyncio.get_running_loop().time()
-            if now - self._last_capture < self._checkpointing.interval * 60:
+            if now - self._last_capture < self._checkpointing.interval:
                 return None
             # Pace failed attempts too, including a program that exited before capture.
             self._last_capture = now
@@ -1018,7 +1018,7 @@ class Rollout:
     async def _owner_checkpoint(self, *, hold: bool) -> Checkpoint | None:
         async with self._snapshot_request:
             if hold and self._checkpointing and self._checkpointing.interval:
-                max_age = self._checkpointing.interval * 60
+                max_age = self._checkpointing.interval
                 cutoff = time.time() - max_age
                 point = next(
                     (

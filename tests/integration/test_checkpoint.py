@@ -204,7 +204,7 @@ async def test_retry_restores_checkpoint(run, taken, harness, harness_runtime):
     shell = harness_class(harness.id).EXECUTES_CODE
     fail_turn = 2 if shell else 1
     trace = await restored_trace(
-        run, harness, harness_runtime, fail_turn=fail_turn, interval=0.25
+        run, harness, harness_runtime, fail_turn=fail_turn, interval=15
     )
     if shell:
         assert trace.num_turns >= 2
@@ -483,7 +483,7 @@ async def test_held_save_inside_rlm_cell(
         harness=harness,
         runtime=harness_runtime,
         taskset_overrides={"task": {"fail_turn": 99}},
-        env={"agent": {"checkpoint": {"interval": 2.5}, "retries": {"max_retries": 0}}},
+        env={"agent": {"checkpoint": {"interval": 150}, "retries": {"max_retries": 0}}},
         client=command_model,
         rollout_timeout=600,
     )

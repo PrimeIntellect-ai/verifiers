@@ -54,7 +54,7 @@ class RolloutCheckpointConfig(BaseConfig):
     is final."""
 
     interval: PositiveFloat | None = Field(default=None, allow_inf_nan=False)
-    """Minutes between memory snapshots during execution. A held owner save can
+    """Seconds between memory snapshots during execution. A held owner save can
     adopt a rollout snapshot younger than this interval."""
     keep: Literal["last"] | PositiveInt = "last"
     """Snapshots kept while the rollout runs: the newest (`"last"`), or every k-th plus
