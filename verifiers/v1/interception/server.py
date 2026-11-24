@@ -906,6 +906,8 @@ class InterceptionServer(Interception):
                 for name, value in upstream_headers.items()
                 if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
             }
+        # The request's own key: the explicit one when the harness sent it.
+        replay_key = keys[0]
 
         now = time.monotonic()
         _prune_idempotent_requests(session, now)
@@ -994,7 +996,7 @@ class InterceptionServer(Interception):
             model_request, request_rewrites, stopped = await session.rewrite_request(
                 model_request, dialect=dialect.name
             )
-            session.trace.request_rewrites.extend(request_rewrites)
+            session.stage_rewrites(replay_key, request_rewrites)
             # A pinned tool result changes the request without a fresh record.
             if stopped is None and model_request != original_request:
                 dialect.rewrite_request(body, original_request, model_request)
@@ -1018,13 +1020,17 @@ class InterceptionServer(Interception):
         except BaseException:
             raise
         if stopped is not None:
+            stop_name, stop_info = stopped
             turn = graph.prepare_turn(
                 session.trace, model_request.messages, model_request.tools, dialect.name
             )
-            turn.commit_prompt()
-            session.trace.stop(stopped)
-            return _error_response(dialect, f"rollout stopped: {stopped}", status=400)
+            session.commit_rewrites(
+                turn, turn.commit_prompt(), request_rewrites, replay_key=replay_key
+            )
+            session.trace.stop(stop_name, info=stop_info)
+            return _error_response(dialect, f"rollout stopped: {stop_name}", status=400)
 
+        pre_mediation_request = model_request
         try:
             body, policy_paths = self.mediate_capabilities(session, dialect, body)
             # Restricted mediation can mutate the body without reporting policy paths.
@@ -1131,16 +1137,24 @@ class InterceptionServer(Interception):
                     # the trace is then always one a box can be sent again.
                     with session.committing():
                         node = turn.commit(call_response)
-                        session.consume_prepared(turn.tail)
-                        session.trace.response_rewrites.extend(response_rewrites)
+                        session.commit_rewrites(
+                            turn,
+                            session.trace.nodes[node].parent,
+                            request_rewrites,
+                            response_rewrites,
+                            node,
+                            pre_request=pre_mediation_request,
+                            replay_key=replay_key,
+                        )
                         if stopped is None:
                             stopped = await session.gate_tool_calls(
                                 node, dialect.name, harness_history
                             )
                         if stopped is not None:
-                            session.trace.stop(stopped)
+                            stop_name, stop_info = stopped
+                            session.trace.stop(stop_name, info=stop_info)
                             return _error_response(
-                                dialect, f"rollout stopped: {stopped}", status=400
+                                dialect, f"rollout stopped: {stop_name}", status=400
                             )
                         served = serve(call_response, events)
                 except RolloutError as e:

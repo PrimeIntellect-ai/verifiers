@@ -91,9 +91,9 @@ def stop(
 def stop(
     func: F | None = None, priority: int = 0, skip_scoring: bool = False
 ) -> F | Callable[[F], F]:
-    """Stop when a typed `Request`, `Response`, or `Trace` predicate returns true. With
-    `skip_scoring`, a trace this stop ends skips task scoring: it keeps no rewards, so
-    its reward is 0."""
+    """Stop when a typed `Request`, `Response`, or `Trace` predicate returns true (or
+    `(True, metadata)` to populate `trace.stop_info`). With `skip_scoring`, a trace
+    this stop ends skips task scoring: it keeps no rewards, so its reward is 0."""
     decorator = mark("stop", stop_priority=priority, stop_skip_scoring=skip_scoring)
     return decorator if func is None else decorator(func)
 
@@ -103,7 +103,8 @@ def intercept(func: F, priority: int = 0) -> F: ...
 @overload
 def intercept(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
-    """Inspect a typed boundary; return its replacement or None to leave it unchanged."""
+    """Inspect a typed boundary; return its replacement (or `(replacement, metadata)`)
+    or None to leave it unchanged."""
     decorator = mark("intercept", intercept_priority=priority)
     return decorator if func is None else decorator(func)
 
