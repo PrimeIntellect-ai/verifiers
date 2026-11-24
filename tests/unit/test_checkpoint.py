@@ -233,6 +233,7 @@ def make_rollout(
     run._hold_deadline = None
     run._held_time = 0.0
     run._capturing = asyncio.Lock()
+    run._state_unsaved = None
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
     run.rewound_snapshots = []
@@ -606,6 +607,20 @@ async def test_save_returns_before_the_snapshot_is_durable():
     backend.durable.set()
     await run._settle_checkpoints(wait=False)
     assert checkpoint.time.end
+
+
+async def test_a_state_that_does_not_serialize_names_the_skip():
+    """The task state lives on the host and a restore needs it: a state that does not
+    serialize rules the snapshot out, before the box is paused, and says so."""
+    run, backend, session = make_rollout()
+    backend.running.set()
+    run.trace.state.artifacts = {"blob": b"\xff\xfe"}  # not UTF-8, so not JSON
+    assert await run.save(hold=True) is None
+    assert run.save_skipped == "its task state cannot be serialized"
+    assert backend.taken == 0 and not run.trace.checkpoints
+    assert session.flowing.is_set() and run._unheld.is_set() and run._hold_id is None
+    run.trace.state.artifacts = {}
+    assert await run.save() is not None and run._state_unsaved is None
 
 
 async def test_a_held_save_answers_the_box_only_after_release():

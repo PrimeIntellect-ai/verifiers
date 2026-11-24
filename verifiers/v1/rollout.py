@@ -279,6 +279,8 @@ class Rollout:
         it takes them."""
         self.save_skipped: str | None = None
         """Why the last `save` returned nothing."""
+        self._state_unsaved: str | None = None
+        """Why the newest snapshot could not record the task state, if it could not."""
         self._hold_id: str | None = None
         """Identifies the pending owner save, then its exported snapshot, until release."""
         self._release_timer: asyncio.TimerHandle | None = None
@@ -1086,7 +1088,7 @@ class Rollout:
             checkpoint = await self._owner_checkpoint(hold=hold)
             if checkpoint is None:
                 self._release_hold(hold_id)
-                self.save_skipped = "its memory snapshot failed"
+                self.save_skipped = self._state_unsaved or "its memory snapshot failed"
                 return None
             if self._harness_session.memory_state() is None:
                 # The program left while the box was being stopped: the snapshot may
@@ -1168,7 +1170,23 @@ class Rollout:
                 if program is None:
                     return None
                 node = self._last_node()
-                data = session.checkpoint()
+                try:
+                    data = session.checkpoint()
+                    self._state_unsaved = None
+                except Exception as e:  # noqa: BLE001 - the state's values decide it
+                    # The task state lives on the host, not in the box: a restore
+                    # needs it, so a state that does not serialize rules the
+                    # snapshot out. Before the pause, so the box never stops for it.
+                    if self._state_unsaved is None:
+                        logger.warning(
+                            "rollout %s took no memory snapshot: its task state "
+                            "cannot be serialized - %s: %s",
+                            self.trace.id,
+                            type(e).__name__,
+                            e,
+                        )
+                    self._state_unsaved = "its task state cannot be serialized"
+                    return None
                 data["live"] = {
                     "program": program,
                     "relay": self._relay.state,
