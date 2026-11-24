@@ -223,6 +223,7 @@ def make_rollout(
     run._captured_turn = 0
     run._agent_time_spent = 0.0
     run._segment_start = None
+    run._deadline = None
     run._capturing = asyncio.Lock()
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
