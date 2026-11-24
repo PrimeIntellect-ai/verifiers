@@ -43,7 +43,12 @@ async def prepare_agent_judge(task, runtime, trace, reward, authored, workspace)
     if not (task.config.judge and task.config.judge.include_hidden_reasoning):
         exclude.add("reasoning_content")
     evidence = trace.to_json(
-        exclude={"ok": True, "nodes": {"__all__": {"message": exclude}}}
+        exclude={
+            "ok": True,
+            "agent": {"config": True},
+            "task": {"data": {"env", "scoring", "verifier", "verifier_env"}},
+            "nodes": {"__all__": {"message": exclude}},
+        }
     )
     network = None
     if task.scoring.mode == "shared":

@@ -86,26 +86,36 @@ while True:
 _BACKGROUND = """
 import contextlib, os, pathlib, signal, subprocess, sys, time
 control = pathlib.Path(sys.argv[1])
+stop_requested = False
+
+def request_stop(*_):
+    global stop_requested
+    stop_requested = True
+
+signal.signal(signal.SIGTERM, request_stop)
 control.with_suffix('.started').touch()
 process = None
 try:
-    if not control.exists():
+    if not stop_requested and not control.exists():
         process = subprocess.Popen(sys.argv[2:], start_new_session=True)
-        while not control.exists() and process.poll() is None:
+        while not stop_requested and not control.exists() and process.poll() is None:
             time.sleep(0.1)
 finally:
     if process is not None:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
         try:
-            process.wait(timeout=5)
+            # A runtime stopping the supervisor also has a shutdown deadline.
+            process.wait(timeout=2 if stop_requested else 5)
         except subprocess.TimeoutExpired:
             pass
         finally:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
             process.wait()
-    control.with_suffix('.done').touch()
+    # Subprocess cleanup may already have removed the supervisor's workdir.
+    with contextlib.suppress(FileNotFoundError):
+        control.with_suffix('.done').touch()
 """
 
 _STOP_BACKGROUND = """
