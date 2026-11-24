@@ -26,6 +26,7 @@ class FailingSegmentRollout:
     fail = Rollout.fail
     step = Rollout.step
     timeout = Rollout.timeout
+    _workspace_lost = Rollout._workspace_lost
 
 
 def make_trace() -> vf.Trace:
@@ -187,6 +188,53 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
     assert restored.messages[-1].content == "First result"
 
 
+async def test_retried_tool_call_shares_execution_after_the_first_request_is_cancelled():
+    started, finish = asyncio.Event(), asyncio.Event()
+    executed = []
+    call = vf.ToolCall(id="lookup", name="read", arguments="{}")
+    result = vf.ToolMessage(tool_call_id=call.id, name=call.name, content="found")
+
+    async def execute(proposed: vf.ToolCall) -> vf.ToolMessage:
+        executed.append(proposed)
+        started.set()
+        await finish.wait()
+        return result
+
+    trace = make_trace()
+    session = RolloutSession(
+        ModelRoute(ModelContext(model="test", client=EvalClientConfig())),
+        trace,
+        remote_tool_handler=execute,
+        gates_tools=True,
+    )
+    node = graph.prepare_turn(trace, [vf.UserMessage(content="go")]).commit(
+        vf.Response(
+            id="",
+            created=0,
+            model="test",
+            message=AssistantMessage(tool_calls=[call]),
+            finish_reason="tool_calls",
+        )
+    )
+    await session.gate_tool_calls(node)
+    async with asyncio.timeout(5):
+        original = asyncio.create_task(session.decide_tool(call.id, call.name, {}))
+        await started.wait()
+        original.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await original
+        retry = asyncio.create_task(session.decide_tool(call.id, call.name, {}))
+        finish.set()
+        decision = await retry
+        assert await session.decide_tool(call.id, call.name, {}) == decision
+    assert executed == [call]
+    assert decision == {
+        "action": "deny",
+        "message": result.model_dump(exclude_none=True),
+    }
+    assert session.pinned_tool_results[node, call.id] == result
+
+
 def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run = FailingSegmentRollout()
     run.trace = trace
@@ -199,7 +247,7 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._agent_time_remaining = time_remaining
     run._timeouts = RolloutTimeouts()
     run._harness_session = session
-    run.deployment = SimpleNamespace(run=lambda turn: turn)
+    run.deployment = SimpleNamespace(run=lambda turn: turn, execution_backend=None)
     run._session = SimpleNamespace(
         request_interceptors=[],
         error=None,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import logging
 import math
 import shlex
 import tempfile
@@ -26,6 +27,7 @@ from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
     RuntimeBackend,
+    RuntimeLoss,
     RuntimeProcess,
     parse_gpu,
 )
@@ -34,7 +36,7 @@ from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
 from verifiers.v1.utils.format import format_time
-from verifiers.v1.utils.logging import get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
@@ -112,26 +114,51 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
     a first-use auto-build ran while this sandbox waited to start."""
 
 
+@contextlib.contextmanager
+def _process_errors():
+    from prime_sandboxes import APIError
+
+    try:
+        yield
+    except (APIError, ConnectionError) as error:
+        raise SandboxError(f"prime process I/O failed: {error}") from error
+
+
 class PrimeProcess(RuntimeProcess):
     def __init__(self, process) -> None:
         self._process = process
-        self.stdout: AsyncIterator[bytes] = process.stdout
-        self.stderr: AsyncIterator[bytes] = process.stderr
+        self.stdout = self._stream(process.stdout)
+        self.stderr = self._stream(process.stderr)
+
+    @staticmethod
+    async def _stream(stream: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+        with _process_errors():
+            async for chunk in stream:
+                yield chunk
 
     async def write(self, data: bytes) -> None:
-        await self._process.write_stdin(data)
+        with _process_errors():
+            await self._process.write_stdin(data)
 
     async def wait(self) -> int:
-        return await self._process.wait()
+        with _process_errors():
+            return await self._process.wait()
 
     async def poll(self) -> int | None:
         return self._process.returncode
 
     async def terminate(self) -> None:
-        await self._process.terminate()
+        with _process_errors():
+            await self._process.terminate()
 
     async def kill(self) -> None:
-        await self._process.kill()
+        with _process_errors():
+            await self._process.kill()
+
+    async def abandon(self) -> None:
+        self._process._remote_exited = True
+        with contextlib.suppress(Exception):
+            await self._process.aclose()
 
 
 class PrimeBackend(RuntimeBackend):
@@ -154,6 +181,7 @@ class PrimeBackend(RuntimeBackend):
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
+        self._egress_enforced: bool = False
         # Exposure state: a LAN network created on the first `expose`, separate from
         # `lan`, and the ports its `internet` rule publishes.
         self._expose_network_id: str | None = None
@@ -184,7 +212,7 @@ class PrimeBackend(RuntimeBackend):
             if self.config.idle_timeout is not None
             else None
         )
-        options = {
+        options: dict[str, Any] = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
             "gpu_count": gpu_count,
@@ -199,7 +227,7 @@ class PrimeBackend(RuntimeBackend):
                 for target, mount in self.config.mounts.items()
             ]
         if self.config.checkpoint:
-            source = {"checkpoint_id": self.config.checkpoint}
+            source: dict[str, Any] = {"checkpoint_id": self.config.checkpoint}
         else:
             source = {
                 "docker_image": self.config.image,
@@ -258,20 +286,32 @@ class PrimeBackend(RuntimeBackend):
                     self.info.id,
                 )
             await self._client.wait_for_creation(self.info.id, max_attempts=900)
+            init_cmd = (
+                f"mkdir -p {shlex.quote(self.config.workdir)} && "
+                '({ getent hosts "$(cat /proc/sys/kernel/hostname)" >/dev/null || '
+                'printf "127.0.1.1 %s\\n" "$(cat /proc/sys/kernel/hostname)" >> /etc/hosts; } 2>/dev/null || true) && '
+                'printf "VF_ARCH=%s\\nVF_PYTHON=%s\\n" '
+                '"$(uname -m)" "$(command -v python3 || command -v python || true)"'
+            )
+            init_response = await self._client.execute_command(
+                self.info.id, init_cmd, timeout=30
+            )
+            if init_response.exit_code:
+                raise SandboxError(
+                    f"could not initialize workspace {self.config.workdir!r} - {clip(init_response.stderr)}"
+                )
+            for line in init_response.stdout.splitlines():
+                if line.startswith("VF_ARCH="):
+                    self.cache.arch = line.removeprefix("VF_ARCH=").strip() or None
+                elif line.startswith("VF_PYTHON="):
+                    self.cache.system_python = (
+                        line.removeprefix("VF_PYTHON=").strip() or None
+                    )
             logger.debug(
                 "Started prime runtime %s in %s image=%s",
                 self.info.id,
                 format_time(time.perf_counter() - started),
                 self.config.image,
-            )
-            await self._client.execute_command(
-                self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
-            )
-            # Imported image filesystems may not map the VM's generated hostname.
-            await self._client.execute_command(
-                self.info.id,
-                'getent hosts "$(cat /proc/sys/kernel/hostname)" >/dev/null || '
-                'printf "127.0.1.1 %s\\n" "$(cat /proc/sys/kernel/hostname)" >> /etc/hosts',
             )
             await validate_runtime_mounts(self.bind(), [])
         except (
@@ -279,12 +319,72 @@ class PrimeBackend(RuntimeBackend):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
+    async def lost(self) -> RuntimeLoss | None:
+        if self._client is None or self.info.id is None or self.stopped:
+            return None
+        # The provider may still report a powered-off guest as running. Give it a
+        # bounded window to confirm a loss only when the guest no longer responds.
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(60):
+                loss = await self._reported_loss()
+                if loss is None:
+                    with contextlib.suppress(TimeoutError):
+                        async with asyncio.timeout(5):
+                            if await self.bind().alive():
+                                return None
+                while loss is None:
+                    await asyncio.sleep(2)
+                    loss = await self._reported_loss()
+                return loss
+        return None
+
+    async def _reported_loss(self) -> RuntimeLoss | None:
+        try:
+            async with asyncio.timeout(10):
+                sandbox = await self._client.get(self.info.id)
+        except Exception as error:  # a failed observation is not a confirmed loss
+            logger.warning(
+                "Failed to check workspace status - %s: %s",
+                type(error).__name__,
+                clip(str(error)),
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
+            return None
+        if sandbox.status not in {"TERMINATED", "ERROR", "TIMEOUT"}:
+            return None
+        cause = str(
+            sandbox.error_type or sandbox.termination_reason or "sandbox_terminated"
+        )
+        # A guest that powers itself off, crashes or kills its own init reports
+        # TERMINATED with neither a reason nor an error. Anything Prime explains, such
+        # as an idle timeout, a lost host or an OOM kill, is its own doing or can't be
+        # told apart from it.
+        return RuntimeLoss(
+            cause,
+            infra=sandbox.status != "TERMINATED"
+            or bool(sandbox.error_type or sandbox.termination_reason),
+            evidence={
+                key: getattr(sandbox, key, None)
+                for key in (
+                    "status",
+                    "termination_reason",
+                    "exit_code",
+                    "error_type",
+                    "error_message",
+                )
+            },
+        )
+
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
     ) -> None:
         """Apply the host policy, or `network`, after setup and wait until the platform
         enforces it."""
-        if not self.network_restricted:
+        if (
+            network is None
+            and not self.network_restricted
+            and not (routes is None and self._egress_enforced)
+        ):
             return
         config = network or self.config
         try:
@@ -297,28 +397,35 @@ class PrimeBackend(RuntimeBackend):
                     )
                 )
                 if config.allow == ["*"]:
-                    policy = {"deny": config.block}
+                    policy = (
+                        {"deny": config.block} if config.block else {"allow": ["*"]}
+                    )
                 else:
                     entries = list(dict.fromkeys([*hosts, *config.allow]))
                     validate_egress_lists(entries, None)
                     policy = {"allow": entries} if entries else {"deny": ["*"]}
-            status = await self._client.set_network(self.info.id, **policy)
-            try:
-                async with asyncio.timeout(60):
-                    delay = 0.1
-                    while not status.applied:
-                        await asyncio.sleep(delay)
-                        delay = min(delay * 2, 3)
-                        status = await self._client.get_network(self.info.id)
-            except TimeoutError as e:
-                raise SandboxError(
-                    "prime egress policy was not applied within 60s on sandbox "
-                    f"{self.info.id}; refusing to start the agent unrestricted"
-                ) from e
+            for attempt in range(2):
+                status = await self._client.set_network(self.info.id, **policy)
+                try:
+                    async with asyncio.timeout(45):
+                        delay = 0.1
+                        while not status.applied:
+                            await asyncio.sleep(delay)
+                            delay = min(delay * 1.5, 0.75)
+                            status = await self._client.get_network(self.info.id)
+                    break
+                except TimeoutError as e:
+                    if attempt == 0:
+                        continue
+                    raise SandboxError(
+                        "prime egress policy was not applied within 90s on sandbox "
+                        f"{self.info.id}; refusing to start the agent unrestricted"
+                    ) from e
         except SandboxError:
             raise
         except Exception as e:
             raise SandboxError(f"prime egress policy failed: {e}") from e
+        self._egress_enforced = routes is not None
         logger.debug(
             "Applied egress policy to prime runtime %s allow=%s block=%s",
             self.info.id,
@@ -406,7 +513,9 @@ class PrimeBackend(RuntimeBackend):
                     # Joins (an idempotent PUT, so a retry re-adds a failed join) and
                     # waits until the platform has pushed the membership and rules.
                     await self._client._join_lan(
-                        self._expose_network_id, self.info.id, [_EXPOSE_TAG]
+                        self._expose_network_id,
+                        self.info.id,
+                        [_EXPOSE_TAG],
                     )
                 except Exception as e:
                     raise SandboxError(f"prime expose port {port} failed: {e}") from e
@@ -466,11 +575,8 @@ class PrimeBackend(RuntimeBackend):
                 raise SandboxError(f"read {path!r}: {exc}") from exc
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
-        target = (
-            path
-            if path.startswith("/")
-            else f"{self.config.workdir.rstrip('/')}/{path}"
-        )
+        workdir = self.config.workdir
+        target = path if path.startswith("/") else f"{workdir.rstrip('/')}/{path}"
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
@@ -482,11 +588,8 @@ class PrimeBackend(RuntimeBackend):
     async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
-        target = (
-            path
-            if path.startswith("/")
-            else f"{self.config.workdir.rstrip('/')}/{path}"
-        )
+        workdir = self.config.workdir
+        target = path if path.startswith("/") else f"{workdir.rstrip('/')}/{path}"
         if runtime.user is None:
             try:
                 await self._client.upload_bytes(

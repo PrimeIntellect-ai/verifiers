@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
+import httpx
 from openai import AsyncOpenAI
 
 if TYPE_CHECKING:
@@ -199,41 +200,52 @@ def read_staged(path: str) -> bytes:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", required=True)
-    parser.add_argument("--api-key", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--base-url", default="")
+    parser.add_argument("--api-key", default="")
+    parser.add_argument("--model", default="")
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--browser", default="chromium")
     parser.add_argument("--cdp-url", default="")
     parser.add_argument("--system-prompt-file", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
+    parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--execute-code")
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
+    if args.execute_code is not None:
+        state_dir = Path(args.state_dir)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        endpoint = (
+            ensure_chromium(state_dir) if args.browser == "chromium" else args.cdp_url
+        )
+        browser_env = {
+            **os.environ,
+            "BH_HOME": str(state_dir / "bh-home"),
+            "BH_TELEMETRY": "0",
+            "BH_TAB_MARKER": "0",
+            (
+                "BU_CDP_WS"
+                if urlsplit(endpoint).scheme in {"ws", "wss"}
+                else "BU_CDP_URL"
+            ): endpoint,
+        }
+        print(
+            await asyncio.to_thread(run_browser, args.execute_code, browser_env), end=""
+        )
+        return
+    if not args.tool_interception_url:
+        raise RuntimeError("browser-use requires a remote tool gate")
     system_prompt = read_staged(args.system_prompt_file).decode()
     initial = json.loads(read_staged(args.initial_messages_file) or b"[]")
-    state_dir = Path(args.state_dir)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    endpoint = (
-        ensure_chromium(state_dir) if args.browser == "chromium" else args.cdp_url
-    )
-    browser_env = {
-        **os.environ,
-        "BH_HOME": str(state_dir / "bh-home"),
-        "BH_TELEMETRY": "0",
-        "BH_TAB_MARKER": "0",  # Keep task page titles unchanged.
-        (
-            "BU_CDP_WS" if urlsplit(endpoint).scheme in {"ws", "wss"} else "BU_CDP_URL"
-        ): endpoint,
-    }
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     tools = [BROWSER_TOOL]
     reserved = {"browser"}
-    async with AsyncExitStack() as mcp_stack:
+    async with AsyncExitStack() as mcp_stack, httpx.AsyncClient(timeout=None) as gate:
         mcp_tools, dispatch, servers = await connect_mcp(config, mcp_stack, reserved)
         tools += mcp_tools
         messages = (
@@ -248,6 +260,28 @@ async def main() -> None:
             for call in message.tool_calls:
                 name = call.function.name
                 try:
+                    arguments = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    arguments = call.function.arguments
+                response = await gate.post(
+                    args.tool_interception_url,
+                    headers={"Authorization": f"Bearer {args.api_key}"},
+                    json={
+                        "tool_call_id": call.id,
+                        "name": name,
+                        "arguments": arguments,
+                    },
+                )
+                response.raise_for_status()
+                decision = response.json()
+                if decision["action"] == "stop":
+                    raise RuntimeError(decision["reason"])
+                if decision["action"] == "deny":
+                    messages.append(decision["message"])
+                    continue
+                if name not in dispatch:
+                    raise RuntimeError("browser tool gate allowed local execution")
+                try:
                     tool_args = json.loads(call.function.arguments or "{}")
                 except json.JSONDecodeError as e:
                     messages.append(
@@ -258,8 +292,6 @@ async def main() -> None:
                         }
                     )
                     continue
-                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
-                # below assume a dict, so reject anything else as a tool error rather than crashing.
                 if not isinstance(tool_args, dict):
                     messages.append(
                         {
@@ -269,16 +301,7 @@ async def main() -> None:
                         }
                     )
                     continue
-                if name in dispatch:
-                    content = await call_mcp(servers, dispatch, name, tool_args)
-                elif name == "browser":
-                    content = await asyncio.to_thread(
-                        run_browser,
-                        tool_args.get("code", ""),
-                        browser_env,
-                    )
-                else:
-                    content = f"error: unknown tool {name!r}"
+                content = await call_mcp(servers, dispatch, name, tool_args)
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": content}
                 )

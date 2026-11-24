@@ -52,8 +52,14 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
+            headers = self.config.resolve_mcp_headers(mcp_urls)
             env["MCP_CONFIG"] = json.dumps(
-                {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
+                {
+                    "mcpServers": {
+                        name: {"url": url, "headers": headers.get(name, {})}
+                        for name, url in mcp_urls.items()
+                    }
+                }
             )
         program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
         return await runtime.run([*program, prompt], env)

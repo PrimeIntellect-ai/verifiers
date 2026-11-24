@@ -69,17 +69,30 @@ HARNESSES = {
 class RecordingRuntime:
     """Accepts every command and records each argv and written file."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, with_bridge: bool = True) -> None:
         self.config = SimpleNamespace(type="docker", workdir="/app")
+        self.info = SimpleNamespace(type="docker", workdir="/app", id="rec-1")
         self.env: dict[str, str] = {}
         self.user = None
         self.argvs: list[list[str]] = []
         self.files: dict[str, bytes] = {}
+        if with_bridge:
+            workspace = RecordingRuntime(with_bridge=False)
+            self._execution_bridge = SimpleNamespace(
+                runtime=workspace,
+                commands={},
+                register=lambda *args, **kwargs: None,
+            )
+        else:
+            self._execution_bridge = None
 
     temp_path = vf.Runtime.temp_path
 
     def host_url(self, url: str) -> str:
         return url
+
+    async def resolve_python(self) -> str:
+        return "python3"
 
     async def prepare_uv_script(self, script, env=None, *, activate=True):
         return ["python", "/scripts/program.py"]
@@ -87,6 +100,9 @@ class RecordingRuntime:
     async def run(self, argv, env):
         self.argvs.append(list(argv))
         return ProgramResult(exit_code=0, stdout="/app\n", stderr="")
+
+    async def run_background(self, argv, env, log):
+        self.argvs.append(list(argv))
 
     async def write(self, path: str, data: bytes) -> None:
         self.files[path] = data

@@ -77,20 +77,20 @@ async def serve_interception(
     """A slot on the shared interception when one was injected (its owner keeps the
     lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
     down — by the caller's context."""
+    session.state_service_secrets = frozenset(
+        tool.state_secret for tool in shared_tools.values() if tool.state_secret
+    )
     if interception is not None:
         async with interception.acquire(session) as slot:
             yield slot
         return
-    tunneled = requires_tunnel(
-        runtime.is_local,
-        [server.config for server in servers],
-        shared_tools.values(),
-    )
     server = InterceptionServer(
-        requires_tunnel=tunneled,
-        state_service_secrets=tuple(
-            tool.state_secret for tool in shared_tools.values() if tool.state_secret
+        requires_tunnel=requires_tunnel(
+            runtime.is_local,
+            [server.config for server in servers],
+            shared_tools.values(),
         ),
+        state_service_secrets=tuple(session.state_service_secrets),
     )
     async with server, server.acquire(session) as slot:
         yield slot

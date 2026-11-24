@@ -14,6 +14,7 @@ from urllib.parse import parse_qs
 from pydantic import TypeAdapter, ValidationError
 from pydantic_config import BaseConfig
 
+from verifiers.v1.mcp.auth import authorized
 from verifiers.v1.state import State, StateT, state_cls
 from verifiers.v1.utils.generic import concrete_type
 from verifiers.v1.utils.logging import get_logger
@@ -283,6 +284,9 @@ class ServerBase(Generic[ConfigT, StateT]):
         from verifiers import __version__
 
         _die_with_parent()
+        mcp_secret = os.environ.get("TOOL_SERVICE_MCP_SECRET", "")
+        if not mcp_secret:
+            raise ValueError("TOOL_SERVICE_MCP_SECRET is required to serve MCP")
         host = os.environ.get("MCP_HOST", "127.0.0.1")
         # Remote runtimes require their forwarded port; local servers let the OS choose. Report it
         # before setup so an expensive setup does not block port discovery.
@@ -333,6 +337,23 @@ class ServerBase(Generic[ConfigT, StateT]):
                     )
 
                     async def app(scope, receive, send):
+                        if scope["type"] == "http" and scope.get("path") != HEALTH_PATH:
+                            from starlette.datastructures import Headers
+
+                            # Headers.get() would silently accept a duplicated credential.
+                            credentials = [
+                                value
+                                for name, value in scope.get("headers", [])
+                                if name.lower() == b"authorization"
+                            ]
+                            if len(credentials) != 1 or not authorized(
+                                Headers(raw=[(b"authorization", credentials[0])]),
+                                mcp_secret,
+                            ):
+                                await PlainTextResponse(
+                                    "unauthorized", status_code=401
+                                )(scope, receive, send)
+                                return
                         query = (
                             parse_qs(
                                 scope.get("query_string", b"").decode(),

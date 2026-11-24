@@ -75,6 +75,8 @@ A truncated or timed-out run is often not worth grading. Set `agent.scoring.skip
 
 `Trace.is_truncated` only checks the run's last model response. Some harnesses keep going after a response hits its per-turn token cap: they compact, or answer a cut-off tool call. Set `agent.max_turn_tokens` to cap each response and stop the run before the next model call once a response hits that cap. The stop condition is `max_turn_tokens`. The run is then truncated, so `skip_on_truncated` applies.
 
+When Prime confirms the guest terminated its workspace during agent execution, the trace stops with `workspace_lost` and has reward 0. The rollout skips task finalization and scoring. `trace.info["workspace_loss"]` records the provider evidence. A provider-reported infrastructure loss fails the attempt and remains eligible for retry.
+
 ```toml
 [env.agent]
 max_turns = 10

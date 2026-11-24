@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.deployment import (
+    DOCKER_HARNESS_IMAGE,
+    DOCKER_HARNESS_IMAGE_PREFIX,
+    HARNESS_IMAGE,
+    HARNESS_IMAGE_PREFIX,
+)
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
 from verifiers.v1.errors import (
     MODEL_TRANSPORT_ERROR_EXIT_CODE,
@@ -17,7 +24,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Message, Messages
+from verifiers.v1.types import Message, Messages, ToolCall
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -27,8 +34,11 @@ from verifiers.v1.utils.decorators import (
 from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
+
     # Annotation-only: `Trace` appears in signatures only, so this module stays
     # importable below the trace record.
+    from verifiers.v1.runtimes.deployment import ExecutionConnection
     from verifiers.v1.trace import Trace
 
 logger = get_logger(__name__)
@@ -42,6 +52,10 @@ ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 
 
 class Harness(ABC, Generic[ConfigT]):
+    HARNESS_TARGET: ClassVar[str | None] = None
+    """Dockerfile stage for this harness's dedicated image (`None` = `base`)."""
+    HARNESS_TAG: ClassVar[str | None] = None
+    """Tag suffix when the config carries no `version`/`commit` field."""
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
     SUPPORTS_MCP: ClassVar[bool] = False
@@ -70,6 +84,37 @@ class Harness(ABC, Generic[ConfigT]):
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+
+    @property
+    def harness_target(self) -> str:
+        """Dockerfile build target for this harness's sandbox image."""
+        return self.HARNESS_TARGET or "base"
+
+    @property
+    def harness_tag(self) -> str:
+        """Image tag corresponding to this harness's default pinned version."""
+        if self.HARNESS_TAG:
+            return self.HARNESS_TAG
+        default_cfg = type(self.config).model_construct()
+        raw = getattr(default_cfg, "version", getattr(default_cfg, "commit", None))
+        if not raw:
+            return "v1"
+        tag = "".join(c if c.isalnum() or c in "._-" else "-" for c in str(raw)).strip(
+            ".-"
+        )
+        return tag[:24] if len(tag) == 40 else tag
+
+    def harness_image(self, runtime_type: str = "prime") -> str:
+        """Prepared container image for this harness's dedicated sandbox."""
+        prefix = (
+            DOCKER_HARNESS_IMAGE_PREFIX
+            if runtime_type == "docker"
+            else HARNESS_IMAGE_PREFIX
+        )
+        target = self.harness_target
+        if target == "base":
+            return DOCKER_HARNESS_IMAGE if runtime_type == "docker" else HARNESS_IMAGE
+        return f"{prefix}-{target}:{self.harness_tag}"
 
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         """`message` as this harness re-sends it on later requests over `dialect` (None
@@ -120,69 +165,141 @@ class Harness(ABC, Generic[ConfigT]):
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness through `runtime` before its execution timeout starts."""
 
-    async def install_skills(self, runtime: Runtime, dest: str) -> None:
+    async def remote_tools(
+        self, runtime: Runtime, data: TaskData
+    ) -> RemoteToolsSpec | None:
+        """Prepare an adapter to run in A against B. Native workers return None and register
+        their workspace commands with the connection in setup_execution()."""
+        return None
+
+    def can_gate_tool(self, call: ToolCall) -> bool:
+        """Whether this native call can consume a policy replacement at its gate."""
+        return self.SUPPORTS_TOOL_INTERCEPTION
+
+    def check_tool_call(self, call: ToolCall, *, intercepted: bool) -> None:
+        """Refuse native modes whose execution cannot satisfy the active policy."""
+
+    async def setup_execution(
+        self, runtime: Runtime, connection: ExecutionConnection
+    ) -> None:
+        """Concurrently with `setup(runtime)` in the harness sandbox, prepare native
+        workers in `connection.runtime` and register them with the shared execution connection.
+        The connection owns worker streams and cleanup on every runtime."""
+        # Adapters bind through remote_tools(); native workers override this hook.
+
+    async def install_skills(
+        self, runtime: Runtime, dest: str, *, mirror_to: Runtime | None = None
+    ) -> None:
         """Install `config.skills` in the program's discovery directory.
-        Runtime roots are copied in place; host skill folders are uploaded."""
+        Runtime roots are copied in place (or bridged from the workspace);
+        host skill folders are uploaded."""
+        bridge = getattr(runtime, "_execution_bridge", None)
         for skill in self.config.skills:
             target_dir = skill_destination(skill, dest)
             if isinstance(skill, dict):
-                result = await runtime.run(
+                if bridge is None:
+                    copied = await runtime.run(
+                        [
+                            "bash",
+                            "-e",
+                            "-c",
+                            (
+                                '[ -d "$1" ] || exit 0; mkdir -p -- "$2" && '
+                                "cd -- \"$1\" && find . -type f -print0 | while IFS= read -r -d '' f; do "
+                                'mkdir -p -- "$2/$(dirname -- "$f")" && cp -p -- "$f" "$2/$f"; '
+                                "done"
+                            ),
+                            "vf-skills",
+                            skill["runtime"],
+                            target_dir,
+                        ],
+                        {},
+                    )
+                    if copied.exit_code:
+                        raise RuntimeError(
+                            f"installing runtime skills from {skill['runtime']!r} failed: {copied.stderr}"
+                        )
+                    continue
+                archived = await bridge.runtime.run(
                     [
-                        "sh",
+                        "bash",
                         "-e",
                         "-c",
-                        r"""
-[ -d "$1" ]
-source=$(CDPATH= cd -- "$1/." && pwd -P)
-mkdir -p -- "$2"
-target=$(CDPATH= cd -- "$2/." && pwd -P)
-[ "$source" != "$target" ] || exit 0
-# A source such as "." must not copy the destination back into itself.
-exclude=$(printf '%s' "./${target#"${source%/}/"}" | sed 's/[][\\*?]/\\&/g')
-# POSIX sh returns only the extractor's status; fd 3 also reports producer failure.
-copy_failed=$(
-    exec 3>&1
-    { tar -C "$source" --exclude="$exclude" -cf - . || printf failed >&3; } |
-        tar -xpf - -C "$target"
-)
-[ -z "$copy_failed" ]
-""",
+                        (
+                            '[ -d "$1" ] || exit 0; cd -- "$1" && '
+                            "find . -type f -print0 | while IFS= read -r -d '' f; do "
+                            'mode=0; [ -x "$f" ] && mode=1; '
+                            'printf "%s\\0%s\\0%s\\0" "${f#./}" "$mode" "$(base64 < "$f" | tr -d "\\n")"; '
+                            "done"
+                        ),
                         "vf-skills",
                         skill["runtime"],
-                        target_dir,
                     ],
                     {},
                 )
-                if result.exit_code:
+                if archived.exit_code:
                     raise RuntimeError(
-                        f"installing runtime skills from {skill['runtime']!r} failed: {result.stderr}"
+                        f"installing runtime skills from {skill['runtime']!r} failed: {archived.stderr}"
                     )
-                continue
-            # Resolve so `.`/`..` entries get their real folder name (and can't
-            # place files outside `dest`).
-            skill = skill.resolve()
-            if not skill.is_dir():
-                raise ValueError(f"skill {str(skill)!r} is not a folder")
-            uploads = []
-            executables = []
-            for file in skill.rglob("*"):
-                if not file.is_file():
-                    continue
-                target = f"{target_dir}/{file.relative_to(skill).as_posix()}"
-                uploads.append((target, file.read_bytes()))
-                if os.access(file, os.X_OK):
-                    executables.append(target)
-            # Finish this source before the next one overwrites matching files.
-            results = await asyncio.gather(
-                *(runtime.write(target, data) for target, data in uploads),
-                return_exceptions=True,
-            )
-            for result in results:
-                if isinstance(result, BaseException):
-                    raise result
-            if executables:
-                # `write` moves bytes, not modes; restore the execute bits scripts need.
-                await runtime.run(["chmod", "+x", *executables], {})
+                uploads = []
+                executables = []
+                if archived.stdout:
+                    parts = archived.stdout.split("\0")
+                    for i in range(0, len(parts) - 1, 3):
+                        rel, mode, b64 = parts[i], parts[i + 1], parts[i + 2]
+                        target = f"{target_dir}/{rel}"
+                        uploads.append((target, base64.b64decode(b64)))
+                        if mode == "1":
+                            executables.append(target)
+                if mirror_to is not None and skill["runtime"] != target_dir:
+                    copied_b = await mirror_to.run(
+                        [
+                            "bash",
+                            "-e",
+                            "-c",
+                            (
+                                '[ -d "$1" ] || exit 0; mkdir -p -- "$2" && '
+                                "cd -- \"$1\" && find . -type f -print0 | while IFS= read -r -d '' f; do "
+                                'mkdir -p -- "$2/$(dirname -- "$f")" && cp -p -- "$f" "$2/$f"; '
+                                "done"
+                            ),
+                            "vf-skills",
+                            skill["runtime"],
+                            target_dir,
+                        ],
+                        {},
+                    )
+                    if copied_b.exit_code:
+                        raise RuntimeError(
+                            f"installing runtime skills from {skill['runtime']!r} failed: {copied_b.stderr}"
+                        )
+                targets = (runtime,)
+            else:
+                # Resolve so `.`/`..` entries get their real folder name (and can't
+                # place files outside `dest`).
+                skill = skill.resolve()
+                if not skill.is_dir():
+                    raise ValueError(f"skill {str(skill)!r} is not a folder")
+                uploads = []
+                executables = []
+                for file in skill.rglob("*"):
+                    if not file.is_file():
+                        continue
+                    target = f"{target_dir}/{file.relative_to(skill).as_posix()}"
+                    uploads.append((target, file.read_bytes()))
+                    if os.access(file, os.X_OK):
+                        executables.append(target)
+                targets = (runtime, mirror_to) if mirror_to is not None else (runtime,)
+            for rt in targets:
+                results = await asyncio.gather(
+                    *(rt.write(target, data) for target, data in uploads),
+                    return_exceptions=True,
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+                if executables:
+                    await rt.run(["chmod", "+x", *executables], {})
 
     async def _check_result(
         self, trace: Trace, runtime: Runtime, result: ProgramResult
@@ -304,10 +421,6 @@ copy_failed=$(
             data.model_copy(update={"prompt": conversation}),
             **kwargs,
         )
-
-    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        """Remove harness-owned per-rollout state after scoring and before the
-        runtime is released. Implementations should be idempotent."""
 
     @abstractmethod
     async def launch(

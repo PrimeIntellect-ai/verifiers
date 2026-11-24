@@ -229,6 +229,8 @@ class DockerBackend(RuntimeBackend):
         self._stopped = False
         self._proxy: EgressProxy | None = None
         self._cut = False
+        # Borrowing an initially open workspace still requires a firewall during the run.
+        self.filter_workspace = False
 
     @classmethod
     @contextlib.asynccontextmanager
@@ -278,7 +280,7 @@ class DockerBackend(RuntimeBackend):
         return (
             not self.info.borrowed
             and isinstance(self.config, NetworkPolicyConfig)
-            and self.config.network_restricted
+            and (self.filter_workspace or self.config.network_restricted)
         )
 
     @property
@@ -311,6 +313,7 @@ class DockerBackend(RuntimeBackend):
                 f"docker runtime selected but the engine is not reachable: {detail}{hint}"
             )
         if self._restricted:
+            self.filter_workspace = True
             await _ensure_network_image()
         # Engine names are global; cleanup must never target a caller's existing container.
         self._container = f"vf-{uuid.uuid4().hex}"
@@ -535,6 +538,8 @@ class DockerBackend(RuntimeBackend):
         configured policy or `network`, as the only way out. `None` routes reopen the
         network for a trusted phase, undoing the cut."""
         if self._proxy is None or not self._restricted:
+            return
+        if network is None and not self.config.network_restricted and not self._cut:
             return
         if routes is None:
             self._proxy.policy = NetworkPolicy(

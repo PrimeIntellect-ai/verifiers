@@ -58,9 +58,17 @@ def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition
 
 
 def _sent_contract(config: RLMHarnessConfig, runtime_config) -> dict:
-    runtime = SimpleNamespace(config=runtime_config, env={})
+    runtime = SimpleNamespace(config=runtime_config)
+    workspace = SimpleNamespace(env={}, info=SimpleNamespace(workdir="/workspace"))
     metadata = RLMHarness(config)._runtime_metadata(
-        SimpleNamespace(model="m"), _trace(), runtime, "http://endpoint", "s", None
+        SimpleNamespace(model="m"),
+        _trace(),
+        runtime,
+        "http://endpoint",
+        "s",
+        None,
+        ["worker"],
+        workspace,
     )
     return metadata[RLM_RUNTIME_METADATA_KEY]
 

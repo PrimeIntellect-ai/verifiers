@@ -1,3 +1,4 @@
+import secrets
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -7,9 +8,12 @@ from pydantic import model_validator
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.browser_use.remote import BrowserRemoteTools
 from verifiers.v1.harnesses.utils import mcp
 from verifiers.v1.harnesses.utils.launch import bundle_program, launch_chat_program
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -53,14 +57,43 @@ class BrowserUseHarnessConfig(HarnessConfig):
 
 
 class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
+    HARNESS_TARGET = "browser-use"
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     # The browser tool executes model-authored Python through a third-party daemon.
     NEEDS_CONTAINER = True
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData):
+        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, {})
+        state = f"/tmp/browser-session-{secrets.token_hex(16)}"
+        args = await self._browser_args(runtime, state)
+
+        return RemoteToolsSpec(
+            BrowserRemoteTools,
+            {"program": [*program, *args]},
+            native_tools=frozenset({"browser"}),
+        )
+
+    async def _browser_args(self, runtime: Runtime, state: str) -> list[str]:
+        args = [f"--browser={self.config.browser}", f"--state-dir={state}"]
+        if self.config.cdp_url:
+            cdp_url = runtime.host_url(self.config.cdp_url)
+            if cdp_url != self.config.cdp_url and urlsplit(
+                self.config.cdp_url
+            ).scheme in ("http", "https"):
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"{self.config.cdp_url.rstrip('/')}/json/version"
+                    )
+                    response.raise_for_status()
+                cdp_url = runtime.host_url(response.json()["webSocketDebuggerUrl"])
+            args.append(f"--cdp-url={cdp_url}")
+        return args
 
     async def launch(
         self,
@@ -71,6 +104,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         system_prompt = "\n\n".join(
@@ -87,26 +121,16 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
                 for message in prompt
             )
         )
+        if not tool_interception_url:
+            raise HarnessError("browser-use requires a remote tool gate")
         env = {**self.config.resolved_env}
-        state = f".vf-browser-{trace.id}"
+        state = runtime.temp_path(
+            f"vf-browser-{trace.id}", env=self.config.resolved_env
+        )
         args = [
-            f"--browser={self.config.browser}",
-            # A resumed segment reuses this trace's browser and profile.
             f"--state-dir={state}",
+            f"--tool-interception-url={tool_interception_url}",
         ]
-        if self.config.cdp_url:
-            cdp_url = runtime.host_url(self.config.cdp_url)
-            if cdp_url != self.config.cdp_url and urlsplit(
-                self.config.cdp_url
-            ).scheme in ("http", "https"):
-                # CDP discovery returns a host-side WebSocket URL; translate that too.
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"{self.config.cdp_url.rstrip('/')}/json/version"
-                    )
-                    response.raise_for_status()
-                cdp_url = runtime.host_url(response.json()["webSocketDebuggerUrl"])
-            args.append(f"--cdp-url={cdp_url}")
         return await launch_chat_program(
             PROGRAM_SOURCE,
             self.config,

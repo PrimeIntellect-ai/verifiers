@@ -47,7 +47,7 @@ Timeouts and token budgets can be tuned at evaluation time under `env.agent`:
 
 ## Execution users
 
-On `docker` and `prime`, you can set `TaskData.agent_user` to run the agent under an existing non-root user account in the container image (with a writable home directory). Task `setup` still runs as the container's default user, after which harness setup, the agent process itself, and Harbor MCP adapters execute as `agent_user`. Once the agent finishes, `finalize`, scoring, and artifact collection switch back to the default user.
+On `docker` and `prime`, you can set `TaskData.agent_user` to run the agent's tools under an existing non-root user account in the container image (with a writable home directory). Task `setup` runs as the container's default user, tools execute as `agent_user` in the workspace while the harness runs in its own sandbox, and `finalize`, scoring, and artifact collection switch back to the default user.
 
 Calling `runtime.with_user(...)` or `runtime.with_env(...)` returns an independent view over the same underlying resource without mutating existing views. Under the hood, a `RuntimeBackend` (such as `DockerBackend` or `PrimeBackend`) owns the provider lifecycle, including container startup, network policy, and teardown; `backend.bind()` creates a `Runtime` view without provisioning a new resource, and `runtime.backend` exposes the backend when explicit infrastructure operations are needed. `Agent.provision()` lends a runtime whose cleanup remains owned by the caller's context.
 
@@ -189,7 +189,13 @@ expect `sh` and Python 3 in the runtime's default image.
 
 A `Deployment` coordinates all execution resources for a single rollout attempt: provisioning, placement, connectivity, and cleanup of the harness environment, the task workspace, supporting sidecar services, and fresh verification targets.
 
-The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live; setting `agent.deployment.mode = "colocated"` places the harness inside that same workspace. Toolsets run in their own runtimes or named task services.
+The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live. Toolsets run in their own runtimes or named task services.
+
+On Docker and Prime, rollouts automatically provision a separate sandbox for the harness alongside the workspace. Task setup, tools, finalization, artifacts, and scoring use the workspace; the model loop and interception credential stay in the harness sandbox. Managed workspaces enforce the task’s network rules and exclude framework control endpoints. A trusted local Docker Compose project owns its service networks and requires unrestricted workspace egress. Traces record both `agent.runtime` and `agent.harness_runtime`.
+
+Each rollout owns its harness sandbox (`agent.deployment.harness`). Each harness uses its own pre-built image (`ghcr.io/primeintellect-ai/verifiers-harness-<target>:<version>` on Docker and `prime/primeintellect/verifiers-harness-<target>:<version>` on Prime, or the shared `-base:v1` image for `bash` and `null`), while the task selects its own workspace image. With a borrowed workspace (`agent.run(task, runtime=...)`), the caller controls the workspace lifetime. Use `agent.provision()` or `verifiers.v1.runtimes.provision_runtime()` for a borrowable Docker workspace so the runtime can enforce the policy when the rollout starts.
+
+Harness adapters send tool calls through the evaluator's authenticated relay. The evaluator authorizes each call, uses the sandbox provider to exchange I/O with workspace processes, and records the result. Prime service VMs can also use a private LAN for service traffic. See [split harness execution](harnesses.md#split-execution).
 
 On Prime, return a `ServicesSpec` from `deployment_spec()` to provision one native VM per named service beside the task's `main` workspace. Each service has its own image, resources, filesystem, and egress policy. The VMs join a private LAN for the rollout; they can call each other and the workspace through the names in `deployment.hosts`. Services bind to `0.0.0.0`, since each VM has its own loopback interface. No Docker daemon runs inside these VMs.
 

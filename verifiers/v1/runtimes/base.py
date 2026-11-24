@@ -6,6 +6,7 @@ import asyncio
 import atexit
 import base64
 import contextlib
+import logging
 import shlex
 import time
 import uuid
@@ -14,6 +15,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urlsplit
 
 from pydantic_config import BaseConfig
 
@@ -28,26 +30,22 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Ensure `uv` supports both script commands used below. Reuse a compatible installation;
-# upgrade older binaries bundled in task images. Prefer pip on
-# Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
-# certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
-# prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
-# The standalone installer runs unmanaged (UV_UNMANAGED_INSTALL): it then only places the
-# binaries, without editing shell profiles or writing its self-update receipt to
-# ${XDG_CONFIG_HOME:-$HOME/.config}/uv. That receipt is shared by every user with the same
-# HOME (a task image can give root and the agent user one), and an installer that cannot
-# overwrite another user's receipt fails after it has already installed uv.
-_INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
-    "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
-    "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
-    "|| apk add --no-cache curl ca-certificates"
-)
+# Ensure `uv` supports `--script` commands. Prefer pip on Python images, then fall back to
+# downloading uv directly into ~/.local/bin (unmanaged so no shared receipt is written under
+# $HOME/.config/uv when root and an agent user share HOME).
 _DOWNLOAD_UV = (
     "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh "
     '| UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh; } '
-    "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh "
-    '| UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh; }'
+    "|| $(command -v python3 || command -v python) -c '"
+    "import io, os, platform, tarfile, urllib.request; "
+    "m = platform.machine().lower(); s = platform.system(); "
+    'arch = "aarch64" if m in ("aarch64", "arm64") else "x86_64"; '
+    'target = f"{arch}-apple-darwin" if s == "Darwin" else f"{arch}-unknown-linux-musl"; '
+    'req = urllib.request.Request(f"https://github.com/astral-sh/uv/releases/latest/download/uv-{target}.tar.gz", headers={"User-Agent": "verifiers"}); '
+    'dest = os.path.expanduser("~/.local/bin"); os.makedirs(dest, exist_ok=True); '
+    'tf = tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(req, timeout=60).read()), mode="r:gz"); '
+    '[open(os.path.join(dest, os.path.basename(e.name)), "wb").write(tf.extractfile(e).read()) and os.chmod(os.path.join(dest, os.path.basename(e.name)), 0o755) for e in tf if e.isfile()]'
+    "'"
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
@@ -56,7 +54,7 @@ _ENSURE_UV = (
     "&& uv python find --help 2>/dev/null | grep -q -- '--script'; }; "
     "uv_supports_scripts "
     "|| { pip install -q -U --user uv 2>/dev/null && hash -r && uv_supports_scripts; } "
-    f"|| {{ {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} && hash -r && uv_supports_scripts; }}"
+    f"|| {{ {_DOWNLOAD_UV} && hash -r && uv_supports_scripts; }}"
 )
 
 # The single port a sandbox runtime forwards out for a server hosted in it, e.g. a host
@@ -70,6 +68,16 @@ class ProgramResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True)
+class RuntimeLoss:
+    """A runtime its provider reports gone, as the provider explains it."""
+
+    cause: str
+    infra: bool
+    """Whether the provider's own infrastructure lost it, such as a lost host."""
+    evidence: dict = field(default_factory=dict)
 
 
 class RuntimeProcess(ABC):
@@ -97,6 +105,24 @@ class RuntimeProcess(ABC):
     @abstractmethod
     async def kill(self) -> None:
         pass
+
+    async def abandon(self) -> None:
+        """Release local client resources without remote signals when the VM is stopping."""
+
+
+async def collect_process(process: RuntimeProcess) -> ProgramResult:
+    """Drain both streams and reap a process, including on cancellation."""
+    try:
+        stdout, stderr, exit_code = await asyncio.gather(
+            _drain(process.stdout), _drain(process.stderr), process.wait()
+        )
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await run_shielded(process.kill())
+        raise
+    return ProgramResult(
+        exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+    )
 
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
@@ -156,9 +182,12 @@ class RuntimeCache:
 
     uv_interpreters: dict[str, str] = field(default_factory=dict)
     uv_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
-    curl_ready: bool = False
     mcp_sources: set[str] = field(default_factory=set)
     mcp_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    setup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    system_python: str | None = None
+    arch: str | None = None
+    installed: set[str] = field(default_factory=set)
 
 
 class RuntimeBackend(ABC):
@@ -198,7 +227,8 @@ class RuntimeBackend(ABC):
     SUPPORTS_COMPOSE: ClassVar[bool] = False
     """Whether the runtime can run a task's Docker Compose services."""
 
-    scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
+    # Prime mounts /tmp separately, so image-baked scripts must live on the rootfs.
+    scripts_dir: ClassVar[str] = "/var/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
 
@@ -211,6 +241,8 @@ class RuntimeBackend(ABC):
         self.env: dict[str, str] = {}
         self.cache = RuntimeCache()
         self._setup_claimed = False
+        self._workspace_routes: dict[object, tuple[str, ...]] = {}
+        self._workspace_network_lock = asyncio.Lock()
         self._background: list[RuntimeProcess] = []
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
@@ -298,17 +330,7 @@ class RuntimeBackend(ABC):
         process = await self.exec(
             runtime, ["sh", "-c", 'exec "$@" < /dev/null', "sh", *argv], env
         )
-        try:
-            stdout, stderr, exit_code = await asyncio.gather(
-                _drain(process.stdout), _drain(process.stderr), process.wait()
-            )
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await run_shielded(process.kill())
-            raise
-        return ProgramResult(
-            exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
-        )
+        return await collect_process(process)
 
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
@@ -369,9 +391,77 @@ class RuntimeBackend(ABC):
         """Open egress for trusted setup when reusing a restricted runtime."""
         if not self.network_restricted:
             return
-        if self._setup_claimed:
+        async with self._workspace_network_lock:
+            if self._setup_claimed and not self._workspace_routes:
+                await self.prepare_execution(None)
+            self._setup_claimed = True
+
+    @contextlib.asynccontextmanager
+    async def workspace_network(
+        self, policy: NetworkPolicyConfig, routes: list[str], *, borrowed: bool
+    ):
+        """Reserve evaluator routes while a rollout uses this workspace."""
+        if not routes:
+            raise SandboxError("workspace has no control-plane routes")
+        key = object()
+        try:
+            async with self._workspace_network_lock:
+                self._workspace_routes[key] = tuple(routes)
+                await self._apply_workspace_network(policy)
+            yield
+        finally:
+            async with self._workspace_network_lock:
+                self._workspace_routes.pop(key, None)
+                if borrowed and not self.stopped:
+                    try:
+                        await self._apply_workspace_network(policy)
+                    except Exception:
+                        logger.warning(
+                            "Failed to restore borrowed workspace egress",
+                            exc_info=logger.isEnabledFor(logging.DEBUG),
+                        )
+
+    async def _apply_workspace_network(self, policy: NetworkPolicyConfig) -> None:
+        # The caller holds the lock across the provider update. Multiple borrows,
+        # including a nested judge, must retain every live evaluator endpoint.
+        hosts = set()
+        for routes in self._workspace_routes.values():
+            for route in routes:
+                parsed = urlsplit(route)
+                if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                    raise SandboxError("workspace has an invalid control-plane route")
+                if policy.allow != ["*"] and policy.permits(
+                    parsed.scheme,
+                    parsed.hostname,
+                    parsed.port or (443 if parsed.scheme == "https" else 80),
+                ):
+                    raise SandboxError(
+                        "task network allowlist includes a framework endpoint"
+                    )
+                if not parsed.hostname.endswith(".sandbox.internal"):
+                    hosts.add(parsed.hostname)
+        block = (
+            list(dict.fromkeys([*policy.block, *sorted(hosts)]))
+            if policy.allow == ["*"]
+            else policy.block
+        )
+        effective = type(self.config).model_validate(
+            {**self.config.model_dump(), "allow": policy.allow, "block": block}
+        )
+        if effective.network_restricted:
+            await self.prepare_execution([], effective)
+        else:
             await self.prepare_execution(None)
-        self._setup_claimed = True
+        # The config describes task requirements; the trace records the applied rules.
+        self.config = self.config.model_copy(
+            update={"allow": policy.allow, "block": policy.block}
+        )
+        self.info.allow, self.info.block = effective.allow, effective.block
+
+    async def lost(self) -> RuntimeLoss | None:
+        """The provider's report that this runtime is gone; None while it runs, and
+        whenever the provider cannot say: an unreachable provider proves nothing."""
+        return None
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None

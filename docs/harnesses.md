@@ -4,7 +4,7 @@ verifiers ships with a range of harnesses out of the box, including Claude Code,
 
 ## Bash harness
 
-The built-in `bash` harness provides shell execution and file-editing tools, and supports task MCP servers, multi-turn conversation resume, and tool interception (though not harness skills). Because it runs an in-house loop rather than installing an external CLI, it can run either on `subprocess` for trusted local work or inside a container.
+The built-in `bash` harness provides shell execution and file-editing tools, task MCP support, multi-turn conversation resume, and tool interception (though not harness skills). On Docker and Prime, its model loop and Bash/edit execution run in separate sandboxes; it can also run on `subprocess` for trusted local work.
 
 Context compaction is enabled by default: when the model provider reports a context window size, `bash` automatically summarizes older context once roughly 16,000 tokens remain. You can set a fixed token threshold in your config, or set `compaction = "None"` to disable compaction altogether:
 
@@ -14,7 +14,21 @@ id = "bash"
 compaction = { summarize_at_tokens = 100000 }
 ```
 
-Web search is disabled by default; setting `search = true` enables it and requires `SERPER_API_KEY` on the evaluator host.
+Web search is not built into `bash`; attach an MCP toolset or use a harness with native search.
+
+## Split execution
+
+The harness runs the model loop in its own harness sandbox. Claude Code, Pi, OpenCode, Kimi Code, DeepSeek, OpenClaw, Hermes Agent, and Bash run their tool adapters on the host against the bound worker sandbox `Runtime`, so these adapters work on task images without Python. Codex uses its native exec-server in the worker sandbox, RLM its execution worker, and Prime Agent its remote kernel. Browser Use runs its browser code in the worker sandbox. `null` runs a tool-less model loop.
+
+Prime starts workspace commands through `/bin/bash`. When building a worker image from stock Alpine, include Bash (`RUN apk add --no-cache bash`). For Codex, the evaluator stages the Linux x86-64 or arm64 executor under `/var/tmp/agent-tools`. The setup user needs write access there and the task user needs execute access. The worker can keep outbound network access disabled.
+
+Request interceptors check calls before execution without changing the transport. A native gate can return a replacement tool result; where a tool has no such gate, a blocked call ends the rollout before delivery. Codex Code Mode is rejected when request interception is active because its nested `write_stdin` calls have no upstream gate. OpenCode and OpenClaw expose direct tools instead of Code Mode. RLM's framed connection always checks its execution gate and preserves nano-rlm's capability-checked, cell-scoped supervisor callbacks. Its native listener is reachable only over loopback inside the workspace and keeps detached jobs alive for grading after the session closes. Prime Agent workers block supervisor callbacks.
+
+The default coding tools, skills, composed services, and separate MCP servers are supported. Harbor task-local MCP servers run in the workspace and use the execution relay to reach the harness. Adapters reject optional tools they cannot isolate, including agent delegation, provider integrations, interactive questions, and Claude notebook editing; an unsupported tool never falls back to running in the harness sandbox.
+
+The shared file adapters support text and image reads, exact text edits, and basic glob and regex search. They do not reproduce every upstream output format, fuzzy edit rule, ignore-file rule, advanced search option, or PDF/media reader. Background jobs expose status and output files; native automatic completion notifications are not available in every adapter.
+
+Read can page through large text files. Edits and patches that read a whole file support files up to 16 MiB. Grep runs in the workspace. On its first call, the evaluator supplies a pinned ripgrep binary if the image lacks a suitable one.
 
 ## A minimal harness implementation
 
@@ -78,4 +92,6 @@ Class-level capability flags declare which optional features your harness implem
 - `SUPPORTS_SKILLS`: indicates that the harness calls `install_skills` to copy configured skills into the directory where the program discovers them.
 - `SUPPORTS_TOOL_INTERCEPTION`: indicates that the harness checks tool calls against the rollout's tool gate (`tool_interception_url`) before executing them.
 
-For programs that speak the Agent Client Protocol (ACP), you can subclass `vf.ACPHarness` in [`acp/__init__.py`](../verifiers/v1/acp/__init__.py). If a harness deterministically reformats earlier messages when re-sending conversation history (for example, dropping whitespace-only text blocks), override `replay_view(message, dialect)` so replayed turns match the existing trace branch rather than forking the message graph. If your harness writes files or session state outside the temporary runtime (or runs inside an environment-owned runtime), override `cleanup(trace, runtime)` to remove per-rollout state after scoring completes; `cleanup` runs before the runtime is released and should be idempotent.
+To bind model-controlled execution to the worker sandbox, override `remote_tools(runtime, data)` (returning a `RemoteToolsSpec` executed on the host against the worker sandbox `Runtime`) or `setup_execution(runtime, connection)` (registering native worker-sandbox processes with `ExecutionConnection`).
+
+For programs that speak the Agent Client Protocol (ACP), you can subclass `vf.ACPHarness` in [`acp/__init__.py`](../verifiers/v1/acp/__init__.py). If a harness deterministically reformats earlier messages when re-sending conversation history (for example, dropping whitespace-only text blocks), override `replay_view(message, dialect)` so replayed turns match the existing trace branch rather than forking the message graph.

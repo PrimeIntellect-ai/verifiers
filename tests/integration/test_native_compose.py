@@ -51,7 +51,7 @@ def fetch(url: str, timeout: int = 15) -> list[str]:
 
 class ComposeHarness(vf.Harness):
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        return await runtime.run(
+        return await runtime._execution_bridge.runtime.run(
             [
                 "python",
                 "-c",

@@ -1,20 +1,11 @@
-"""Chat loop, local tools, and interception hook for bundled chat programs."""
+"""Chat loop and interception hook for bundled chat programs."""
 
 import argparse
 import asyncio
-import fcntl
 import json
 import logging
-import os
-import select
-import selectors
-import struct
-import subprocess
-import termios
-import threading
-import time
 import traceback
-from contextlib import AsyncExitStack, suppress
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,7 +19,6 @@ from openai import (
     omit,
 )
 from openai.lib.streaming.chat import AsyncChatCompletionStream
-from pydantic import AnyHttpUrl, ValidationError
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
@@ -40,7 +30,6 @@ from tenacity import (
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
     from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
-        TOOL_OUTPUT_MAX_BYTES,
         Compactor,
         bound_tool_message,
         compactable,
@@ -49,13 +38,10 @@ if TYPE_CHECKING:
         is_context_overflow,
     )
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
-    from verifiers.v1.utils.network import network_rule_matches  # noqa: TC004
 
 # Mirror of verifiers.v1.errors.MODEL_TRANSPORT_ERROR_EXIT_CODE;
 # this bundled script cannot import verifiers.
 MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
-
-SERPER_URL = "https://google.serper.dev/search"
 
 BASH_TOOL = {
     "type": "function",
@@ -96,270 +82,6 @@ EDIT_TOOL = {
         },
     },
 }
-
-SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "search",
-        "description": (
-            "Run a web search via Serper (Google) and return the top organic results as title, "
-            "URL, and snippet. Issue focused queries and call it several times to cover different "
-            "angles; use the bash tool (e.g. curl) to read a result page in full."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query."},
-                "num_results": {
-                    "type": "integer",
-                    "description": "Number of results to return (default 5).",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-}
-
-
-def format_results(results, query: str) -> str:
-    """Format Serper organic results as title/URL/snippet blocks."""
-    sections = []
-    for i, result in enumerate(results, 1):
-        title = (result.get("title") or "").strip() or "Untitled"
-        lines = [f"Result {i}: {title}"]
-        link = (result.get("link") or "").strip()
-        if link:
-            lines.append(f"URL: {link}")
-        snippet = (result.get("snippet") or "").strip()
-        if snippet:
-            lines.append(f"  - {snippet}")
-        sections.append("\n".join(lines))
-    if not sections:
-        return f"No results returned for query: {query}"
-    return "\n\n---\n\n".join(sections)
-
-
-def run_search(
-    query: str,
-    api_key: str,
-    num_results: int = 5,
-    network_block: list[str] | None = None,
-) -> str:
-    """Serper Google web search -> formatted organic results.
-
-    The key arrives as an argument (handed in by the harness over argv, like the interception
-    secret) instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
-    The whole call is wrapped so a bad query or malformed payload becomes a tool error rather than
-    raising out of the chat loop and killing the rollout."""
-    if not api_key:
-        return "Error: no Serper API key (SERPER_API_KEY was not set in the eval environment)"
-    # num_results comes straight from model tool JSON, so it may be a non-int (e.g. "ten"); coerce
-    # defensively — `organic[:num_results]` would otherwise raise on a bad slice.
-    try:
-        num_results = max(1, int(num_results))
-    except (TypeError, ValueError):
-        num_results = 5
-    try:
-        response = httpx.post(
-            SERPER_URL,
-            json={"q": query},
-            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-            timeout=45,
-        )
-        response.raise_for_status()
-        organic = response.json().get("organic") or []
-        if network_block:
-            filtered = []
-            for result in organic:
-                try:
-                    url = AnyHttpUrl(result.get("link", ""))
-                except ValidationError:
-                    continue
-                if not any(
-                    network_rule_matches(
-                        rule,
-                        url.scheme,
-                        url.host.strip("[]"),
-                        url.port,
-                        subdomains=True,
-                    )
-                    for rule in network_block
-                ):
-                    filtered.append(result)
-            organic = filtered
-        return format_results(organic[:num_results], query)
-    except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
-        return f"search failed ({e}). Try again or rephrase the query."
-
-
-class _BashOutput:
-    def __init__(self) -> None:
-        self.head = b""
-        self.tail = b""
-        self.size = 0
-
-    def add(self, chunk: bytes) -> None:
-        self.head += chunk[: max(0, TOOL_OUTPUT_MAX_BYTES - len(self.head))]
-        self.tail = (self.tail + chunk)[-TOOL_OUTPUT_MAX_BYTES:]
-        self.size += len(chunk)
-
-
-BASH_TIMEOUT = 3600
-
-EXIT_GRACE = 0.5
-"""Seconds to keep reading after bash exits, e.g. for a process substitution."""
-
-BACKGROUND_NOTE = "[a process started by this command is still running and holds its output; later output is not shown]"
-
-
-def _pending(fd: int) -> int:
-    """Bytes waiting in a pipe right now."""
-    return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
-
-
-def _at_end(fd: int) -> bool:
-    """Whether every writer has closed the pipe; late bytes read here are dropped."""
-    poller = select.poll()  # select.select rejects fds >= 1024
-    poller.register(fd, select.POLLIN)
-    if not poller.poll(0):
-        return False
-    return not os.read(fd, 65536)
-
-
-def _discard_until_eof(fd: int) -> None:
-    """Read a held pipe to EOF, so its writer neither blocks nor gets SIGPIPE."""
-    with open(fd, "rb", buffering=0) as pipe:
-        while pipe.read(65536):
-            pass
-
-
-def _drain_in_background(fd: int) -> None:
-    """Drain a held pipe on a daemon thread; never raises."""
-    try:
-        copy = os.dup(fd)
-    except OSError:
-        return
-    try:
-        threading.Thread(target=_discard_until_eof, args=(copy,), daemon=True).start()
-    except Exception:  # noqa: BLE001 - e.g. no more threads
-        with suppress(OSError):
-            os.close(copy)
-
-
-def run_bash(command: str) -> str:
-    held_open = False
-    try:
-        with subprocess.Popen(
-            ["bash", "-c", command],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        ) as process:
-            stdout, stderr = _BashOutput(), _BashOutput()
-            deadline = time.monotonic() + BASH_TIMEOUT
-            exited = None
-            try:
-                with selectors.DefaultSelector() as selector:
-                    assert process.stdout is not None and process.stderr is not None
-                    selector.register(process.stdout, selectors.EVENT_READ, stdout)
-                    selector.register(process.stderr, selectors.EVENT_READ, stderr)
-                    while selector.get_map():
-                        now = time.monotonic()
-                        if exited is None and process.poll() is not None:
-                            exited = now
-                        if exited is None:
-                            if now >= deadline:
-                                raise subprocess.TimeoutExpired(
-                                    process.args, BASH_TIMEOUT
-                                )
-                            wait = min(deadline - now, 0.1)
-                        elif now - exited < EXIT_GRACE:
-                            # A process bash did not wait for may still be writing.
-                            wait = exited + EXIT_GRACE - now
-                        else:
-                            # A pipe still open is held by a job left running.
-                            for key in list(selector.get_map().values()):
-                                pending = _pending(key.fd)
-                                while pending > 0:
-                                    chunk = os.read(key.fd, min(pending, 65536))
-                                    if not chunk:
-                                        break
-                                    pending -= len(chunk)
-                                    key.data.add(chunk)
-                                selector.unregister(key.fileobj)
-                                if not _at_end(key.fd):
-                                    held_open = True
-                                    _drain_in_background(key.fd)
-                            break
-                        for key, _ in selector.select(wait):
-                            chunk = os.read(key.fd, 8192)
-                            if chunk:
-                                key.data.add(chunk)
-                            else:
-                                selector.unregister(key.fileobj)
-                    process.wait(timeout=max(0, deadline - time.monotonic()))
-            finally:
-                # Do not communicate() here: descendants may still hold the pipes.
-                if process.returncode is None:
-                    process.kill()
-                    process.wait()
-        size = stdout.size + stderr.size
-        # Leave room for the note.
-        budget = TOOL_OUTPUT_MAX_BYTES - (
-            len(BACKGROUND_NOTE.encode()) + 1 if held_open else 0
-        )
-        if size <= budget:
-            # A held pipe may be cut mid-character.
-            text = "".join(
-                output.head.decode(errors="replace")
-                .replace("\r\n", "\n")
-                .replace("\r", "\n")
-                for output in (stdout, stderr)
-            )
-        else:
-            marker = f"\n[... bash output truncated; {size} bytes total ...]\n"
-            keep = (budget - len(marker.encode())) // 2
-            # Preserve stdout-then-stderr ordering, including when just one is large.
-            head = (stdout.head + stderr.head)[:keep].decode(errors="ignore")
-            tail = (stdout.tail + stderr.tail)[-keep:].decode(errors="ignore")
-            text = head + marker + tail
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        if held_open:
-            text += ("\n" if text and not text.endswith("\n") else "") + BACKGROUND_NOTE
-        return text
-    except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
-        return f"error: {e}"
-
-
-def run_edit(path: str, old_str: str, new_str: str) -> str:
-    if not isinstance(path, str) or not path:
-        return "error: 'path' is required"
-    if not isinstance(old_str, str) or not isinstance(new_str, str):
-        return "error: 'old_str' and 'new_str' must be strings"
-    if not old_str:
-        # '' matches everywhere (''.count('') == 1 on an empty file), so it would insert
-        # rather than replace — reject it to keep the "exactly once" contract honest.
-        return "error: 'old_str' must be a non-empty string"
-    filepath = Path(path)
-    if not filepath.is_absolute():
-        filepath = Path.cwd() / filepath
-    if not filepath.exists():
-        return f"error: {path} not found"
-    # Reading/writing can fail on a directory, permissions, or non-text content; return the
-    # error as a tool result instead of letting it abort the chat loop.
-    try:
-        content = filepath.read_text()
-    except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
-        return f"error: could not read {path}: {e}"
-    count = content.count(old_str)
-    if count != 1:
-        return f"error: old_str must appear exactly once in {path} (found {count})"
-    try:
-        filepath.write_text(content.replace(old_str, new_str, 1))
-    except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
-        return f"error: could not write {path}: {e}"
-    return f"Edited {path}"
-
 
 _STREAMED_MESSAGE_FIELDS = (
     "role",
@@ -560,6 +282,10 @@ async def run_chat_loop(
                         str(denied.get("content", ""))
                     )
                     continue
+                if name not in dispatch:
+                    raise RuntimeError("remote tool gate allowed local execution")
+            elif name not in dispatch:
+                raise RuntimeError("tool call has no gate")
             try:
                 tool_args = json.loads(call.function.arguments or "{}")
             except json.JSONDecodeError as e:
@@ -570,25 +296,6 @@ async def run_chat_loop(
                     content = f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object"
                 elif name in dispatch:
                     content = await call_mcp(servers, dispatch, name, tool_args)
-                elif name == "bash" and args.bash:
-                    content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
-                    )
-                elif name == "edit" and args.edit:
-                    content = await asyncio.to_thread(
-                        run_edit,
-                        tool_args.get("path"),
-                        tool_args.get("old_str"),
-                        tool_args.get("new_str"),
-                    )
-                elif name == "search" and args.search:
-                    content = await asyncio.to_thread(
-                        run_search,
-                        tool_args.get("query", ""),
-                        args.serper_key,
-                        tool_args.get("num_results", 5),
-                        args.search_block,
-                    )
                 else:
                     content = f"error: unknown tool {name!r}"
             tool_message["content"] = content
@@ -623,9 +330,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
-    parser.add_argument("--search", action="store_true")
-    parser.add_argument("--search-block", type=json.loads, default=[])
-    parser.add_argument("--serper-key", default="")
     return parser.parse_args()
 
 
@@ -651,9 +355,6 @@ async def main() -> None:
     if args.edit:
         tools.append(EDIT_TOOL)
         reserved.add("edit")
-    if args.search:
-        tools.append(SEARCH_TOOL)
-        reserved.add("search")
     async with AsyncExitStack() as mcp_stack:
         if config.get("mcpServers"):
             mcp_tools, dispatch, servers = await asyncio.wait_for(

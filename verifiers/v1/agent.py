@@ -992,11 +992,6 @@ class Agent:
         interception — shared by `run` and `interaction`."""
         harness = self.harness
         skills = [*task.data.skills, *harness.config.skills]
-        if skills:
-            # Skill installations can hold run-specific state, such as RLM's package environment.
-            harness = type(harness)(
-                harness.config.model_copy(update={"skills": skills})
-            )
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
@@ -1006,6 +1001,9 @@ class Agent:
                 self.runtime_config, task, self._warned_resources
             )
             run_is_local = runtime_is_local(runtime_config)
+        # Skill installations and split execution workers hold run-specific state,
+        # such as RLM's package environment or Codex's executor cwd.
+        harness = type(harness)(harness.config.model_copy(update={"skills": skills}))
         validate_pairing(
             harness,
             type(task),
@@ -1034,7 +1032,7 @@ class Agent:
             if task is not None
             else self.runtime_config
         )
-        async with provision_backend(config) as backend:
+        async with provision_backend(config, workspace=True) as backend:
             # Keep sandbox startup task-neutral: this box may later host another task.
             backend.env = dict(task.runtime_env()) if task is not None else {}
             yield backend.bind()

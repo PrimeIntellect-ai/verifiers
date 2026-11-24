@@ -9,7 +9,9 @@ runner. The placement fixtures below are indirect-only: they translate a paramet
 value, and using one without `indirect=True` fails loudly.
 """
 
+import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,7 @@ from verifiers.v1.configs.retries import RetryConfig, RetryRule
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.utils.loaders import harness_config_type
+from verifiers.v1.utils.prime import load_prime_config
 
 CI_MODEL = "internal/deepseek-v4.1-flash-1017-ci"
 CI_REASONING_EFFORT = "low"
@@ -93,9 +96,11 @@ def pytest_configure(config) -> None:
 def pytest_collection_modifyitems(config, items) -> None:
     """Skip the model-driven tests when no model endpoint is configured; the rest
     (scripted harness behaviors, the examples' own key check) decide for themselves."""
-    if os.environ.get("PRIME_API_KEY"):
+    if os.environ.get("PRIME_API_KEY") or load_prime_config().get("api_key"):
         return
-    skip = pytest.mark.skip(reason="needs PRIME_API_KEY")
+    skip = pytest.mark.skip(
+        reason="needs Prime credentials (PRIME_API_KEY or prime login)"
+    )
     for item in items:
         if LIVE_FIXTURES & set(getattr(item, "fixturenames", ())):
             item.add_marker(skip)
@@ -199,27 +204,48 @@ async def live_ctx():
     )
 
 
+def scripted_chat_reply(
+    model: str,
+    *,
+    content: str = "OK",
+    tool: str = "",
+    arguments: dict | None = None,
+    call_id: str = "scripted",
+) -> dict:
+    """One chat-completions reply for the scripted upstream."""
+    message = {"role": "assistant", "content": None if tool else content}
+    if tool:
+        message["tool_calls"] = [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": tool, "arguments": json.dumps(arguments or {})},
+            }
+        ]
+    return {
+        "id": f"chatcmpl-{call_id}",
+        "object": "chat.completion",
+        "created": 0,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": "tool_calls" if tool else "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+
 @pytest.fixture
 async def scripted_model():
     """A deterministic upstream model: every call gets a plain "OK" in the caller's own
     dialect (chat completions, Responses, or Anthropic messages), streamed through that
     dialect's own encoder when asked. Yields a client config pointing at it."""
-    from aiohttp import web
-
     from verifiers.v1.dialects.anthropic import AnthropicDialect
     from verifiers.v1.dialects.chat import ChatDialect
     from verifiers.v1.dialects.responses import ResponsesDialect
-
-    def chat(model: str) -> dict:
-        message = {"role": "assistant", "content": "OK"}
-        return {
-            "id": "chatcmpl-scripted",
-            "object": "chat.completion",
-            "created": 0,
-            "model": model,
-            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        }
 
     def responses(model: str) -> dict:
         text = {"type": "output_text", "text": "OK", "annotations": []}
@@ -263,19 +289,31 @@ async def scripted_model():
         }
 
     routes = [
-        ("/chat/completions", ChatDialect(), chat),
+        ("/chat/completions", ChatDialect(), scripted_chat_reply),
         ("/responses", ResponsesDialect(), responses),
         ("/messages", AnthropicDialect(), anthropic),
     ]
 
-    async def answer(request: web.Request) -> web.StreamResponse:
-        body = await request.json()
+    def build_reply(path, body):
         dialect, build = next(
             (dialect, build)
             for suffix, dialect, build in routes
-            if request.path.endswith(suffix)
+            if path.endswith(suffix)
         )
-        raw = build(str(body.get("model", "scripted")))
+        return dialect, build(str(body.get("model", "scripted")))
+
+    async with serve_scripted_model(build_reply) as client:
+        yield client
+
+
+@asynccontextmanager
+async def serve_scripted_model(build_reply):
+    """Serve deterministic upstream responses using each dialect's stream encoding."""
+    from aiohttp import web
+
+    async def answer(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        dialect, raw = build_reply(request.path, body)
         if not dialect.streaming(body):
             return web.json_response(raw)
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})

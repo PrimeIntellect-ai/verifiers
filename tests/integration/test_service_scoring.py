@@ -24,7 +24,7 @@ IMAGE = "python:3.11-slim"
 
 class ServiceHarness(vf.Harness):
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        return await runtime.run(
+        return await runtime._execution_bridge.runtime.run(
             [
                 "python",
                 "-c",

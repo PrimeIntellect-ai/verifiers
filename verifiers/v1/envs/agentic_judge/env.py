@@ -330,7 +330,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             )
             # The workspace already has the verifier's image and network policy.
             # Do not reapply the solver's requirements to an overridden verifier.
-            updates = {
+            updates: dict = {
                 "image": runtime.config.image,
                 "workdir": runtime.config.workdir,
             }

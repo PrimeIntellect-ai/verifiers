@@ -52,11 +52,13 @@ class ScriptedAgentUserHarness(Harness[HarnessConfig]):
         data: vf.TaskData,
         tool_interception_url: str | None = None,
     ) -> ProgramResult:
-        script = await runtime.prepare_uv_script(UV_SCRIPT)
-        uv_user, uv_python = (await runtime.run(script, {})).stdout.split()
-        await runtime.write(WRITTEN, b"written by the agent user")
+        assert runtime._execution_bridge is not None
+        workspace = runtime._execution_bridge.runtime
+        script = await workspace.prepare_uv_script(UV_SCRIPT)
+        uv_user, uv_python = (await workspace.run(script, {})).stdout.split()
+        await workspace.write(WRITTEN, b"written by the agent user")
         try:
-            await runtime.read(SECRET)
+            await workspace.read(SECRET)
             read_api = "ok"
         except SandboxError:
             read_api = "denied"
@@ -66,7 +68,7 @@ class ScriptedAgentUserHarness(Harness[HarnessConfig]):
             "uv_script": script[-1],
             "read_secret_api": read_api,
         }
-        return await runtime.run(["sh", "-c", PROBE], {})
+        return await workspace.run(["sh", "-c", PROBE], {})
 
 
 class AgentUserTask(vf.Task[vf.TaskData]):

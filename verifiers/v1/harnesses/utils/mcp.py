@@ -55,11 +55,12 @@ class MCPConnection:
     runs under wait_for or a tool call is cancelled by another task.
     """
 
-    def __init__(self, spec: dict[str, Any]):
+    def __init__(self, spec: dict[str, Any], *, connect=mcp_client):
         # Bundled programs without MCP should not import the retry machinery.
         from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential_jitter
 
         self.spec = spec
+        self.connect = connect
         self.task: asyncio.Task[None] | None = None
         self.ready: asyncio.Future[Client] | None = None
         self.cancel_scope: CancelScope | None = None
@@ -76,7 +77,7 @@ class MCPConnection:
         stack = AsyncExitStack()
         try:
             stack.enter_context(cancel_scope)
-            client = await stack.enter_async_context(mcp_client(self.spec))
+            client = await stack.enter_async_context(self.connect(self.spec))
             ready.set_result(client)
             await asyncio.Future()
         except asyncio.CancelledError:
@@ -91,17 +92,19 @@ class MCPConnection:
             with suppress(asyncio.CancelledError):
                 await stack.aclose()
 
+    async def client(self) -> "Client":
+        """Connect on first use and retain the session until the owner closes."""
+        if self.task is None or self.task.done():
+            self.ready = asyncio.get_running_loop().create_future()
+            self.cancel_scope = CancelScope()
+            self.task = asyncio.create_task(self.serve(self.ready, self.cancel_scope))
+        assert self.ready is not None
+        return await asyncio.shield(self.ready)
+
     async def _run(self, operation: Callable[["Client"], Awaitable[T]]) -> T:
         await self.lock.acquire()
         try:
-            if self.task is None or self.task.done():
-                self.ready = asyncio.get_running_loop().create_future()
-                self.cancel_scope = CancelScope()
-                self.task = asyncio.create_task(
-                    self.serve(self.ready, self.cancel_scope)
-                )
-            assert self.ready is not None
-            client = await self.ready
+            client = await self.client()
             return await operation(client)
         except BaseException as error:
             await self.aclose(abort=isinstance(error, asyncio.CancelledError))
