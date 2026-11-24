@@ -364,10 +364,19 @@ class PrimeBackend(RuntimeBackend):
                 except BaseException:
                     # The platform may have accepted a pause whose answer was lost:
                     # such a box must run again. One that runs, died or is gone is
-                    # left as it is, so a dead box costs no resume retries.
-                    with contextlib.suppress(Exception):
+                    # left as it is, so a dead box costs no resume retries. A lookup
+                    # that fails otherwise (a 429) may hide a pause: resume, which
+                    # asks again.
+                    try:
                         status = (await self._client.get(self.info.id)).status
-                        if status not in ("RUNNING", *_DEAD_STATUSES):
+                    except Exception as e:  # noqa: BLE001 - decides only the resume
+                        gone = "HTTP 404" in str(e) or "not found" in str(e).lower()
+                        status = None if gone else "UNKNOWN"
+                    if status is not None and status not in (
+                        "RUNNING",
+                        *_DEAD_STATUSES,
+                    ):
+                        with contextlib.suppress(Exception):
                             await self._resume()
                     raise
                 snapshot = Snapshot(id=paused.checkpoint_id)

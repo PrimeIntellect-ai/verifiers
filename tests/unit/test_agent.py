@@ -26,6 +26,7 @@ class FailingSegmentRollout:
     fail = Rollout.fail
     step = Rollout.step
     _turn = Rollout._turn
+    _segment_agent_time = Rollout._segment_agent_time
     timeout = Rollout.timeout
 
 
@@ -201,6 +202,10 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._agent_time_remaining = time_remaining
     run._agent_time_spent = 0.0
     run._segment_start = None
+    run._deadline = None
+    run._hold_started = None
+    run._hold_deadline = None
+    run._held_time = 0.0
     run._timeouts = RolloutTimeouts()
     run._harness_session = session
     run._relay = None

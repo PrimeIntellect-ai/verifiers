@@ -1,8 +1,10 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from prime_sandboxes import SandboxNotRunningError
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
 from verifiers.v1.runtimes.backends import prime
 
@@ -83,5 +85,48 @@ def test_attach_waits_until_sandbox_is_awake(monkeypatch):
         result = await task
         assert result.exit_code == 0
         assert events == ["awake", "attach:sb1:sess-1"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "lookup,resumed",
+    [
+        ("PAUSED", True),
+        (RuntimeError("HTTP 429: Too Many Requests"), True),
+        ("RUNNING", False),
+        ("TERMINATED", False),
+        (RuntimeError("HTTP 404: sandbox not found"), False),
+    ],
+)
+def test_a_lost_pause_resumes_only_a_box_that_may_be_paused(
+    monkeypatch, lookup, resumed
+):
+    """A pause that raised may still have stopped the box: a box that may be paused
+    runs again, a running, dead or missing one is left as it is."""
+    calls: list[str] = []
+
+    class Client:
+        async def pause(self, sandbox_id):
+            raise RuntimeError("connection lost")
+
+        async def get(self, sandbox_id):
+            if isinstance(lookup, Exception):
+                raise lookup
+            return SimpleNamespace(status=lookup)
+
+    async def resume(self):
+        calls.append("resume")
+
+    async def scenario():
+        monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+        monkeypatch.setattr(PrimeBackend, "_resume", resume)
+        backend = PrimeBackend(PrimeConfig())
+        backend._client = Client()
+        backend.info.id = "sb1"
+        with pytest.raises(SandboxError, match="connection lost"):
+            await backend.snapshot()
+        assert calls == (["resume"] if resumed else [])
+        assert backend._awake.is_set()
 
     asyncio.run(scenario())

@@ -224,6 +224,9 @@ def make_rollout(
     run._agent_time_spent = 0.0
     run._segment_start = None
     run._deadline = None
+    run._hold_started = None
+    run._hold_deadline = None
+    run._held_time = 0.0
     run._capturing = asyncio.Lock()
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
@@ -870,15 +873,18 @@ async def test_restore_applies_egress_before_connecting_relay(monkeypatch):
     ]
 
 
-async def test_a_hold_moves_the_agent_deadline_out():
-    """The time an owner holds the rollout is the owner's: the agent deadline moves out
-    by as long as the hold lasts, so a hold does not end the rollout as a timeout."""
-    run = SimpleNamespace(_unheld=asyncio.Event(), _deadline=None, deadline_at=None)
+async def test_a_hold_stops_the_agent_deadline():
+    """The time an owner holds the rollout is the owner's: the agent deadline stops
+    from the save until the release, and the hold is not agent time."""
+    run, _, _ = make_rollout()
     loop = asyncio.get_running_loop()
     async with asyncio.timeout(0.05) as deadline:
-        run._deadline, run.deadline_at = deadline, deadline.when()
-        budget_end = deadline.when()
-        loop.call_later(0.15, run._unheld.set)
-        await Rollout._wait_unheld(run)  # type: ignore[arg-type]
+        run._segment_start, run._deadline = loop.time(), deadline
+        run.deadline_at = budget_end = deadline.when()
+        assert await run.save(hold=True) is not None
+        assert deadline.when() is None
+        await asyncio.sleep(0.15)
+        run.release()
         assert deadline.when() > budget_end + 0.1
         assert run.deadline_at == deadline.when()
+        assert run._segment_agent_time() < 0.05

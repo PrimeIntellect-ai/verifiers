@@ -284,7 +284,12 @@ class Rollout:
         """Cleared while an owner holds the rollout at its checkpoint."""
         self._unheld.set()
         self._deadline: asyncio.Timeout | None = None
-        """The running segment's agent deadline, which a hold moves out."""
+        """The running segment's agent deadline, which a hold stops."""
+        self._hold_started: float | None = None
+        self._hold_deadline: float | None = None
+        """When the agent deadline was due as the hold stopped it."""
+        self._held_time = 0.0
+        """Seconds the running segment spent held: the owner's time, not the agent's."""
         self._capturing = asyncio.Lock()
         if self._restore is not None:
             assert self._restore.session is not None
@@ -866,11 +871,16 @@ class Rollout:
             self._session.on_turn_input = None
             if trace.num_turns == turns_before:
                 trace.root_reply = root_reply_before
+            spent = self._segment_agent_time()
             self._segment_start = None
-            self._agent_time_spent += loop.time() - segment_start
+            self._deadline = self._hold_deadline = None
+            self._held_time = 0.0
+            if self._hold_started is not None:
+                self._hold_started = loop.time()
+            self._agent_time_spent += spent
             if self._agent_time_remaining is not None:
                 self._agent_time_remaining = max(
-                    0.0, self._agent_time_remaining - (loop.time() - segment_start)
+                    0.0, self._agent_time_remaining - spent
                 )
             self.deadline_at = None
         # A harness that completes cleanly after a failed model call handled it (e.g. it
@@ -906,29 +916,46 @@ class Rollout:
             turn.exception()  # retrieved now, raised after the release
         # An owner that saved this rollout records it as running: it does not finish,
         # nor fail, before the owner lets it go on.
-        await self._wait_unheld()
+        await self._unheld.wait()
         turn.result()
         return False
 
-    async def _wait_unheld(self) -> None:
-        """Wait until an owner's hold ends. The hold is the owner's time, not the
-        agent's: the agent deadline moves out by as long as it lasts."""
-        if self._unheld.is_set():
+    def _segment_agent_time(self) -> float:
+        """The agent time the running segment used so far: its time, less the time
+        an owner held it."""
+        if self._segment_start is None:
+            return 0.0
+        now = asyncio.get_running_loop().time()
+        held = self._held_time
+        if self._hold_started is not None:
+            held += now - max(self._hold_started, self._segment_start)
+        return max(0.0, now - self._segment_start - held)
+
+    def _begin_hold(self) -> None:
+        """Hold the rollout for its owner. The hold is the owner's time: the agent
+        deadline stops until `release`."""
+        if self._hold_started is not None:
             return
-        deadline = self._deadline
-        when = deadline.when() if deadline is not None else None
-        if deadline is not None and when is not None:
-            deadline.reschedule(None)
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        try:
-            await self._unheld.wait()
-        finally:
-            if deadline is not None and when is not None:
-                held = loop.time() - started
-                deadline.reschedule(when + held)
-                if self.deadline_at is not None:
-                    self.deadline_at += held
+        self._hold_started = asyncio.get_running_loop().time()
+        if self._segment_start is not None and self._deadline is not None:
+            when = self._deadline.when()
+            if when is not None:
+                self._hold_deadline = when
+                self._deadline.reschedule(None)
+
+    def _end_hold(self) -> None:
+        if self._hold_started is None:
+            return
+        held = asyncio.get_running_loop().time() - self._hold_started
+        self._hold_started = None
+        if self._segment_start is None:
+            return
+        self._held_time += held
+        if self._hold_deadline is not None and self._deadline is not None:
+            self._deadline.reschedule(self._hold_deadline + held)
+            if self.deadline_at is not None:
+                self.deadline_at += held
+        self._hold_deadline = None
 
     async def restore(self) -> bool:
         """Run the restored attempt's first segment: the box restored from the
@@ -1001,6 +1028,7 @@ class Rollout:
         self._held = hold or self._held
         if self._held:
             self._unheld.clear()
+            self._begin_hold()
         checkpoint = None
         try:
             checkpoint = await self._take_snapshot(pinned=True)
@@ -1052,6 +1080,7 @@ class Rollout:
         """Answer the box again after a `save(hold=True)`."""
         self._held = False
         self._unheld.set()
+        self._end_hold()
         if self._release_timer is not None:
             self._release_timer.cancel()
             self._release_timer = None
@@ -1118,11 +1147,7 @@ class Rollout:
                     )
                     return None
                 captured = time.time()
-                agent_time = self._agent_time_spent
-                if self._segment_start is not None:
-                    agent_time += (
-                        asyncio.get_running_loop().time() - self._segment_start
-                    )
+                agent_time = self._agent_time_spent + self._segment_agent_time()
                 # The box's connections to the server did not survive the stop: its
                 # relay opens new ones and repeats the requests that wait.
                 try:
