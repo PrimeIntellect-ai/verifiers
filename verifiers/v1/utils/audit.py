@@ -281,12 +281,14 @@ def redact(value):
             if end is None:
                 break
 
-    def group_values(raw: str, *, incomplete: bool = False) -> None:
-        # A shell or JavaScript object is not necessarily a Python literal.
-        # Gather the values of its inner fields independently of parsing the group.
+    def group_values(raw: str) -> None:
+        # For an unparsed object, only an explicitly sensitive inner field can
+        # establish an echo. The entire original value is still masked in source.
         for match in ASSIGNMENT.finditer(raw):
-            if match["value"] not in ("(", "[", "{") and (
-                not incomplete or sensitive(match["key"])
+            if sensitive(match["key"]) and match["value"] not in (
+                "(",
+                "[",
+                "{",
             ):
                 strings(assignment_value(match["value"]))
 
@@ -312,9 +314,7 @@ def redact(value):
             for match, end in assignments(item):
                 start = match.start("value")
                 if end is None:
-                    group_values(
-                        item[start : start + SOURCE_FILE_BYTES], incomplete=True
-                    )
+                    group_values(item[start : start + SOURCE_FILE_BYTES])
                     break
                 raw = item[start:end]
                 decoded = assignment_value(raw)
