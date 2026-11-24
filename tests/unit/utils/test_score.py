@@ -1,5 +1,7 @@
 """Scoring helpers: stdout comparison, pytest outcome parsing, and judge-choice parsing."""
 
+import pytest
+
 import verifiers.v1 as vf
 
 
@@ -27,15 +29,27 @@ def test_parse_pytest_outcomes_strips_xfail_xpass_reasons() -> None:
     }
 
 
-def test_parse_judge_choice_prefers_final_marker_then_boxed() -> None:
-    for final_choice in ("B", "**B**", "`B`"):
-        assert (
-            vf.parse_judge_choice(
-                f"Draft: \\boxed{{A}}\nFinal Judgment: {final_choice}",
-                choices=("A", "B"),
-            )
-            == "B"
+@pytest.mark.parametrize(
+    "final_choice",
+    ("B", "**B**", "`B`", "__B__", "*B*", "_B_", "~~B~~", "** B **", "` B `"),
+)
+def test_parse_judge_choice_prefers_formatted_final_verdict(final_choice: str) -> None:
+    assert (
+        vf.parse_judge_choice(
+            f"Draft: \\boxed{{A}}\nFinal Judgment: {final_choice}",
+            choices=("A", "B"),
         )
+        == "B"
+    )
+
+
+def test_parse_judge_choice_prefers_final_marker_then_boxed() -> None:
+    assert (
+        vf.parse_judge_choice(
+            "Draft: \\boxed{A}\nFinal Judgment: **B__", choices=("A", "B")
+        )
+        == "A"
+    )
     assert (
         vf.parse_judge_choice(
             "Draft: \\boxed{A}\nFinal Judgment:\nReasoning mentions B",
