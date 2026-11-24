@@ -911,6 +911,8 @@ class Rollout:
         if self._session.aborted is not None:
             if not turn.cancelled():
                 turn.exception()  # the abort decides the outcome, whatever the turn did
+            # An aborted rollout ends too: not before the owner lets it go on.
+            await self._unheld.wait()
             return True
         if not turn.cancelled():
             turn.exception()  # retrieved now, raised after the release

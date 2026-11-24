@@ -309,6 +309,8 @@ class IdempotentRequest:
     binding: tuple[str, bytes]
     response: "ReplayResponse | None" = None
     completed_at: float | None = None
+    """When the reply was ready, then when it last went out to the box: the
+    checkpoint's replay window and the cache's lifetime count from it."""
     sent: bool = False
     """Whether the reply went out to the box. One that waits (`RolloutSession.hold`)
     is on the trace and not yet in the box."""

@@ -926,6 +926,7 @@ class InterceptionServer(Interception):
             idempotent.completed_at = now
             await session.flowing.wait()
             idempotent.sent = True
+            idempotent.completed_at = time.monotonic()
             return _replay_response(idempotent.response)
 
         try:
@@ -943,6 +944,8 @@ class InterceptionServer(Interception):
             else:
                 model_request = dialect.parse_request(body)
         except ValueError as error:
+            # Like a reply, an error must not reach a box a snapshot is stopping.
+            await session.flowing.wait()
             return _error_response(dialect, str(error), status=400)
         if session.released:
             return _error_response(dialect, "rollout concluded", status=409)
@@ -965,6 +968,7 @@ class InterceptionServer(Interception):
                 return _error_response(dialect, "upstream attempt failed", status=503)
             await session.flowing.wait()
             idempotent.sent = True
+            idempotent.completed_at = time.monotonic()
             return _replay_response(response)
 
         if idempotent.inflight is not None:
@@ -1020,6 +1024,9 @@ class InterceptionServer(Interception):
         except BaseException:
             raise
         if stopped is not None:
+            # After any snapshot under way: it records the trace from before the stop,
+            # and the box it stops has not seen the stop either.
+            await session.flowing.wait()
             stop_name, stop_info = stopped
             turn = graph.prepare_turn(
                 session.trace, model_request.messages, model_request.tools, dialect.name
@@ -1040,6 +1047,7 @@ class InterceptionServer(Interception):
                 session.trace, model_request.messages, model_request.tools, dialect.name
             )
         except ValueError as error:
+            await session.flowing.wait()
             return _error_response(dialect, str(error), status=400)
         except RolloutError as error:
             return self._fail(session, dialect, error)
@@ -1207,6 +1215,9 @@ class InterceptionServer(Interception):
             # the turn's reply or an error.
             await session.flowing.wait()
             idempotent.sent = True
+            # The checkpoint's replay window counts from the send: a hold can keep a
+            # finished reply back for minutes.
+            idempotent.completed_at = time.monotonic()
             return reply
 
         if streaming:

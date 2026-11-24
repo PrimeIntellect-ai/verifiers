@@ -1135,6 +1135,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.is_completed = False
         self.ok = False
         self.stop_condition = None
+        self.stop_info = {}
         self.is_timeout = False
         return dropped
 
