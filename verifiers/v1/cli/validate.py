@@ -30,9 +30,8 @@ from verifiers.v1.cli.resume import distribute
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.grading import (
-    bind_scoring_env,
     grade_task,
-    scoring_network,
+    score_shared,
     verifier_runtime,
 )
 from verifiers.v1.runtimes import make_backend
@@ -283,13 +282,9 @@ async def _score_untouched(
         await grade_task(grader, trace, grading_config, timeouts, policy, deployment)
     else:
         async with asyncio.timeout(task.data.timeout.scoring):
-            runtime = bind_scoring_env(runtime, policy)
-            await invoke(grader.stage_verifier, {"trace": trace, "runtime": runtime})
-            if policy.network is not None:
-                await runtime.set_network(
-                    scoring_network(config.runtime, policy.network)
-                )
-            await grader.score(trace, runtime, deployment)
+            await score_shared(
+                grader, trace, runtime, config.runtime, policy, deployment
+            )
     if not trace.rewards:
         return None
     return trace.reward < SOLVED

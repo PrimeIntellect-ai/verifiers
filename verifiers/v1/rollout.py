@@ -25,9 +25,8 @@ from verifiers.v1.errors import (
     boundary,
 )
 from verifiers.v1.grading import (
-    bind_scoring_env,
     grade_task,
-    scoring_network,
+    score_shared,
     scoring_transaction,
     verifier_runtime,
 )
@@ -1609,6 +1608,7 @@ class Rollout:
                                     self.deployment,
                                     on_score=self._on_score,
                                     scoring_elapsed=scoring_elapsed,
+                                    interception=self._interception,
                                 )
                             except TimeoutError:
                                 self.timeout("scoring")
@@ -1624,30 +1624,23 @@ class Rollout:
                                 if self._on_score is not None
                                 else contextlib.nullcontext()
                             ):
-                                scoring_runtime = runtime
-                                if not self._scoring_task.scoring_deferred:
-                                    scoring_runtime = bind_scoring_env(
-                                        runtime, self._scoring_policy
+                                if self._scoring_task.scoring_deferred:
+                                    await self._scoring_task.score(
+                                        trace, runtime, self.deployment
                                     )
-                                    await invoke(
-                                        self._scoring_task.stage_verifier,
-                                        {
-                                            "trace": trace,
-                                            "runtime": scoring_runtime,
-                                        },
+                                    if self._on_score is not None:
+                                        await self._on_score(trace, runtime)
+                                else:
+                                    await score_shared(
+                                        self._scoring_task,
+                                        trace,
+                                        runtime,
+                                        self.trace.agent.config.runtime,
+                                        self._scoring_policy,
+                                        self.deployment,
+                                        interception=self._interception,
+                                        on_score=self._on_score,
                                     )
-                                    if self._scoring_policy.network is not None:
-                                        await scoring_runtime.set_network(
-                                            scoring_network(
-                                                self.trace.agent.config.runtime,
-                                                self._scoring_policy.network,
-                                            )
-                                        )
-                                await self._scoring_task.score(
-                                    trace, scoring_runtime, self.deployment
-                                )
-                                if self._on_score is not None:
-                                    await self._on_score(trace, scoring_runtime)
                 except TimeoutError:
                     self.timeout("scoring")
                     if self._on_score is not None:

@@ -413,6 +413,12 @@ class RolloutSession:
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
     their parse, which the next request's equal prefix reuses instead of parsing again."""
+    judge_only: bool = False
+    """Serve packaged grader calls without touching the solver graph, limits, or state."""
+    network_policy_source: Callable[[], NetworkPolicyConfig] | None = field(
+        default=None, repr=False
+    )
+    """Optional live network policy reader (e.g. when a task lifts egress mid-scoring)."""
     flowing: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     """Cleared while a memory snapshot of the box is taken (`hold`): nothing the box
     asked for is answered or written until it is set again, so the box the snapshot
