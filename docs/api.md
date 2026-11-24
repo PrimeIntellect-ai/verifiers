@@ -323,7 +323,7 @@ Import the namespace as `import verifiers.v1 as vf`.
 
 | Name | Description |
 | --- | --- |
-| `BashHarness`, `BashHarnessConfig`, `BrowserUseHarness`, `BrowserUseHarnessConfig`, `ClaudeCodeHarness`, `ClaudeCodeHarnessConfig`, `CodexHarness`, `CodexHarnessConfig`, `DeepSeekHarness`, `DeepSeekHarnessConfig`, `HermesAgentHarness`, `HermesAgentHarnessConfig`, `KimiCodeHarness`, `KimiCodeHarnessConfig`, `MiniSWEAgentHarness`, `MiniSWEAgentHarnessConfig`, `NullHarness`, `NullHarnessConfig`, `OpenClawHarness`, `OpenClawHarnessConfig`, `OpenCodeHarness`, `OpenCodeHarnessConfig`, `PiHarness`, `PiHarnessConfig`, `PrimeAgentHarness`, `PrimeAgentHarnessConfig`, `RLMHarness`, `RLMHarnessConfig`, `StirrupHarness`, `StirrupHarnessConfig`, `Terminus2Harness`, `Terminus2HarnessConfig` | Every built-in harness and its config, from the packages below. |
+| `BashHarness`, `BashHarnessConfig`, `BrowserUseHarness`, `BrowserUseHarnessConfig`, `ClaudeCodeHarness`, `ClaudeCodeHarnessConfig`, `CodexHarness`, `CodexHarnessConfig`, `DeepSeekHarness`, `DeepSeekHarnessConfig`, `HermesAgentHarness`, `HermesAgentHarnessConfig`, `KimiCodeHarness`, `KimiCodeHarnessConfig`, `MiniSWEAgentHarness`, `MiniSWEAgentHarnessConfig`, `NullHarness`, `NullHarnessConfig`, `OpenClawHarness`, `OpenClawHarnessConfig`, `OpenCodeHarness`, `OpenCodeHarnessConfig`, `PiHarness`, `PiHarnessConfig`, `PrimeAgentHarness`, `PrimeAgentHarnessConfig`, `RLMHarness`, `RLMHarnessConfig`, `StirrupHarness`, `StirrupHarnessConfig` | Every built-in harness and its config, from the packages below. |
 
 Each built-in harness is a package that `--harness.id` names. The package exports the harness class and its config class.
 
@@ -419,12 +419,6 @@ Each built-in harness is a package that `--harness.id` names. The package export
 | Name | Description |
 | --- | --- |
 | `StirrupHarness`, `StirrupHarnessConfig` | The Stirrup agent over ACP. |
-
-## `verifiers.v1.harnesses.terminus_2`
-
-| Name | Description |
-| --- | --- |
-| `Terminus2Harness`, `Terminus2HarnessConfig` | The Terminus 2 agent. |
 
 ## `verifiers.v1.tasksets`
 

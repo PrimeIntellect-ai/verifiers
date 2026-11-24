@@ -54,6 +54,7 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
     ) -> JudgeResponse[float]:
         """Call the decision model and return the normalized score."""
         request = {
+            **self.config.sampling.model_dump(exclude_none=True),
             "model": self.config.model,
             "state": fields,
             "questions": {

@@ -67,7 +67,7 @@ def tool_runtime(request) -> dict:
 # Built-in harnesses are bundled in the `harnesses` package; the agent CLIs (`rlm` /
 # `kimi-code` / `openclaw` / `codex` / `claude-code` / `hermes-agent`) install their
 # dependencies at rollout.
-# `compact` (an example harness) and `terminus-2` (drives the host tmux) are outside the grid.
+# `compact` (an example harness) stays outside the grid.
 @pytest.fixture
 def harness(request) -> HarnessConfig:
     config = {"id": request.param} if isinstance(request.param, str) else request.param
