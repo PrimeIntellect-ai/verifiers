@@ -36,7 +36,7 @@ from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
-from verifiers.v1.trace import Checkpoint, InterceptRecord, Trace
+from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -243,11 +243,6 @@ class RolloutSession:
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
     their parse, which the next request's equal prefix reuses instead of parsing again."""
-    checkpointer: Callable[[], Awaitable[Checkpoint | None]] | None = None
-    """Snapshots the rollout's box as a turn goes upstream, alongside the model call;
-    the reply waits for the capture (`Rollout` sets it when the rollout takes
-    snapshots). Returns the checkpoint it took, if any."""
-
     flowing: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     """Cleared while a memory snapshot of the box is taken (`hold`): nothing the box
     asked for is answered or written until it is set again, so the box the snapshot

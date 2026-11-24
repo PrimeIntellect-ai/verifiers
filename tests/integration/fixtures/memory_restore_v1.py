@@ -15,6 +15,7 @@ model. One failed call is not enough: the snapshot resets the box's connections,
 relay asks again, and a call that then succeeds would let the harness continue.
 """
 
+import asyncio
 import uuid
 
 import verifiers.v1 as vf
@@ -50,8 +51,13 @@ class MemoryRestoreTask(vf.Task[vf.TaskData, vf.State, MemoryRestoreTaskConfig])
         )
 
     @vf.intercept
-    def fail_once(self, response: vf.Response, trace: vf.Trace) -> None:
+    async def fail_once(self, response: vf.Response, trace: vf.Trace) -> None:
         if trace.attempt == 1 and trace.num_turns + 1 >= self.config.fail_turn:
+            # Give the independent timer time to capture this live harness. Poll the
+            # trace, so a fast model and a slow snapshot cannot race fault injection.
+            async with asyncio.timeout(180):
+                while not any(c.time.end for c in trace.checkpoints):
+                    await asyncio.sleep(0.2)
             # A 4xx: harness SDKs end the turn at once instead of retrying it until the
             # rollout's deadline.
             raise vf.ProviderError("injected mid-rollout failure", status_code=400)

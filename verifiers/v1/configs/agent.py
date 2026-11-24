@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import (
     BaseModel,
     Field,
+    PositiveFloat,
     PositiveInt,
     SerializationInfo,
     SerializeAsAny,
@@ -44,7 +45,7 @@ class RolloutCheckpointConfig(BaseConfig):
     another process continues the rollout from there instead of starting over. The
     restored box continues the harness program itself and asks again for the model
     call that was open. By default a rollout takes a snapshot only when its owner
-    saves it (`save_all`); `interval` adds snapshots the rollout takes by itself. A
+    saves it (`save_all`); `interval_minutes` adds snapshots the rollout takes by itself. A
     snapshot stops the box for a few seconds and resets its open connections to the
     outside. It needs a runtime that takes memory snapshots
     (`SUPPORTS_MEMORY_SNAPSHOTS`), a harness that runs detached from the host
@@ -52,10 +53,9 @@ class RolloutCheckpointConfig(BaseConfig):
     of its own. Elsewhere a retry starts over. Every snapshot is deleted once the run
     is final."""
 
-    interval: PositiveInt | None = None
-    """Snapshot at every n-th model turn (the n-th, the 2n-th, ...), for failures
-    that leave no box to snapshot (the box died, the harness program crashed): a retry
-    then loses fewer than n turns instead of starting over. None takes none."""
+    interval_minutes: PositiveFloat | None = Field(default=None, allow_inf_nan=False)
+    """Minutes between memory snapshots during execution. A held owner save can
+    adopt a rollout snapshot younger than this interval."""
     keep: Literal["last"] | PositiveInt = "last"
     """Snapshots kept while the rollout runs: the newest (`"last"`), or every k-th plus
     the newest (`k`; 1 keeps every one). A failed restore falls back to an older kept

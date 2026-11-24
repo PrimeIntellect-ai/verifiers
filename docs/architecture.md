@@ -25,7 +25,7 @@ Routing traffic through the interception server enables several things beyond fo
 - Applying sampling parameters in harnesses that don't expose those settings directly
 - Running the task's [stop and interception hooks](tasksets.md#stops-and-interception) to inspect or rewrite tool responses and server-side web search results (for example, to block reward hacks)
 
-### Relay
+## Relay
 
 A Prime tunnel can drop for a while (its client reconnects) or for good (the tunnel service drops its registration). A harness in a remote box therefore reaches the interception server through a relay in its own box, at `127.0.0.1`, not at the tunnel URL:
 

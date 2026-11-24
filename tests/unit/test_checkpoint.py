@@ -126,7 +126,7 @@ def test_agent_time_splits_off_the_checkpoint_hold():
     trace.calls.append(ModelCall(time=TimeSpan(start=105.0, end=110.0)))
     trace.checkpoints += [
         Checkpoint(id="old", snapshot=vf.Snapshot(id="old"), captured=90.0, held=3.0),
-        Checkpoint(id="new", snapshot=vf.Snapshot(id="new"), captured=106.0, held=1.5),
+        Checkpoint(id="new", snapshot=vf.Snapshot(id="new"), captured=107.0, held=1.5),
     ]
     trace.split_agent_time()
     assert trace.timing.agent.checkpoint.duration == 1.5
@@ -208,7 +208,7 @@ def make_rollout(
     )
     run._relay = FakeRelay()  # type: ignore[assignment]
     run._secret = "box-secret"
-    run._checkpointing = RolloutCheckpointConfig(interval=interval, keep=keep)
+    run._checkpointing = RolloutCheckpointConfig(interval_minutes=interval, keep=keep)
     run._durable = {}
     run._captures = set()
     run._closed = False
@@ -220,7 +220,9 @@ def make_rollout(
     run._release_timer = None
     run._unheld = asyncio.Event()
     run._unheld.set()
-    run._captured_turn = 0
+    run._last_capture = -float("inf")
+    run._snapshot_request = asyncio.Lock()
+    run._snapshot_timer = None
     run._agent_time_spent = 0.0
     run._segment_start = None
     run._deadline = None
@@ -235,23 +237,21 @@ def make_rollout(
     return run, backend, session
 
 
-async def test_checkpoint_interval_skips_turns():
-    run, backend, _ = make_rollout(interval=2)
-    assert await run._checkpoint() is not None  # turn 2: the 2nd
-    run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
-    run.trace.nodes.append(
-        MessageNode(parent=2, message=AssistantMessage(content="ok"), sampled=True)
-    )
-    assert await run._checkpoint() is None  # turn 3
-    assert backend.taken == 1
-
-
-async def test_the_restored_turn_is_not_snapshotted_again():
-    run, backend, _ = make_rollout(interval=2)
-    run.restored_turns = run.trace.num_turns
-    run._captured_turn = run.restored_turns + 1
-    assert await run._checkpoint() is None
-    assert backend.taken == 0
+async def test_timer_captures_without_a_model_call_and_owner_reuses_it():
+    run, backend, session = make_rollout()
+    backend.durable.set()
+    run._segment_start = asyncio.get_running_loop().time()
+    run._schedule_snapshot()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    await run._settle_checkpoints(wait=True)
+    run._snapshot_timer.cancel()
+    before = run._last_capture
+    saved = await run.save(hold=True)
+    assert saved is not None and restore_entry(saved)["id"] == "ck1"
+    assert backend.taken == 1 and run._last_capture == before
+    assert not session.flowing.is_set()
+    run.release()
+    assert session.flowing.is_set()
 
 
 async def test_checkpoint_becomes_durable_in_the_background():
@@ -365,7 +365,7 @@ async def test_a_call_asked_again_takes_no_second_snapshot():
 
 def test_checkpointing_is_on_by_default():
     assert vf.AgentConfig().checkpoint == RolloutCheckpointConfig()
-    assert RolloutCheckpointConfig().interval is None
+    assert RolloutCheckpointConfig().interval_minutes is None
     assert gated("bash", vf.PrimeConfig())._checkpointing() is not None
 
 
@@ -529,6 +529,7 @@ async def test_a_release_does_not_answer_a_box_that_another_snapshot_stops():
     # A turn later the rollout takes a snapshot of its own, and the owner releases
     # while the box is stopped for it.
     run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
+    run._last_capture = -float("inf")
     backend.running.clear()
     backend.stopped.clear()
     capture = asyncio.create_task(run._checkpoint())
@@ -577,18 +578,13 @@ async def test_a_snapshot_waits_for_a_turn_that_is_committing():
     }
 
 
-async def test_snapshots_count_turns_from_the_newest_one():
+async def test_elapsed_interval_captures_again_on_the_same_node():
     run, backend, _ = make_rollout(interval=2)
-    assert await run._checkpoint() is not None  # turn 2
-    # Two conversations step the count from 2 to 4 before the next request.
-    for parent in (1, 2, 3, 4):
-        run.trace.nodes.append(
-            MessageNode(
-                parent=parent, message=AssistantMessage(content="ok"), sampled=True
-            )
-        )
-    assert run.trace.num_turns + 1 == 6
-    assert await run._checkpoint() is not None
+    first = await run._checkpoint()
+    assert first is not None
+    run._last_capture -= 121
+    second = await run._checkpoint()
+    assert second is not None and first.node == second.node
     assert backend.taken == 2
 
 
@@ -682,6 +678,7 @@ async def test_an_owners_snapshot_outlives_the_rollout():
     (pinned,) = run.trace.checkpoints
     # A newer snapshot of the run's own, a turn later, does not prune the owner's.
     run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
+    run._last_capture = -float("inf")
     newest = await run._checkpoint()
     await run._settle_checkpoints(wait=True)
     assert backend.deleted == []

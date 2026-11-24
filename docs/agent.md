@@ -91,7 +91,7 @@ skip_on_timeout = true
 
 Rollout checkpointing is on by default: a rollout can be snapshotted, and a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over.
 
-By default a rollout takes a snapshot only when its owner saves it (`save_all`, below). `interval` adds snapshots that the rollout takes by itself, at every n-th model turn. This covers failures that leave no box to snapshot: the box died, or the harness program crashed.
+By default a rollout takes a snapshot only when its owner saves it (`save_all`, below). `interval_minutes` schedules periodic snapshots during harness execution, including long stretches without model calls. This covers failures that leave no box to snapshot: the box died, or the harness program crashed.
 
 Without a snapshot, a retry starts over.
 
@@ -108,8 +108,8 @@ A retry also starts over when a restore fails before the restored attempt's firs
 
 ```toml
 [env.agent.checkpoint]
-# interval = 10    # snapshot at the 10th, 20th, ... model turn (off by default)
+# interval_minutes = 10    # capture every ten minutes during execution
 keep = "last"  # snapshots kept while the rollout runs: "last", or every k-th plus the newest
 ```
 
-An owner that outlives its process, such as a training run that stops and resumes, saves its running rollouts instead of waiting for a failure. `verifiers.v1.restore.save_all()` takes a memory snapshot of every running rollout of the process now and returns the trace of each as plain data the owner stores. The trace holds everything a restore needs, on the entry of its checkpoint. A later process continues a rollout from its saved trace with `RunSlot(task, id=..., restore=trace)` (or `Agent.run(task, restore=trace)`): same trace, a new box, and the harness program still running. The owner holds these snapshots; it deletes them with `PrimeBackend.discard` once nothing will restore them. A saved trace continues one rollout: an episode with more than one agent run cannot continue from the trace of one of them, and starts over.
+An owner that outlives its process, such as a training run that stops and resumes, saves its running rollouts instead of waiting for a failure. `verifiers.v1.restore.save_all()` takes a memory snapshot of every running rollout of the process now and returns the trace of each as plain data the owner stores. The trace holds everything a restore needs, on the entry of its checkpoint. A later process continues a rollout from its saved trace with `RunSlot(task, id=..., restore=trace)` (or `Agent.run(task, restore=trace)`): same trace, a new box, and the harness program still running. With `hold=True`, a save can take ownership of a recent periodic snapshot within the configured interval. A resume then repeats work since that capture. Each snapshot transfers to one owner. Fresh captures reset the periodic timer. The owner holds these snapshots; it deletes them with `PrimeBackend.discard` once nothing will restore them. A saved trace continues one rollout: an episode with more than one agent run cannot continue from the trace of one of them, and starts over.

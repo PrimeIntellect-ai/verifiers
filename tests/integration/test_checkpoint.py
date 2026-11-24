@@ -198,20 +198,16 @@ async def saved_rollout(config, ctx, ready=lambda trace: trace.num_turns >= 1):
 
 @pytest.mark.parametrize("harness,harness_runtime", grid(needs=NEEDS), indirect=True)
 async def test_retry_restores_checkpoint(run, taken, harness, harness_runtime):
-    """The box is snapshotted at every model turn, and the retry restores the snapshot
-    of the turn whose call failed. A harness with a shell fails at its second turn, so
-    the restored box holds the first turn's command and its harness goes on to the
-    second; a harness without one has a single turn, which fails. The calls that fail
-    again at that turn take no further snapshot."""
+    """A timed capture lets a failed harness resume in its original process."""
     shell = harness_class(harness.id).EXECUTES_CODE
     fail_turn = 2 if shell else 1
     trace = await restored_trace(
-        run, harness, harness_runtime, fail_turn=fail_turn, interval=1
+        run, harness, harness_runtime, fail_turn=fail_turn, interval_minutes=0.25
     )
     if shell:
         assert trace.num_turns >= 2
         assert trace.metrics["copied"] == 1.0
-    assert [c.id for c in trace.checkpoints if c.restored] == [taken[fail_turn - 1]]
+    assert trace.agent.runtime.checkpoint in taken
     await assert_no_leaks(taken)
 
 

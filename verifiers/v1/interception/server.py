@@ -1069,15 +1069,6 @@ class InterceptionServer(Interception):
             node: int | None = None
             error: Exception | None = None
             started = time.time()
-            # The box is idle while the harness awaits this turn, so a snapshot captured
-            # before the reply returns matches the prompt exactly (tool results in, this
-            # reply not yet). It runs alongside the model call; the reply waits for it.
-            capture = (
-                asyncio.create_task(session.checkpointer())
-                if session.checkpointer is not None
-                else None
-            )
-
             try:
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
@@ -1175,42 +1166,24 @@ class InterceptionServer(Interception):
                     error = e
                     raise
             finally:
-                try:
-                    if capture is not None:
-                        held = time.monotonic()
-                        try:
-                            # Shielded: a cancelled exchange leaves the snapshot to
-                            # finish in the background, where the rollout awaits it.
-                            checkpoint = await asyncio.shield(capture)
-                        # A lost snapshot never fails the turn.
-                        except Exception:
-                            logger.warning(
-                                "checkpoint failed: id=%s",
-                                session.trace.id,
-                                exc_info=True,
-                            )
-                        else:
-                            if checkpoint is not None:
-                                checkpoint.held = time.monotonic() - held
-                finally:
-                    if node is None:
-                        turn.abandon()
-                    # The turn's one per-exchange record: settings, timing, outcome,
-                    # and the error that ended it (if any).
-                    self.record_call(
-                        session,
-                        dialect,
-                        body,
-                        started,
-                        node=node,
-                        finish_reason=call_response.finish_reason
-                        if call_response
-                        else None,
-                        usage=call_response.usage if call_response else None,
-                        error=error,
-                        policy_paths=policy_paths,
-                        acp=acp,
-                    )
+                if node is None:
+                    turn.abandon()
+                # The turn's one per-exchange record: settings, timing, outcome,
+                # and the error that ended it (if any).
+                self.record_call(
+                    session,
+                    dialect,
+                    body,
+                    started,
+                    node=node,
+                    finish_reason=call_response.finish_reason
+                    if call_response
+                    else None,
+                    usage=call_response.usage if call_response else None,
+                    error=error,
+                    policy_paths=policy_paths,
+                    acp=acp,
+                )
             assert served is not None
             return served
 

@@ -920,6 +920,9 @@ class Agent:
                         for c in trace.checkpoints
                         if not c.pinned
                     )
+                    for c in trace.checkpoints:
+                        if c.pinned:
+                            snapshots.pop(c.id, None)
                     deleted.update(run.deleted_snapshots)
                     if target is not None and (
                         any(error.stage == "setup" for error in trace.errors[seen:])

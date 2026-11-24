@@ -210,8 +210,9 @@ class Rollout:
         self.rewound_snapshots: list[Snapshot] = []
         """The snapshots of the checkpoints the restored trace dropped (taken after the
         one restored)."""
-        self._captured_turn = 0
-        """The model turn the rollout took its newest interval snapshot at."""
+        self._last_capture = 0.0
+        self._snapshot_request = asyncio.Lock()
+        self._snapshot_timer: asyncio.TimerHandle | None = None
         if restore is not None:
             self.trace, self._restore = restore
             self.trace.attempt = attempt
@@ -224,7 +225,6 @@ class Rollout:
                 )
             self.rewound_snapshots = self.trace.rewind(self._restore)
             self.restored_turns = self.trace.num_turns
-            self._captured_turn = self.restored_turns + 1
             self._restore.restored = True
         else:
             self.trace = Trace(
@@ -524,12 +524,6 @@ class Rollout:
                     raise SandboxError(
                         "the rollout cannot continue from its memory snapshot"
                     )
-                if (
-                    self._checkpointing is not None
-                    and self._borrowed_runtime is None
-                    and self._memory
-                ):
-                    self._session.checkpointer = self._checkpoint
                 logger.debug(
                     "Set up %s harness in %s",
                     self.harness.config.name,
@@ -815,6 +809,13 @@ class Rollout:
         trace.root_reply = None
         loop = asyncio.get_running_loop()
         segment_start = self._segment_start = loop.time()
+        if (
+            self._memory
+            and self._checkpointing
+            and self._checkpointing.interval_minutes
+        ):
+            self._last_capture = self._last_capture or segment_start
+            self._schedule_snapshot()
         self.deadline_at = (
             None
             if self._agent_time_remaining is None
@@ -871,6 +872,9 @@ class Rollout:
             self._session.on_turn_input = None
             if trace.num_turns == turns_before:
                 trace.root_reply = root_reply_before
+            if self._snapshot_timer is not None:
+                self._snapshot_timer.cancel()
+                self._snapshot_timer = None
             spent = self._segment_agent_time()
             self._segment_start = None
             self._deadline = self._hold_deadline = None
@@ -971,31 +975,74 @@ class Rollout:
         assert self._restore is not None and self._restore.session is not None
         return self._restore.session["live"][key]
 
-    async def _checkpoint(self) -> Checkpoint | None:
-        if self._closed:
-            # Settling may have drained `_captures` already: a snapshot taken now
-            # would start its upload after the box is gone.
-            return None
-        task = asyncio.current_task()
-        if task is not None:
-            self._captures.add(task)
-        try:
-            return await self._capture()
-        finally:
-            self._captures.discard(task)
+    def _schedule_snapshot(self) -> None:
+        assert self._checkpointing and self._checkpointing.interval_minutes
+        loop = asyncio.get_running_loop()
+        self._snapshot_timer = loop.call_at(
+            self._last_capture + self._checkpointing.interval_minutes * 60,
+            self._start_periodic_snapshot,
+        )
 
-    async def _capture(self) -> Checkpoint | None:
-        assert self._checkpointing is not None
-        interval = self._checkpointing.interval
-        turn_number = self.trace.num_turns + 1
-        # Counted from the newest snapshot, not as a multiple: conversations that run
-        # side by side can step the turn count past one.
-        if interval is None or turn_number - self._captured_turn < interval:
-            return None
-        checkpoint = await self._take_snapshot(once_per_node=True)
-        if checkpoint is not None:
-            self._captured_turn = turn_number
-        return checkpoint
+    def _start_periodic_snapshot(self) -> None:
+        self._snapshot_timer = None
+        task = asyncio.create_task(self._periodic_snapshot())
+        self._captures.add(task)
+        task.add_done_callback(self._captures.discard)
+
+    async def _periodic_snapshot(self) -> None:
+        try:
+            await self._checkpoint()
+        except Exception:
+            logger.warning("Failed to take periodic snapshot", exc_info=True)
+        finally:
+            if (
+                self._segment_start is not None
+                and not self._closed
+                and self._snapshot_timer is None
+            ):
+                self._schedule_snapshot()
+
+    async def _checkpoint(self) -> Checkpoint | None:
+        async with self._snapshot_request:
+            if (
+                self._closed
+                or not self._checkpointing
+                or not self._checkpointing.interval_minutes
+            ):
+                return None
+            now = asyncio.get_running_loop().time()
+            if now - self._last_capture < self._checkpointing.interval_minutes * 60:
+                return None
+            # Pace failed attempts too, including a program that exited before capture.
+            self._last_capture = now
+            return await self._take_snapshot()
+
+    async def _owner_checkpoint(self, reuse: bool) -> Checkpoint | None:
+        async with self._snapshot_request:
+            if reuse and self._checkpointing and self._checkpointing.interval_minutes:
+                cutoff = time.time() - self._checkpointing.interval_minutes * 60
+                point = next(
+                    (
+                        c
+                        for c in reversed(self.trace.checkpoints)
+                        if c.captured >= cutoff
+                        and c.session is not None
+                        and not c.deleted
+                        and not c.pinned
+                    ),
+                    None,
+                )
+                if point is not None:
+                    # A timer may just have finished capturing and started its upload.
+                    upload = self._durable.get(point.id)
+                    if upload is not None:
+                        await asyncio.shield(upload)
+                    async with self._pruning:
+                        if point.time.end and not point.deleted:
+                            point.pinned = True
+                            self._session.hold()
+                            return point
+            return await self._take_snapshot(pinned=True)
 
     def _last_node(self) -> int | None:
         return len(self.trace.nodes) - 1 if self.trace.nodes else None
@@ -1031,7 +1078,7 @@ class Rollout:
             self._begin_hold()
         checkpoint = None
         try:
-            checkpoint = await self._take_snapshot(pinned=True)
+            checkpoint = await self._owner_checkpoint(reuse=hold)
             if checkpoint is None:
                 self.release()
                 self.save_skipped = "its memory snapshot failed"
@@ -1089,15 +1136,8 @@ class Rollout:
         if not self._capturing.locked():
             self._session.resume()
 
-    async def _take_snapshot(
-        self, *, pinned: bool = False, once_per_node: bool = False
-    ) -> Checkpoint | None:
-        """Snapshot the box with its memory. Nothing the box asked for is answered
-        while the snapshot is taken (`RolloutSession.hold`), so the box it stops has
-        seen no more than the trace as recorded here. A reply that is on the trace
-        and not yet in the box is recorded for replay; a box restored from the
-        snapshot asks again for what was still open. With `once_per_node`, not when
-        the rollout's newest own snapshot is of this same node."""
+    async def _take_snapshot(self, *, pinned: bool = False) -> Checkpoint | None:
+        """Hold replies and snapshot the box at a replayable trace boundary."""
         assert self.runtime is not None and self._relay is not None
         session = self._session
         if self._harness_session is None:
@@ -1106,22 +1146,6 @@ class Rollout:
         async with self.runtime.backend.snapshot_pace(), self._capturing:
             if self._closed:
                 return None
-            if once_per_node:
-                newest = next(
-                    (
-                        c
-                        for c in reversed(self.trace.checkpoints)
-                        if not c.deleted and not c.pinned
-                    ),
-                    None,
-                )
-                if newest is not None and newest.node == self._last_node():
-                    # No turn since the newest snapshot, so it holds this same open
-                    # call. A snapshot resets the box's connections and its relay
-                    # asks again: a call that keeps failing would otherwise take a
-                    # snapshot per request. An owner's snapshot does not count: the
-                    # owner may have deleted it.
-                    return None
             session.hold()
             try:
                 # A turn that is committing gets to store its reply for replay first.
@@ -1147,6 +1171,7 @@ class Rollout:
                     )
                     return None
                 captured = time.time()
+                self._last_capture = asyncio.get_running_loop().time()
                 agent_time = self._agent_time_spent + self._segment_agent_time()
                 # The box's connections to the server did not survive the stop: its
                 # relay opens new ones and repeats the requests that wait.
@@ -1170,6 +1195,7 @@ class Rollout:
             time=TimeSpan(start=started),
             captured=captured,
             pinned=pinned,
+            held=captured - started,
         )
         self.trace.checkpoints.append(checkpoint)
         self._durable[checkpoint.id] = asyncio.create_task(

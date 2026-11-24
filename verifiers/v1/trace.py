@@ -251,7 +251,7 @@ class AgentSpan(TimeSpan):
     model: TimeSplit = Field(default_factory=TimeSplit)
     harness: TimeSplit = Field(default_factory=TimeSplit)
     checkpoint: TimeSplit = Field(default_factory=TimeSplit)
-    """Time the model replies waited for checkpoint captures (`Checkpoint.held`)."""
+    """Time the sandbox spent taking checkpoint captures (`Checkpoint.held`)."""
 
 
 class Timing(BaseModel):
@@ -427,8 +427,7 @@ class Checkpoint(BaseModel):
     captured: float = 0.0
     """When the request returned: the snapshot's content was fixed from then on."""
     held: float = 0.0
-    """Seconds the turn's reply waited for the capture; 0 when the model call took
-    longer, since the snapshot runs alongside it."""
+    """Wall time spent capturing the sandbox, excluding the background upload."""
     bytes: int | None = None
     """The snapshot's stored size, which the provider bills, once it is durable."""
     restored: bool = False
@@ -1048,10 +1047,22 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         calls = sum(
             call.time.duration for call in self.calls if call.time.start >= span.start
         )
-        # A call's span includes the time its reply waited for the capture.
         held = sum(c.held for c in self.checkpoints if c.captured >= span.start)
-        span.checkpoint.duration = min(held, calls, span.duration)
-        span.model.duration = min(calls, span.duration) - span.checkpoint.duration
+        overlap = sum(
+            max(
+                0.0,
+                min(call.time.end, c.captured)
+                - max(call.time.start, c.captured - c.held),
+            )
+            for c in self.checkpoints
+            if c.captured >= span.start and c.held
+            for call in self.calls
+            if call.time.start >= span.start
+        )
+        span.checkpoint.duration = min(held, span.duration)
+        span.model.duration = min(
+            max(0.0, calls - overlap), span.duration - span.checkpoint.duration
+        )
         span.harness.duration = (
             span.duration - span.model.duration - span.checkpoint.duration
         )

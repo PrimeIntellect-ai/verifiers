@@ -2,7 +2,7 @@
 
 A retry restores a checkpoint in the process that took it, from the live `Checkpoint`.
 An owner that outlives its process (a training run that stops and resumes) saves every
-running rollout instead (`save_all`): each one takes a memory checkpoint now and
+running rollout instead (`save_all`): each one supplies a memory checkpoint and
 returns its trace as plain data (`restorable`), which holds everything a restore
 needs. A later process hands that trace back (`RunSlot.restore`, `Agent.run(restore=)`),
 and the rollout continues in a new box from the checkpoint: its trace up to there, and
@@ -48,7 +48,10 @@ def restorable(trace: Trace, checkpoint: Checkpoint) -> dict[str, Any]:
     (`Checkpoint.session`). Every value survives a pickle or a msgpack round trip with
     raw bytes and numpy arrays."""
     data = trace.model_dump(context={"token_arrays": True})
+    # Only this snapshot is transferred. A fork must never retry from, or
+    # garbage-collect, another live rollout's private snapshots.
     entry = next(c for c in data["checkpoints"] if c["id"] == checkpoint.id)
+    data["checkpoints"] = [entry]
     entry["session"] = checkpoint.session
     return data
 
@@ -112,7 +115,7 @@ async def save_all(
     runs no harness segment right now, or whose snapshot fails has none: it starts
     over when its owner runs it again. `skipped` collects why, as a count per reason.
     The snapshots are pinned: the caller owns them. With `hold`, each saved rollout
-    waits at its checkpoint until `release_all`, so the caller can record which
+    waits for `release_all` and may export a recent periodic checkpoint, so the caller can record which
     rollouts are still running without one of them finishing meanwhile."""
 
     async def save(rollout: Rollout) -> dict[str, Any] | None:
