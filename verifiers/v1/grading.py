@@ -142,6 +142,9 @@ async def scoring_session(
         ),
         trace,
         network_policy=policy_network,
+        network_policy_source=lambda: (
+            getattr(runtime.backend, "active_network", None) or policy_network
+        ),
         judge_only=True,
     )
     async with serve_interception(interception, runtime, session, [], {}) as (

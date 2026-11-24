@@ -252,8 +252,6 @@ async def _score_untouched(
     policy = task.scoring
     isolated = policy.mode == "isolated"
     grader = task.grading_task(runtime, scoring=policy)
-    if policy.network is None and grader.scoring.network is not None:
-        policy = policy.model_copy(update={"network": grader.scoring.network})
     grading_config = (
         verifier_runtime(grader, runtime, config.runtime, policy) if isolated else None
     )

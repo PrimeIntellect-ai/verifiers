@@ -99,6 +99,7 @@ class Runtime:
         that started without a policy can only stay open."""
         if not network.network_restricted:
             await self.backend.prepare_execution(None)
+            self.backend.active_network = NetworkPolicyConfig()
             return
         config = self.backend.config
         if not self.backend.network_restricted or not isinstance(
@@ -112,6 +113,7 @@ class Runtime:
             {**config.model_dump(), "allow": network.allow, "block": network.block}
         )
         await self.backend.prepare_execution(list(routes), policy)
+        self.backend.active_network = network
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run `argv` to completion and collect its output."""

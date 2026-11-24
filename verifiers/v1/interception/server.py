@@ -633,11 +633,14 @@ class InterceptionServer(Interception):
     def mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
     ) -> tuple[dict, list[str]]:
-        if not session.network_policy.network_restricted:
-            return body, []
-        mediated, capabilities = dialect.mediate_external_capabilities(
-            body, session.network_policy
+        policy = (
+            session.network_policy_source()
+            if session.network_policy_source is not None
+            else session.network_policy
         )
+        if not policy.network_restricted:
+            return body, []
+        mediated, capabilities = dialect.mediate_external_capabilities(body, policy)
         capabilities = list(dict.fromkeys(capabilities))
         if capabilities:
             logger.warning(

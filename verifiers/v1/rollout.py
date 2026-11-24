@@ -326,13 +326,6 @@ class Rollout:
                     self._scoring_task = self.task.grading_task(
                         runtime, scoring=self._scoring_policy
                     )
-                    if (
-                        self._scoring_policy.network is None
-                        and self._scoring_task.scoring.network is not None
-                    ):
-                        self._scoring_policy = self._scoring_policy.model_copy(
-                            update={"network": self._scoring_task.scoring.network}
-                        )
                     if isolated:
                         self._grader = self._scoring_task
                         self._grading_config = verifier_runtime(
