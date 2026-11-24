@@ -36,7 +36,7 @@ ASSIGNMENT = re.compile(
     re.DOTALL,
 )
 F_STRING = re.compile(r"""(?i)(?:fr|rf|f)(?=["'])""")
-URL = re.compile(r"https?://[^\s<>\"']+")
+URL = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+")
 AUTHORIZATION = re.compile(r"\b(?:Bearer|Basic)\s+([^\s\"']+)", re.IGNORECASE)
 AUTH_HEADER = re.compile(
     r"(?P<prefix>\b(?:Proxy-)?Authorization[ \t]*:[ \t]*)(?P<value>[^\r\n]+)",
@@ -281,11 +281,13 @@ def redact(value):
             if end is None:
                 break
 
-    def group_values(raw: str) -> None:
+    def group_values(raw: str, *, incomplete: bool = False) -> None:
         # A shell or JavaScript object is not necessarily a Python literal.
         # Gather the values of its inner fields independently of parsing the group.
         for match in ASSIGNMENT.finditer(raw):
-            if match["value"] not in ("(", "[", "{"):
+            if match["value"] not in ("(", "[", "{") and (
+                not incomplete or sensitive(match["key"])
+            ):
                 strings(assignment_value(match["value"]))
 
     def discover(item):
@@ -310,7 +312,9 @@ def redact(value):
             for match, end in assignments(item):
                 start = match.start("value")
                 if end is None:
-                    group_values(item[start : start + SOURCE_FILE_BYTES])
+                    group_values(
+                        item[start : start + SOURCE_FILE_BYTES], incomplete=True
+                    )
                     break
                 raw = item[start:end]
                 decoded = assignment_value(raw)
@@ -333,6 +337,7 @@ def redact(value):
                 try:
                     parts = urlsplit(match[0])
                     if parts.password:
+                        strings(parts.password)
                         strings(unquote(parts.password))
                     for key, child in parse_qsl(parts.query, keep_blank_values=True):
                         if sensitive(key):
@@ -357,16 +362,19 @@ def redact(value):
     def url(match):
         try:
             parts = urlsplit(match[0])
+            original_query = parse_qsl(parts.query, keep_blank_values=True)
             query = [
                 (key, "[redacted]" if sensitive(key) else val)
-                for key, val in parse_qsl(parts.query, keep_blank_values=True)
+                for key, val in original_query
             ]
+            if "@" not in parts.netloc and query == original_query:
+                return match[0]
             return urlunsplit(
                 (
                     parts.scheme,
                     parts.netloc.rsplit("@", 1)[-1],
                     parts.path,
-                    urlencode(query),
+                    parts.query if query == original_query else urlencode(query),
                     parts.fragment,
                 )
             )

@@ -658,10 +658,19 @@ def _rebuild(archive: bytes, *, max_bytes: int | None = None) -> bytes:
     kept (tasks rely on ownership, e.g. git's safe.directory check); setuid,
     setgid and sticky bits are not.
     """
+    try:
+        return _write_canonical(archive, tarfile.PAX_FORMAT, max_bytes)
+    except _ArtifactSizeError:
+        # GNU tar can store non-ASCII paths without a PAX header per member.
+        # Retry with that encoding before declaring a bounded capture incomplete.
+        return _write_canonical(archive, tarfile.GNU_FORMAT, max_bytes)
+
+
+def _write_canonical(archive: bytes, format: int, max_bytes: int | None) -> bytes:
     out = io.BytesIO()
     with (
         tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source,
-        tarfile.open(fileobj=out, mode="w:", format=tarfile.PAX_FORMAT) as target,
+        tarfile.open(fileobj=out, mode="w:", format=format) as target,
     ):
         for member in source:
             info = tarfile.TarInfo(member.name)
@@ -669,6 +678,17 @@ def _rebuild(archive: bytes, *, max_bytes: int | None = None) -> bytes:
             info.uid, info.gid = member.uid, member.gid
             info.uname, info.gname = member.uname, member.gname
             info.mtime = member.mtime
+            if format == tarfile.GNU_FORMAT and (
+                (isinstance(info.mtime, float) and not info.mtime.is_integer())
+                or "\x00" in member.name
+                or "\x00" in member.linkname
+                or any(
+                    len(name.encode(tarfile.ENCODING, "surrogateescape")) > 32
+                    or "\x00" in name
+                    for name in (info.uname, info.gname)
+                )
+            ):
+                raise _ArtifactSizeError("canonical artifacts exceed the byte limit")
             content = None
             if member.isfile():
                 info.type = tarfile.REGTYPE

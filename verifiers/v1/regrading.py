@@ -89,7 +89,7 @@ def _validate_solver(saved: Trace, task: Task, policy: ScoringConfig) -> None:
 
 
 def _solver_runtime_config(
-    saved: Trace, base: RuntimeConfig, workdir: str
+    saved: Trace, base: RuntimeConfig, captured_workdir: str | None
 ) -> RuntimeConfig:
     """Reconstruct the workspace's image and cwd without starting its runtime."""
     original = saved.agent.runtime
@@ -113,6 +113,11 @@ def _solver_runtime_config(
     image = getattr(original, "image", None)
     if not image:
         raise RequiresRerun("Saved submission has no resolved workspace image")
+    workdir = captured_workdir or getattr(original, "workdir", None)
+    if workdir is None:
+        # Capture uses / for a runtime record without a working directory. When
+        # the whole record is missing, use the reconstructed runtime's default.
+        workdir = "/app" if saved.agent.runtime is None else "/"
     # Supply only the recorded workspace coordinates. The current verifier's
     # image, resources and network policy are resolved separately.
     return base.model_copy(update={"image": image, "workdir": workdir})
@@ -209,10 +214,11 @@ def prepare_replay(
     policy = scoring if scoring is not None else task.scoring
     _validate_solver(saved, task, policy)
     workdirs = saved.info.get("harbor_artifact_workdirs", {})
-    workdir = workdirs.get("main", getattr(saved.agent.runtime, "workdir", None) or "/")
-    solver = _solver_runtime_config(saved, runtime, workdir)
+    solver = _solver_runtime_config(saved, runtime, workdirs.get("main"))
+    workdir = getattr(solver, "workdir", None) or "/"
     try:
         captured_by = {ARTIFACTS_DIR: "main"}
+        exclusions: dict[str, set[str]] = {}
         declared = []
         for entry in saved.task.data.artifacts:
             root = artifact_source(entry, workdir, workdirs)
@@ -221,6 +227,7 @@ def prepare_replay(
                 raise ValueError(
                     f"Saved artifact {root!r} has ambiguous service provenance"
                 )
+            exclusions[root] = set(entry.exclude)
             declared.append((root, entry.required))
         grader_artifacts = []
         for entry in task.data.artifacts:
@@ -230,6 +237,8 @@ def prepare_replay(
                 raise ValueError(
                     f"Artifact {root!r} was not captured from service {service!r}"
                 )
+            if exclusions.get(root, set()) != set(entry.exclude):
+                raise ValueError(f"Artifact exclusions changed for {root!r}")
             declared.append((root, entry.required))
             grader_artifacts.append(
                 entry
