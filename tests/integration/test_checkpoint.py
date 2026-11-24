@@ -537,7 +537,11 @@ async def test_held_save_inside_rlm_cell(
                 assert entry["pinned"] and taken == [*before, entry["id"]]
                 assert entry["id"] != recent[-1].id
                 async with AsyncSandboxClient() as client:
-                    assert (await client.get_checkpoint(entry["id"])).state == "DURABLE"
+                    # A save returns before the upload; it becomes durable after.
+                    durable = await client.wait_for_checkpoint(
+                        entry["id"], timeout_seconds=600
+                    )
+                    assert durable.state == "DURABLE"
 
         second = load_environment(config.env)
         (task,) = list(second.taskset)
