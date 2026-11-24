@@ -236,6 +236,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig):
         # Custom Harbor verifiers may still pass verifier_env explicitly to run().
         # Give them the merged raw values, without resolving or mutating solver data.
+        if scoring.mode == "shared" and scoring.network is None:
+            # Shared Harbor verifiers grade online unless a scoring network is declared.
+            scoring = scoring.model_copy(update={"network": NetworkPolicyConfig()})
         task = self.with_data(verifier_env=dict(scoring.env or {}), scoring=scoring)
         if scoring.mode == "shared":
             return task.with_data(verifier=None, verifier_image=None)

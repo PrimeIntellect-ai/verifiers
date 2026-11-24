@@ -755,7 +755,9 @@ class InterceptionServer(Interception):
         model = ctx.model or body.get("model")
         if not isinstance(model, str) or not model:
             return _error_response(dialect, "model is required", status=400)
-        body = dialect.apply_overrides(body, model, ctx.sampling)
+        body = dialect.apply_overrides(
+            body, model, ctx.sampling, authoritative=not session.judge_only
+        )
         streaming = dialect.streaming(body)
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
@@ -1139,7 +1141,10 @@ class InterceptionServer(Interception):
                 body["model"] = ctx.model
             body = self.mediate_capabilities(session, dialect, body)[0]
             result = await self._client(ctx.client).relay_aux(
-                dialect, route, body, headers=request.headers
+                dialect,
+                route.removeprefix("/v1") if route.startswith("/v1/v1/") else route,
+                body,
+                headers=request.headers,
             )
         except RolloutError as e:
             # An aux call isn't a model turn, so don't clobber a pending turn error.
