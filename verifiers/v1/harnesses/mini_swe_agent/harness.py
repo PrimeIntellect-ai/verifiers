@@ -1,3 +1,4 @@
+from math import ceil
 from pathlib import Path
 from typing import Literal
 
@@ -59,9 +60,9 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "mini",
             "-c",
             "agent.cost_limit=0",
-            # Effectively unlimited; Verifiers owns the rollout timeout.
+            # mini-SWE-agent's timeout is in whole seconds.
             "-c",
-            "environment.timeout=86400",
+            f"environment.timeout={ceil(self.config.tool_timeout)}",
             "-c",
             "model.cost_tracking=ignore_errors",
             "-c",
