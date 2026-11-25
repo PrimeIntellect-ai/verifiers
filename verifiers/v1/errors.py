@@ -78,6 +78,11 @@ class TunnelError(InterceptionError):
     or was lost."""
 
 
+class RelayError(InterceptionError):
+    """The relay in the box between the harness and the host interception server failed:
+    it did not start, gave up on a request, or exited."""
+
+
 @contextlib.asynccontextmanager
 async def boundary(error_cls: type[RolloutError], what: str) -> AsyncIterator[None]:
     """Run a framework→code boundary, attributing any error escaping it to `error_cls`. An

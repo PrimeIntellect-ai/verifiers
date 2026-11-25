@@ -33,7 +33,7 @@ dependencies = [
     "math-verify>=0.8.0",
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.17",
-    "prime-sandboxes>=0.5.15",
+    "prime-sandboxes>=0.5.14",
     "pydantic>=2.12.3",
     "tenacity>=8.5.0",
     "orjson>=3.10.0",
@@ -110,6 +110,8 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
+# Unreleased wait_for_pause / wait_for_resume (PrimeIntellect-ai/prime#1233).
+prime-sandboxes = { git = "https://github.com/PrimeIntellect-ai/prime", rev = "ba36cfcc273b3608efd6aa702686e869132e2c75", subdirectory = "packages/prime-sandboxes" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }

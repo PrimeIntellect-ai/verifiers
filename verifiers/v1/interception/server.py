@@ -31,6 +31,7 @@ from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
+from typing import NoReturn
 
 import httpx
 from aiohttp import web
@@ -91,6 +92,10 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+SERVER_HEADER = "x-vf-interception"
+"""Marks every response as this server's own, so a box's relay can tell an answer of
+the server (a 404 for an unknown path) from the error page of a tunnel edge that could
+not reach it (`relay/server.py`)."""
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
@@ -133,6 +138,10 @@ async def _request_digest(raw: bytes) -> bytes:
     if len(raw) <= HASH_INLINE_MAX:
         return _body_digest(raw)
     return await asyncio.to_thread(_body_digest, raw)
+
+
+async def _mark_response(request: web.Request, response: web.StreamResponse) -> None:
+    response.headers[SERVER_HEADER] = "1"
 
 
 def _error_response(dialect: Dialect, message: str, *, status: int) -> web.Response:
@@ -179,7 +188,7 @@ def _replay_response(response: ReplayResponse) -> web.Response:
 @dataclass(frozen=True)
 class _IdempotentAttempt:
     session: RolloutSession
-    key: str
+    keys: tuple[str, ...]
     request: IdempotentRequest
     future: asyncio.Future[ReplayResponse | None]
 
@@ -196,11 +205,10 @@ def _finish_idempotent_attempt(
     record = attempt.request
     if record.inflight is attempt.future:
         record.inflight = None
-    if (
-        record.response is None
-        and attempt.session.idempotent_requests.get(attempt.key) is record
-    ):
-        attempt.session.idempotent_requests.pop(attempt.key)
+    if record.response is None:
+        for key in attempt.keys:
+            if attempt.session.idempotent_requests.get(key) is record:
+                attempt.session.idempotent_requests.pop(key)
     if not attempt.future.done():
         attempt.future.set_result(response)
     if record.response is not None:
@@ -369,6 +377,12 @@ class InterceptionServer(Interception):
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
         self.healthy = True
+        self._replacing: asyncio.Task | None = None
+        self._lost_again = False
+        """A tunnel was lost while a replacement was under way: replace it once more."""
+        self._tunnel_stack: contextlib.AsyncExitStack | None = None
+        """Holds the current tunnel open, apart from the server's stack so that a
+        replacement closes the tunnel it replaces."""
         if self.tunnel is not None:
             self.tunnel.on_gone = self._handle_tunnel_gone
         self.host = "127.0.0.1"
@@ -382,12 +396,80 @@ class InterceptionServer(Interception):
         return len(self.sessions)
 
     def _handle_tunnel_gone(self) -> None:
-        """Fail this server's rollouts and take no more: their URL will never work again."""
+        """Take no more rollouts: the URL will never work again. Rollouts that can move
+        (`RolloutSession.reroute`) follow this server to a new tunnel; the others fail."""
         self.healthy = False
         logger.error("Lost the interception tunnel url=%s", self.base_url)
+        movable = False
         for session in list(self.sessions.values()):
-            session.error = TunnelError("interception tunnel lost")
-            session.release()
+            if session.reroute is None:
+                session.error = TunnelError("interception tunnel lost")
+                session.release()
+            else:
+                movable = True
+        if not movable:
+            return
+        if self._replacing is None or self._replacing.done():
+            self._replacing = asyncio.create_task(self._replace_tunnels())
+        else:
+            self._lost_again = True
+
+    async def _replace_tunnels(self) -> None:
+        """Replace the tunnel until no loss arrived while a replacement was under way."""
+        while True:
+            self._lost_again = False
+            await self._replace_tunnel()
+            if not self._lost_again:
+                return
+
+    async def _replace_tunnel(self) -> None:
+        """Open a new tunnel to this server and reroute its movable rollouts to it. A
+        rollout that does not move fails as on a lost tunnel."""
+        assert self.tunnel is not None
+        try:
+            base_url = await self._expose()
+        except TunnelError as error:
+            logger.error("interception tunnel replacement failed: %s", error)
+            base_url = None
+        else:
+            logger.warning(
+                "interception tunnel replaced: url=%s -> %s", self.base_url, base_url
+            )
+            self.base_url = base_url
+
+        async def move(session: RolloutSession) -> None:
+            try:
+                if base_url is None:
+                    raise TunnelError("interception tunnel lost")
+                assert session.reroute is not None
+                await session.reroute(base_url)
+            except Exception as error:  # noqa: BLE001 - one rollout's failure is its own
+                logger.warning(
+                    "rollout %s did not move to the new tunnel: %s",
+                    session.trace.id,
+                    error,
+                )
+                session.error = (
+                    error
+                    if isinstance(error, RolloutError)
+                    else TunnelError(f"interception tunnel lost: {error}")
+                )
+                session.release()
+
+        await asyncio.gather(
+            *(
+                move(session)
+                for session in list(self.sessions.values())
+                if session.reroute is not None and not session.released
+            )
+        )
+
+    async def stop(self) -> None:
+        if self._replacing is not None:
+            self._replacing.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._replacing
+        await super().stop()
 
     def _client(self, config: BaseClientConfig) -> Client:
         """The server-owned client for `config` — one per distinct endpoint config, shared
@@ -575,6 +657,7 @@ class InterceptionServer(Interception):
         app = web.Application(
             client_max_size=MAX_REQUEST_BODY, middlewares=[_isolate_log_scope]
         )
+        app.on_response_prepare.append(_mark_response)
         app.router.add_get(HEALTH_PATH, self.handle_health)
         for dialect in DIALECTS:
             for route in dialect.routes:
@@ -615,20 +698,48 @@ class InterceptionServer(Interception):
         if self.tunnel is None:
             self.base_url = f"http://127.0.0.1:{self.port}"
         else:
-            self.base_url = await self.stack.enter_async_context(
-                self.tunnel.expose(self.port)
-            )
+            self.stack.push_async_callback(self._close_tunnel)
+            self.base_url = await self._expose()
+
+    async def _expose(self) -> str:
+        """Open a tunnel to this server. The tunnel it replaces is closed first: a lost
+        tunnel's frpc would otherwise run until the server stops."""
+        assert self.tunnel is not None
+        await self._close_tunnel()
+        stack = contextlib.AsyncExitStack()
+        url = await stack.enter_async_context(self.tunnel.expose(self.port))
+        self._tunnel_stack = stack
+        return url
+
+    async def _close_tunnel(self) -> None:
+        stack, self._tunnel_stack = self._tunnel_stack, None
+        if stack is not None:
+            await stack.aclose()
 
     def _fail(
-        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        error: RolloutError,
     ) -> web.Response:
-        """Stash a model-turn-adjacent failure (such as a hook raising) so the rollout
-        re-raises it as the real cause, and report it to the harness as an HTTP error."""
+        """Stash a model-turn-adjacent failure so the rollout re-raises it as the real
+        cause, and report it to the harness as an HTTP error."""
         session.error = error
         logger.warning("Failed turn - %s: %s", type(error).__name__, clip(str(error)))
         return _error_response(
             dialect, str(error), status=getattr(error, "status_code", 502)
         )
+
+    async def _abort(self, session: RolloutSession, error: RolloutError) -> NoReturn:
+        """End the rollout's segment with a request hook's failure. The harness gets no
+        reply: the rollout cancels its turn, and releasing the session cancels this
+        handler."""
+        logger.warning(
+            "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
+        )
+        session.abort(error)
+        await asyncio.get_running_loop().create_future()
+        raise AssertionError("unreachable")
 
     def mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
@@ -663,6 +774,7 @@ class InterceptionServer(Interception):
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
         body = from_json(await request.read())
+        await session.flowing.wait()
         try:
             return web.json_response(
                 await session.decide_tool(
@@ -784,15 +896,18 @@ class InterceptionServer(Interception):
             request.headers.get(RETRY_COUNT_HEADER, "0"),
         )
         # Graph atomicity under retries: one logical buffered call must commit at most
-        # one turn. An explicit key identifies that call directly; otherwise only the SDK's
-        # retry marker activates body-digest replay, since an unmarked repeated body can be a
-        # legitimate later turn.
+        # one turn. An explicit key identifies that call directly; only the SDK's retry
+        # marker activates body-digest replay, since an unmarked repeated body can be a
+        # legitimate later turn. A call is recorded under both: a box's relay keys each
+        # request it forwards, and the SDK's own retry of it comes with a new key.
         retried = is_retried_request(request.headers)
         idempotent: IdempotentRequest | None = None
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         binding = (request.path, req_hash)
+        digest_key = f"retry:{request.path}:{req_hash.hex()}"
+        keys: tuple[str, ...] = (digest_key,)
         if idempotency_key:
-            replay_key = f"explicit:{idempotency_key}"
+            keys = (f"explicit:{idempotency_key}", digest_key)
             # This key identifies the harness-to-interception hop. The server owns its
             # replay semantics, and the body has since been rewritten with rollout model
             # and sampling overrides, so never expose the local key to the provider.
@@ -801,13 +916,15 @@ class InterceptionServer(Interception):
                 for name, value in upstream_headers.items()
                 if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
             }
-        else:
-            replay_key = f"retry:{request.path}:{req_hash.hex()}"
+        # The request's own key: the explicit one when the harness sent it.
+        replay_key = keys[0]
 
         now = time.monotonic()
         _prune_idempotent_requests(session, now)
-        if idempotency_key or retried:
-            idempotent = session.idempotent_requests.get(replay_key)
+        if idempotency_key:
+            idempotent = session.idempotent_requests.get(keys[0])
+        if idempotent is None and retried:
+            idempotent = session.idempotent_requests.get(digest_key)
         if idempotent is not None and idempotent.binding != binding:
             return _error_response(
                 dialect,
@@ -817,6 +934,9 @@ class InterceptionServer(Interception):
         if idempotent is not None and idempotent.response is not None:
             logger.debug("Replayed an idempotent request")
             idempotent.completed_at = now
+            await session.flowing.wait()
+            idempotent.sent = True
+            idempotent.completed_at = time.monotonic()
             return _replay_response(idempotent.response)
 
         if not session.judge_only:
@@ -835,16 +955,20 @@ class InterceptionServer(Interception):
                 else:
                     model_request = dialect.parse_request(body)
             except ValueError as error:
+                # Like a reply, an error must not reach a box a snapshot is stopping.
+                await session.flowing.wait()
                 return _error_response(dialect, str(error), status=400)
         if session.released:
             return _error_response(dialect, "rollout concluded", status=409)
         if not session.judge_only and session.stopped:
+            await session.flowing.wait()
             return _error_response(
                 dialect, f"rollout stopped: {session.trace.stop_condition}", status=400
             )
         if idempotent is None:
             idempotent = IdempotentRequest(binding=binding)
-            session.idempotent_requests[replay_key] = idempotent
+        for key in keys:
+            session.idempotent_requests[key] = idempotent
 
         async def coalesced(
             inflight: "asyncio.Future[ReplayResponse | None]",
@@ -853,6 +977,9 @@ class InterceptionServer(Interception):
             response = await asyncio.shield(inflight)
             if response is None:
                 return _error_response(dialect, "upstream attempt failed", status=503)
+            await session.flowing.wait()
+            idempotent.sent = True
+            idempotent.completed_at = time.monotonic()
             return _replay_response(response)
 
         def respond(pending: Awaitable[web.Response]) -> Awaitable[web.Response]:
@@ -868,7 +995,7 @@ class InterceptionServer(Interception):
         idempotent.inflight = future
         request[_IDEMPOTENT_ATTEMPT] = _IdempotentAttempt(
             session=session,
-            key=replay_key,
+            keys=keys,
             request=idempotent,
             future=future,
         )
@@ -962,6 +1089,7 @@ class InterceptionServer(Interception):
         try:
             refused = await session.refused()
             if refused is not None:
+                await session.flowing.wait()
                 return _error_response(
                     dialect, f"rollout stopped: {refused}", status=400
                 )
@@ -983,11 +1111,10 @@ class InterceptionServer(Interception):
                     )
                 ]
         except RolloutError as error:
-            return self._fail(session, dialect, error)
+            return await self._abort(session, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
-            return self._fail(
+            return await self._abort(
                 session,
-                dialect,
                 TaskError(
                     f"model boundary hook failed: {type(error).__name__}: {error}"
                 ),
@@ -995,6 +1122,9 @@ class InterceptionServer(Interception):
         except BaseException:
             raise
         if stopped is not None:
+            # After any snapshot under way: it records the trace from before the stop,
+            # and the box it stops has not seen the stop either.
+            await session.flowing.wait()
             stop_name, stop_info = stopped
             turn = graph.prepare_turn(
                 session.trace, model_request.messages, model_request.tools, dialect.name
@@ -1015,8 +1145,10 @@ class InterceptionServer(Interception):
                 session.trace, model_request.messages, model_request.tools, dialect.name
             )
         except ValueError as error:
+            await session.flowing.wait()
             return _error_response(dialect, str(error), status=400)
         except RolloutError as error:
+            await session.flowing.wait()
             return self._fail(session, dialect, error)
         # The tail is what the harness added since the last turn (tool results, user
         # turns): live watchers see it now rather than with the model's reply.
@@ -1029,6 +1161,7 @@ class InterceptionServer(Interception):
             session.error = None
             call_response: Response | None = None
             events: bytes | None = None
+            served: web.Response | None = None
             node: int | None = None
             error: Exception | None = None
             started = time.time()
@@ -1074,26 +1207,30 @@ class InterceptionServer(Interception):
                             f"rollout stopped: {session.trace.stop_condition}",
                             status=400,
                         )
-                    node = turn.commit(call_response)
-                    session.commit_rewrites(
-                        turn,
-                        session.trace.nodes[node].parent,
-                        request_rewrites,
-                        response_rewrites,
-                        node,
-                        pre_request=pre_mediation_request,
-                        replay_key=replay_key,
-                    )
-                    if stopped is None:
-                        stopped = await session.gate_tool_calls(
-                            node, dialect.name, harness_history
+                    # A snapshot records the trace only outside this block: a reply on
+                    # the trace is then always one a box can be sent again.
+                    with session.committing():
+                        node = turn.commit(call_response)
+                        session.commit_rewrites(
+                            turn,
+                            session.trace.nodes[node].parent,
+                            request_rewrites,
+                            response_rewrites,
+                            node,
+                            pre_request=pre_mediation_request,
+                            replay_key=replay_key,
                         )
-                    if stopped is not None:
-                        stop_name, stop_info = stopped
-                        session.trace.stop(stop_name, info=stop_info)
-                        return _error_response(
-                            dialect, f"rollout stopped: {stop_name}", status=400
-                        )
+                        if stopped is None:
+                            stopped = await session.gate_tool_calls(
+                                node, dialect.name, harness_history
+                            )
+                        if stopped is not None:
+                            stop_name, stop_info = stopped
+                            session.trace.stop(stop_name, info=stop_info)
+                            return _error_response(
+                                dialect, f"rollout stopped: {stop_name}", status=400
+                            )
+                        served = serve(call_response, events)
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
@@ -1119,8 +1256,8 @@ class InterceptionServer(Interception):
             finally:
                 if node is None:
                     turn.abandon()
-                # The turn's one per-exchange record: settings, timing, outcome, and
-                # the error that ended it (if any).
+                # The turn's one per-exchange record: settings, timing, outcome,
+                # and the error that ended it (if any).
                 self.record_call(
                     session,
                     dialect,
@@ -1135,9 +1272,21 @@ class InterceptionServer(Interception):
                     policy_paths=policy_paths,
                     acp=acp,
                 )
-            return serve(call_response, events)
+            assert served is not None
+            return served
 
-        return await respond(sample())
+        async def answer() -> web.Response:
+            reply = await sample()
+            # A memory snapshot under way must not see this reply reach the box, be it
+            # the turn's reply or an error.
+            await session.flowing.wait()
+            idempotent.sent = True
+            # The checkpoint's replay window counts from the send: a hold can keep a
+            # finished reply back for minutes.
+            idempotent.completed_at = time.monotonic()
+            return reply
+
+        return await respond(answer())
 
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str
@@ -1274,6 +1423,7 @@ class InterceptionServer(Interception):
                 {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
                 status=400,
             )
+        await session.flowing.wait()
         if session.released:  # the trace is sealed — a straggler write must not land
             return web.json_response({"error": "rollout concluded"}, status=409)
         session.trace.state = new_state
