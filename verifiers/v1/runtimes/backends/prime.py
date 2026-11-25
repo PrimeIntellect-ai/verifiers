@@ -59,6 +59,7 @@ _DEAD_STATUSES = ("ERROR", "TERMINATED", "TIMEOUT")
 _PAUSE_SETTLE_SECONDS = 120
 """How long a pause or a resume gets to take effect. With 10,000 boxes paused together
 (2026-11-23), the platform paused them in about 28 s at the median."""
+_STATUS_POLL_SECONDS = 0.3
 _FORK_ATTEMPTS = 3
 """Creates of a box from a memory snapshot before its restore counts as failed."""
 _RESUME_RETRY_SECONDS = 600
@@ -75,17 +76,71 @@ _EXPOSE_TAG = "vf-exposed"
 BASE_LABELS: list[str] = []
 
 
+# TODO: replace this poller with the SDK's `wait_for_pause` and `wait_for_resume` once
+# they are released (PrimeIntellect-ai/prime#1233).
+class _StatusPoller:
+    """Batched status lookups for the boxes that wait for a pause or a resume to take
+    effect: one request serves up to 100 boxes, so a save of every rollout of a run
+    costs a few requests per poll instead of one per box."""
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+        self.waiting: dict[str, asyncio.Future] = {}
+        self.task: asyncio.Task | None = None
+
+    async def next(self, sandbox_id: str) -> Any:
+        """The box's status at the next poll (one waiter per box)."""
+        future = asyncio.get_running_loop().create_future()
+        self.waiting[sandbox_id] = future
+        if self.task is None or self.task.done():
+            self.task = asyncio.create_task(self._run())
+        return await future
+
+    async def _run(self) -> None:
+        while self.waiting:
+            await asyncio.sleep(_STATUS_POLL_SECONDS)
+            waiting, self.waiting = self.waiting, {}
+            ids = list(waiting)
+            await asyncio.gather(
+                *(
+                    self._poll({i: waiting[i] for i in ids[start : start + 100]})
+                    for start in range(0, len(ids), 100)
+                )
+            )
+
+    async def _poll(self, waiting: dict[str, asyncio.Future]) -> None:
+        try:
+            response = await self.client.get_sandbox_statuses(list(waiting))
+        except Exception as error:  # noqa: BLE001 - each waiter reports it
+            results: dict[str, Any] = dict.fromkeys(waiting, error)
+        else:
+            results = {status.sandbox_id: status for status in response.statuses}
+            results.update(
+                (item.sandbox_id, SandboxError(f"{item.code}: {item.message}"))
+                for item in response.errors
+            )
+        for sandbox_id, future in waiting.items():
+            result = results.get(sandbox_id, SandboxError("no status returned"))
+            if future.done():
+                continue
+            if isinstance(result, Exception):
+                future.set_exception(result)
+            else:
+                future.set_result(result)
+
+
 @dataclass
 class _SharedClient:
     client: Any
     leases: int = 0
+    poller: _StatusPoller | None = None
 
 
 # One `AsyncSandboxClient` per event loop, leased by every live runtime on it. The SDK
-# coalesces concurrent creation, pause and resume polls per client into batched
-# requests (up to 100 ids each), so sharing a client turns N runtimes' polls into a few
-# batch calls. Keyed by loop (not plain process-global) so a client's tasks stay on the
-# loop that created it.
+# coalesces concurrent creation polls per client into batched requests (up to 100 ids
+# each), so sharing a client turns N runtimes' creation polls into a few batch
+# calls. Keyed by loop (not plain process-global) so a client's tasks stay on the loop
+# that created it.
 _shared_clients: dict[asyncio.AbstractEventLoop, _SharedClient] = {}
 
 
@@ -389,9 +444,7 @@ class PrimeBackend(RuntimeBackend):
                 # still have made the snapshot.
                 self.stray_snapshots.append(snapshot)
                 try:
-                    await self._client.wait_for_pause(
-                        self.info.id, timeout_seconds=_PAUSE_SETTLE_SECONDS
-                    )
+                    await self._settle("PAUSED", "PAUSE_FAILED")
                 finally:
                     # The pause was accepted, so the box stops or has stopped. It must
                     # run again also when the wait for it failed.
@@ -432,9 +485,7 @@ class PrimeBackend(RuntimeBackend):
                 if (await self._client.get(self.info.id)).status == "RUNNING":
                     return
                 await self._client.resume(self.info.id)
-                await self._client.wait_for_resume(
-                    self.info.id, timeout_seconds=_PAUSE_SETTLE_SECONDS
-                )
+                await self._settle("RUNNING", "RESUME_FAILED")
                 return
             except Exception as e:
                 if time.monotonic() > deadline:
@@ -473,6 +524,37 @@ class PrimeBackend(RuntimeBackend):
                     await asyncio.sleep(random.uniform(5, 15))
                     continue
                 raise SandboxError(f"prime checkpoint {checkpoint_id}: {e}") from e
+
+    async def _settle(self, status: str, failure: str) -> None:
+        """Wait until the platform reports `status` for this box after a pause or a
+        resume (both return once accepted)."""
+        deadline = time.monotonic() + _PAUSE_SETTLE_SECONDS
+        shared = _shared_clients[asyncio.get_running_loop()]
+        if shared.poller is None:
+            shared.poller = _StatusPoller(shared.client)
+        while True:
+            try:
+                box = await shared.poller.next(self.info.id)
+            except Exception as e:
+                # One failed batch fails every box that waits in it: ask again.
+                if time.monotonic() > deadline:
+                    raise SandboxError(
+                        f"prime sandbox {self.info.id} did not reach {status}: {e}"
+                    ) from e
+                await asyncio.sleep(_STATUS_POLL_SECONDS)
+                continue
+            if box.status == status:
+                return
+            if box.error_type == failure or box.status in _DEAD_STATUSES:
+                raise SandboxError(
+                    f"prime sandbox {self.info.id} did not reach {status}: "
+                    f"{box.status} {box.error_type or ''} {box.error_message or ''}"
+                )
+            if time.monotonic() > deadline:
+                raise SandboxError(
+                    f"prime sandbox {self.info.id} did not reach {status} within "
+                    f"{_PAUSE_SETTLE_SECONDS}s"
+                )
 
     async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
         started = time.monotonic()
