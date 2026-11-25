@@ -55,7 +55,7 @@ class HarnessConfig(BaseConfig):
         return resolved
 
     tool_timeout: FiniteFloat = Field(600.0, gt=0)
-    """Seconds a single MCP tool call or mini-SWE-agent Bash command may take."""
+    """Seconds a single MCP tool call may take; raise it for tools that boot a VM."""
     disabled_tools: list[str] | None = None
     dialect: DialectName | Literal["auto"] = "auto"
     """Model API wire format the program speaks. `auto` lets the program pick, e.g. from
