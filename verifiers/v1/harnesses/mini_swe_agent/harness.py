@@ -1,3 +1,4 @@
+from math import ceil
 from pathlib import Path
 from typing import Literal
 
@@ -10,7 +11,12 @@ from verifiers.v1.runtimes.base import current_program
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
-PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+REPEATED_FORMAT_ERROR_EXIT_CODE = 98
+PROGRAM_SOURCE = (
+    (Path(__file__).resolve().parent / "program.py")
+    .read_text()
+    .replace("{repeated_format_error_exit_code}", str(REPEATED_FORMAT_ERROR_EXIT_CODE))
+)
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
@@ -27,6 +33,14 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         await runtime.prepare_uv_script(source, self.config.resolved_env)
+
+    async def _check_result(
+        self, trace: Trace, runtime: Runtime, result: ProgramResult
+    ) -> None:
+        if result.exit_code == REPEATED_FORMAT_ERROR_EXIT_CODE:
+            trace.stop("format_violation")
+            return
+        await super()._check_result(trace, runtime, result)
 
     async def launch(
         self,
@@ -59,9 +73,9 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "mini",
             "-c",
             "agent.cost_limit=0",
-            # Effectively unlimited; Verifiers owns the rollout timeout.
+            # mini-SWE-agent's timeout is in whole seconds.
             "-c",
-            "environment.timeout=86400",
+            f"environment.timeout={ceil(self.config.tool_timeout)}",
             "-c",
             "model.cost_tracking=ignore_errors",
             "-c",

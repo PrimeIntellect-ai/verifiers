@@ -15,4 +15,13 @@ task_file = Path(sys.argv[index + 1])
 sys.argv[index : index + 2] = ["--task", task_file.read_text(encoding="utf-8")]
 task_file.unlink()
 
-app()
+agent = app(standalone_mode=False)
+if isinstance(agent, int):
+    sys.exit(agent)
+
+messages = getattr(agent, "messages", None)
+if (
+    messages
+    and messages[-1].get("extra", {}).get("exit_status") == "RepeatedFormatError"
+):
+    sys.exit(int("{repeated_format_error_exit_code}"))
