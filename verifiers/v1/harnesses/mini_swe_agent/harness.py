@@ -11,7 +11,12 @@ from verifiers.v1.runtimes.base import current_program
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
-PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+REPEATED_FORMAT_ERROR_EXIT_CODE = 98
+PROGRAM_SOURCE = (
+    (Path(__file__).resolve().parent / "program.py")
+    .read_text()
+    .replace("{repeated_format_error_exit_code}", str(REPEATED_FORMAT_ERROR_EXIT_CODE))
+)
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
@@ -28,6 +33,14 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         await runtime.prepare_uv_script(source, self.config.resolved_env)
+
+    async def _check_result(
+        self, trace: Trace, runtime: Runtime, result: ProgramResult
+    ) -> None:
+        if result.exit_code == REPEATED_FORMAT_ERROR_EXIT_CODE:
+            trace.stop("format_violation")
+            return
+        await super()._check_result(trace, runtime, result)
 
     async def launch(
         self,
