@@ -3273,8 +3273,8 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.14"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-sandboxes&rev=ba36cfcc273b3608efd6aa702686e869132e2c75#ba36cfcc273b3608efd6aa702686e869132e2c75" }
+version = "0.5.15"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
     { name = "certifi" },
@@ -3285,23 +3285,10 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiofiles", specifier = ">=23" },
-    { name = "certifi" },
-    { name = "connectrpc", specifier = ">=0.11.1,<0.12" },
-    { name = "httpx", specifier = ">=0.25" },
-    { name = "protobuf", specifier = ">=6.31.1" },
-    { name = "pydantic", specifier = ">=2" },
-    { name = "pyqwest", specifier = ">=0.6" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.13.1" },
-    { name = "tenacity", specifier = ">=8" },
+sdist = { url = "https://files.pythonhosted.org/packages/32/dc/47e4d1e2197489c943d9e9789eddce03ede77d2de43f03e2a6fe107042a7/prime_sandboxes-0.5.15.tar.gz", hash = "sha256:8b01999b34b53a799bbcc305221d3bf1b0f664a6e46aebc611603210cd8d4b7c", size = 179408, upload-time = "2026-11-24T02:14:44.265Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/c3/0f9f095fd13ab31b0b4a1ac9ff96f04cfa0e96b557463181d7e0541cdbbd/prime_sandboxes-0.5.15-py3-none-any.whl", hash = "sha256:64f547647d1e9e28698731167fb4077bc5a1452b66dea703e36aef76b8659f56", size = 109992, upload-time = "2026-11-24T02:14:42.575Z" },
 ]
-provides-extras = ["dev"]
 
 [[package]]
 name = "prime-tunnel"
