@@ -514,6 +514,11 @@ class Rollout:
                 self.unsaveable = unsaveable(self.trace.agent.config, self.harness) or (
                     "it runs in a borrowed box"
                     if self._borrowed_runtime is not None
+                    # Only `Agent.run` continues a rollout from a checkpoint.
+                    else "it is an interaction, which no checkpoint can continue"
+                    if self._has_user
+                    else "its agent takes no checkpoints"
+                    if self._checkpointing is None
                     # Everything the box reaches the host through must follow it to a
                     # new box: the relay does, tool servers and services do not.
                     else "its task has tool servers or services of its own"
