@@ -161,16 +161,17 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
         home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
-        # install.sh fetches curl/uv itself; add git only when the image lacks it.
+        # Fetch the release/commit tarball with curl (no git required, and avoids
+        # failing on images that disable apt-get while keeping curl or apt).
+        tarball_url = f"https://{RLM_REPO.removesuffix('.git')}/archive/{self.config.version}.tar.gz"
         install = (
             f"rm -f {shlex.quote(ready)} && "
-            "(command -v git >/dev/null 2>&1 || "
-            "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
-            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
-            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
-            # The editable install needs the files, not the history; agents searching
-            # their workspace for a repository must not find the harness's own.
-            f"rm -rf {shlex.quote(checkout + '/.git')} && "
+            "((command -v curl >/dev/null 2>&1 || "
+            "{ apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || "
+            "{ [ -x /usr/bin/apt ] && apt update -qq && DEBIAN_FRONTEND=noninteractive apt install -y -qq curl ca-certificates; } || "
+            "dnf install -y -q curl || apk add --no-cache curl ca-certificates) && "
+            f"rm -rf {shlex.quote(checkout)} && mkdir -p {shlex.quote(checkout)} && "
+            f"curl -fsSL --retry 5 {shlex.quote(tarball_url)} | tar -xz --strip-components=1 -C {shlex.quote(checkout)} && "
             # Unmanaged: install.sh's uv installer then writes no receipt under root's
             # $HOME/.config/uv, which a task image can point at the agent's workspace.
             f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
