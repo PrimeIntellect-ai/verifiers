@@ -11,7 +11,8 @@ the code.
 
 A harness without a capability the behavior needs is collected as a skip with its
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
-`SUPPORTS_RESUME` or a native session).
+`SUPPORTS_RESUME` or a native session). A `memory` need asks the runtime for
+`SUPPORTS_MEMORY_SNAPSHOTS` and the harness for `Harness.SUPPORTS_MEMORY_RESTORE`.
 
 A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
 `NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
@@ -66,7 +67,9 @@ RUNTIME_FEATURES = {
     "expose": "port exposure",
     "compose": "Compose services",
     "services": "native service VMs",
+    "memory": "memory snapshots",
 }
+
 
 # Harness dialects that cannot run against the CI model yet.
 # TODO: drop each entry once its fix lands.
@@ -97,6 +100,7 @@ def assert_one_branch(
     if harness.id in forks or trace.num_branches == 1:
         return
     first_child: dict[int | None, int] = {}
+    errors = [f"{error.type}: {error.message[:500]}" for error in trace.errors]
     for i, node in enumerate(trace.nodes):
         first = first_child.setdefault(node.parent, i)
         if first != i:
@@ -110,9 +114,10 @@ def assert_one_branch(
                 changed.append("tools")
             pytest.fail(
                 f"{trace.num_branches} branches at parent {node.parent}, "
-                f"nodes {first} ({a.role}) and {i} ({b.role}), differing fields {changed}"
+                f"nodes {first} ({a.role}) and {i} ({b.role}), differing fields {changed}, "
+                f"errors {errors}"
             )
-    pytest.fail(f"{trace.num_branches} branches")
+    pytest.fail(f"{trace.num_branches} branches, errors {errors}")
 
 
 def agent_seats(taskset: str, env_id: str = "") -> list[str]:
@@ -162,6 +167,7 @@ def supports(runtime: str, feature: str) -> bool:
         "user": "SUPPORTS_USER_SWITCHING",
         "expose": "SUPPORTS_PORT_EXPOSURE",
         "compose": "SUPPORTS_COMPOSE",
+        "memory": "SUPPORTS_MEMORY_SNAPSHOTS",
     }[feature]
     return getattr(runtime_cls(runtime), flag)
 
@@ -191,6 +197,8 @@ def unsupported(
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
+    if "memory" in needs and not cls.SUPPORTS_MEMORY_RESTORE:
+        return f"{name} cannot continue from a memory snapshot"
     runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
     for feature in runtime_needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):

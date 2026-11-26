@@ -77,7 +77,8 @@ async def serve_interception(
     """A slot on the shared interception when one was injected (its owner keeps the
     lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
     down — by the caller's context."""
-    if interception is not None:
+    # A remote runtime cannot reach a loopback-only shared interception.
+    if interception is not None and (runtime._is_local or interception.requires_tunnel):
         async with interception.acquire(session) as slot:
             yield slot
         return

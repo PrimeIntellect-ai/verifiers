@@ -683,8 +683,9 @@ class PendingTurn:
         """The request failed or was cancelled before a commit: its preview goes."""
         self.trace._clear_preview(self)
 
-    def commit_prompt(self) -> None:
-        """Record an input that terminated before model inference."""
+    def commit_prompt(self) -> int | None:
+        """Record an input that terminated before model inference; returns the last
+        prompt node's id, or None when the prompt was empty."""
         parent = self.prefix_node_ids[-1] if self.prefix_node_ids else None
         _head_index(self.trace, self.dialect)
         for message in self.tail:
@@ -711,6 +712,7 @@ class PendingTurn:
                 }.values()
             )
         self.trace._clear_preview(self)
+        return parent
 
 
 def prepare_turn(

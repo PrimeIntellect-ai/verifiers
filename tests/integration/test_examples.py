@@ -22,6 +22,7 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 SKIP_EVAL = {
     "nemo_gym_weather": "not part of the default CI install",
+    "web_search_interception": "needs native web search, which the CI model does not serve",
     # TODO: drop once the CI model's proposer reliably finishes within the caps.
     "proposer_solver": "the CI model's proposer reasons past the token cap",
 }

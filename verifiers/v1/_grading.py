@@ -3,7 +3,7 @@
 import asyncio
 import copy
 import logging
-from contextlib import AsyncExitStack, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import PurePosixPath
 
 from verifiers.v1._configs.scoring import ScoringConfig
@@ -101,7 +101,101 @@ def scoring_network(
 
 def bind_scoring_env(runtime: Runtime, policy: ScoringConfig) -> Runtime:
     """Bind scoring variables without changing the solver's runtime or backend."""
-    return runtime.with_env({**runtime.env, **resolve_env(policy.env or {})})
+    env = dict(policy.env or {})
+    if policy.judge is not None:
+        # Setup must not resolve provider credentials that the proxy replaces.
+        env.update(dict.fromkeys(policy.judge.env, ""))
+    return runtime.with_env({**runtime.env, **resolve_env(env)})
+
+
+@asynccontextmanager
+async def scoring_session(
+    trace: Trace,
+    runtime: Runtime,
+    policy: ScoringConfig,
+    *,
+    interception=None,
+    network: NetworkPolicyConfig | None = None,
+):
+    """Bind a revocable inference capability for this scoring attempt only."""
+    policy_network = (
+        network
+        if network is not None
+        else runtime.config
+        if isinstance(runtime.config, NetworkPolicyConfig)
+        else NetworkPolicyConfig()
+    )
+    if policy.judge is None:
+        if network is not None:
+            await runtime.set_network(network)
+        yield runtime
+        return
+
+    from verifiers.v1._clients import ModelContext, ModelRoute
+    from verifiers.v1._interception import serve_interception
+    from verifiers.v1._session import RolloutSession
+
+    judge = policy.judge
+    session = RolloutSession(
+        ModelRoute(
+            ModelContext(model=judge.model or "", client=judge, sampling=judge.sampling)
+        ),
+        trace,
+        network_policy=policy_network,
+        network_policy_source=lambda: (
+            getattr(runtime.backend, "active_network", None) or policy_network
+        ),
+        judge_only=True,
+    )
+    async with serve_interception(interception, runtime, session, [], {}) as (
+        base_url,
+        token,
+        _,
+    ):
+        connection = {
+            "base_url": runtime.host_url(f"{base_url.rstrip('/')}/v1"),
+            "api_key": token,
+        }
+        bound = runtime.with_env(
+            {
+                **runtime.env,
+                **{key: connection[value] for key, value in judge.env.items()},
+            }
+        )
+        if network is not None or runtime.network_restricted:
+            await runtime.set_network(policy_network, routes=[connection["base_url"]])
+        yield bound
+
+
+async def score_shared(
+    task: Task,
+    trace: Trace,
+    runtime: Runtime,
+    base_runtime: RuntimeConfig,
+    policy: ScoringConfig,
+    deployment,
+    *,
+    interception=None,
+    on_score=None,
+) -> None:
+    """Prepare and score a task inside an existing runtime."""
+    scoring_runtime = bind_scoring_env(runtime, policy)
+    await invoke(task.stage_verifier, {"trace": trace, "runtime": scoring_runtime})
+    network = (
+        scoring_network(base_runtime, policy.network)
+        if policy.network is not None
+        else None
+    )
+    async with scoring_session(
+        trace,
+        scoring_runtime,
+        policy,
+        interception=interception,
+        network=network,
+    ) as scoring_runtime:
+        await task.score(trace, scoring_runtime, deployment)
+        if on_score is not None:
+            await on_score(trace, scoring_runtime)
 
 
 async def stage_verifier(task: Task, trace: Trace, runtime: Runtime) -> None:
@@ -123,6 +217,7 @@ async def grade_task(
     *,
     scoring_elapsed: float = 0.0,
     on_score=None,
+    interception=None,
 ) -> None:
     await deployment._prepare_verifier()
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
@@ -156,15 +251,23 @@ async def grade_task(
                     runtime = bind_scoring_env(runtime, policy)
                     await runtime.backend.prepare_setup()
                     await stage_verifier(grader, result, runtime)
-                    await runtime.backend.prepare_execution([])
                 try:
                     async with (
                         asyncio.timeout_at(deadline),
                         boundary(TaskError, "verifier scoring"),
+                        scoring_session(
+                            result,
+                            runtime,
+                            policy,
+                            interception=interception,
+                            network=config
+                            if isinstance(config, NetworkPolicyConfig)
+                            else None,
+                        ) as scoring_runtime,
                     ):
-                        await grader.score(result, runtime, deployment)
+                        await grader.score(result, scoring_runtime, deployment)
                         if on_score is not None:
-                            await on_score(result, runtime)
+                            await on_score(result, scoring_runtime)
                 finally:
                     # Preserve failed attempts' evidence and accounting without
                     # committing partial rewards/state.

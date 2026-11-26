@@ -41,26 +41,31 @@ async def test_rollout_timeout(run):
     assert trace.stop_condition == "agent_timeout"
 
 
-@pytest.mark.parametrize("skip", [False, True], ids=["scored", "skipped"])
+@pytest.mark.parametrize(
+    "skip", [{}, {"truncated": 0.0}, {"truncated": -1.0}], ids=["scored", "0", "-1"]
+)
 async def test_skip_scoring_on_truncated(run, skip):
     (episode,) = await run(
         "counter-tool",
         harness="null",
         runtime={"type": "prime"},
         taskset_overrides={"task": {"constant_reward": True}},
-        env={"agent": {"max_turns": 1, "scoring": {"skip_on_truncated": skip}}},
+        env={"agent": {"max_turns": 1, "scoring": {"skip": skip}}},
     )
     (trace,) = episode.traces
     assert trace.is_truncated and trace.ok
     if skip:
-        assert trace.reward == 0 and trace.rewards == {}
+        assert trace.reward == skip["truncated"]
+        assert set(trace.rewards) == {"truncated"}
         assert trace.info["scoring_skipped"] == "truncated"
     else:
         assert trace.reward == 1
         assert "scoring_skipped" not in trace.info
 
 
-@pytest.mark.parametrize("skip", [False, True], ids=["scored", "skipped"])
+@pytest.mark.parametrize(
+    "skip", [{}, {"timeout": 0.0}, {"timeout": -1.0}], ids=["scored", "0", "-1"]
+)
 async def test_skip_scoring_on_timeout(run, skip):
     (episode,) = await run(
         "counter-tool",
@@ -68,12 +73,13 @@ async def test_skip_scoring_on_timeout(run, skip):
         runtime={"type": "prime"},
         rollout_timeout=1,
         taskset_overrides={"task": {"constant_reward": True}},
-        env={"agent": {"scoring": {"skip_on_timeout": skip}}},
+        env={"agent": {"scoring": {"skip": skip}}},
     )
     (trace,) = episode.traces
     assert trace.is_timeout and trace.ok
     if skip:
-        assert trace.reward == 0 and trace.rewards == {}
+        assert trace.reward == skip["timeout"]
+        assert set(trace.rewards) == {"timeout"}
         assert trace.info["scoring_skipped"] == "timeout"
     else:
         assert trace.reward == 1
@@ -94,7 +100,9 @@ async def test_max_turns(run, harness, harness_runtime):
     assert trace.num_turns == 1
 
 
-@pytest.mark.parametrize("skip", [False, True], ids=["scored", "skipped"])
+@pytest.mark.parametrize(
+    "skip", [False, True, -1.0], ids=["scored", "skipped", "skipped-reward"]
+)
 async def test_skip_scoring_on_stop(run, scripted_model, skip):
     stop = {"fn": "counter_tool:any_response", "skip_scoring": skip}
     (episode,) = await run(
@@ -108,7 +116,10 @@ async def test_skip_scoring_on_stop(run, scripted_model, skip):
     )
     (trace,) = episode.traces
     assert trace.stop_condition == "any_response" and trace.ok
-    if skip:
+    if not isinstance(skip, bool):
+        assert trace.reward == -1 and set(trace.rewards) == {"any_response"}
+        assert trace.info["scoring_skipped"] == "any_response"
+    elif skip:
         assert trace.reward == 0 and trace.rewards == {}
         assert trace.info["scoring_skipped"] == "any_response"
     else:

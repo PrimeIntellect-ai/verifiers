@@ -71,16 +71,52 @@ When `mode="isolated"`, verifiers restores the task's collected artifacts into a
 
 ### Skip scoring for cut-off runs
 
-A truncated or timed-out run is often not worth grading. Set `agent.scoring.skip_on_truncated` to skip task scoring when `Trace.is_truncated` is true (a turn or token cap, or a length-finished response). Set `agent.scoring.skip_on_timeout` to skip it when a stage deadline expired before scoring (`Trace.is_timeout`). A skipped trace keeps no task rewards, metrics, or judge scores, so its reward is 0. `trace.info["scoring_skipped"]` records the reason (`"truncated"` or `"timeout"`). Task finalization and harness metrics still run.
+A truncated or timed-out run is often not worth grading. `agent.scoring.skip` maps each skip reason to a fixed reward. A reason in the map skips task scoring, and the trace records the value as a reward named after the reason:
 
-`Trace.is_truncated` only checks the run's last model response. Some harnesses keep going after a response hits its per-turn token cap: they compact, or answer a cut-off tool call. Set `agent.max_turn_tokens` to cap each response and stop the run before the next model call once a response hits that cap. The stop condition is `max_turn_tokens`. The run is then truncated, so `skip_on_truncated` applies.
+- `truncated` — `Trace.is_truncated` is true (a turn or token cap, or a length-finished response).
+- `timeout` — a stage deadline expired before scoring (`Trace.is_timeout`).
+- `format_violation` — the harness rejected the run as a format violation. Task scoring always skips such a run, so this key only sets its reward.
+
+A skipped trace keeps no task rewards, metrics, or judge scores, so its reward is the mapped value. Use 0 for a plain skip, or a negative value to rank such runs below runs that finished and failed. `trace.info["scoring_skipped"]` records the reason. Task finalization and harness metrics still run. A `skip_scoring` stop sets its own reward (see [tasksets](tasksets.md)).
+
+`Trace.is_truncated` only checks the run's last model response. Some harnesses keep going after a response hits its per-turn token cap: they compact, or answer a cut-off tool call. Set `agent.max_turn_tokens` to cap each response and stop the run before the next model call once a response hits that cap. The stop condition is `max_turn_tokens`. The run is then truncated, so `skip.truncated` applies.
 
 ```toml
 [env.agent]
 max_turns = 10
 max_turn_tokens = 4096
 
-[env.agent.scoring]
-skip_on_truncated = true
-skip_on_timeout = true
+[env.agent.scoring.skip]
+truncated = -0.5
+timeout = 0.0
+format_violation = -1.0
 ```
+
+## Retries and checkpoints
+
+`[env.agent.retries]` sets a retry budget per error type: `rules` are checked in order, and the first rule where all fields match sets the budget for that error; unmatched errors use the top-level `max_retries` budget.
+
+Rollout checkpointing is on by default: a rollout can be snapshotted, and a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over.
+
+By default a rollout takes a snapshot only when its owner saves it (`save_all`, below). `interval` (in seconds) schedules periodic snapshots during harness execution, including long stretches without model calls. This covers failures that leave no box to snapshot: the box died, or the harness program crashed.
+
+Without a snapshot, a retry starts over.
+
+A snapshot holds the box's files and its memory. The restored box continues every process where the snapshot stopped it: the harness program, its sub-agents and shells, and the task's own processes. The harness gets no notice and starts no new process; a model call that was open is asked again. The snapshot stops the box for a few seconds.
+
+A rollout takes snapshots only when all of these hold. Otherwise a retry starts over, with a warning once per harness and runtime:
+
+- The runtime takes memory snapshots (`SUPPORTS_MEMORY_SNAPSHOTS`: prime).
+- The harness runs detached from the host (`SUPPORTS_MEMORY_RESTORE`: every built-in harness but browser-use).
+- The rollout runs in a box of its own, not in a borrowed one.
+- The rollout has no tool servers, no shared tools and no services of its own. They reach the host at an address that does not follow the box to its restore.
+
+A retry also starts over when a restore fails before the restored attempt's first new turn. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
+
+```toml
+[env.agent.checkpoint]
+# interval = 600   # capture every ten minutes during execution
+keep = "last"  # snapshots kept while the rollout runs: "last", or every k-th plus the newest
+```
+
+An owner that outlives its process, such as a training run that stops and resumes, saves its running rollouts instead of waiting for a failure. `vf.save_all()` takes a memory snapshot of every running rollout of the process now and returns the trace of each as plain data the owner stores. The trace holds everything a restore needs, on the entry of its checkpoint. A later process continues a rollout from its saved trace with `RunSlot(task, id=..., restore=trace)` (or `Agent.run(task, restore=trace)`): same trace, a new box, and the harness program still running. With `hold=True`, a save can take ownership of a recent periodic snapshot within the configured interval. A resume then repeats work since that capture. Each snapshot transfers to one owner. Fresh captures reset the periodic timer. The owner holds these snapshots; it deletes them with `PrimeBackend.discard` once nothing will restore them. A saved trace continues one rollout: an episode with more than one agent run cannot continue from the trace of one of them, and starts over.

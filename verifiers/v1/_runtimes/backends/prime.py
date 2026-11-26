@@ -6,10 +6,12 @@ import asyncio
 import contextlib
 import io
 import math
+import random
 import shlex
 import tempfile
 import time
 import uuid
+import weakref
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -24,9 +26,11 @@ from verifiers.v1._errors import SandboxError
 from verifiers.v1._runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
+    Program,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
+    Snapshot,
     parse_gpu,
 )
 from verifiers.v1._runtimes.limiters import creation_limiter
@@ -40,6 +44,26 @@ from verifiers.v1._utils.scope import run_scope
 
 logger = get_logger(__name__)
 
+_CHECKPOINT_DURABLE_SECONDS = 600
+"""How long a snapshot may take to become restorable. With 1,000 boxes paused together
+(2026-11-19), the last ones took 294 s."""
+_SNAPSHOTS_IN_FLIGHT = 250
+"""Memory snapshots one process takes at once. With 1,000 boxes paused together
+(2026-11-19), 250 in flight finished fastest: 21 boxes per second at 10 s each. Without
+a cap the pause requests waited over 20 s for one of the client's 100 connections,
+close to its 30 s pool timeout, and the whole batch ran at 9.5 boxes per second."""
+_snapshot_slots: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Semaphore
+] = weakref.WeakKeyDictionary()
+_DEAD_STATUSES = ("ERROR", "TERMINATED", "TIMEOUT")
+_PAUSE_SETTLE_SECONDS = 120
+"""How long a pause or a resume gets to take effect. With 10,000 boxes paused together
+(2026-11-23), the platform paused them in about 28 s at the median."""
+_FORK_ATTEMPTS = 3
+"""Creates of a box from a memory snapshot before its restore counts as failed."""
+_RESUME_RETRY_SECONDS = 600
+"""How long a refused resume is asked again: the pause freed the box's memory on its
+node, and the node may have no room until other boxes leave."""
 _OUTPUT_TAIL_BYTES = 10 * 1024 * 1024
 """Maximum retained bytes per command output stream."""
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
@@ -58,10 +82,10 @@ class _SharedClient:
 
 
 # One `AsyncSandboxClient` per event loop, leased by every live runtime on it. The SDK
-# coalesces concurrent creation polls per client into batched requests (up to 100 ids
-# each), so sharing a client turns N runtimes' creation polls into a few batch
-# calls. Keyed by loop (not plain process-global) so a client's tasks stay on the loop
-# that created it.
+# coalesces concurrent creation, pause and resume polls per client into batched
+# requests (up to 100 ids each), so sharing a client turns N runtimes' polls into a few
+# batch calls. Keyed by loop (not plain process-global) so a client's tasks stay on the
+# loop that created it.
 _shared_clients: dict[asyncio.AbstractEventLoop, _SharedClient] = {}
 
 
@@ -144,6 +168,7 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_DISK_LIMIT: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
+    SUPPORTS_MEMORY_SNAPSHOTS: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -161,6 +186,12 @@ class PrimeBackend(RuntimeBackend):
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
+        self._awake = asyncio.Event()
+        """Cleared while a memory snapshot stops the box: the platform refuses every
+        call into a stopped box, so calls wait for it."""
+        self._awake.set()
+        self._snapshots = 0
+        """Memory snapshots taken of this box. Each one ended the open streams into it."""
 
     @property
     def published_port(self) -> int:
@@ -172,7 +203,11 @@ class PrimeBackend(RuntimeBackend):
         return super().bind(env=env).with_user(self.user)
 
     async def start(self) -> None:
-        from prime_sandboxes import APIError, CreateSandboxRequest
+        from prime_sandboxes import (
+            APIError,
+            CreateSandboxRequest,
+            SandboxNotRunningError,
+        )
 
         started = time.perf_counter()
         self._client = _lease_client()
@@ -200,7 +235,13 @@ class PrimeBackend(RuntimeBackend):
                 {"mount_path": target, **mount.model_dump()}
                 for target, mount in self.config.mounts.items()
             ]
-        if self.config.checkpoint:
+        memory = bool(self.config.checkpoint and self.config.restore_memory)
+        if memory:
+            # The box continues the snapshot's own processes: the platform fixes its
+            # shape, environment and volumes to the paused box's and refuses others.
+            source = {"checkpoint_id": self.config.checkpoint, "restore_memory": True}
+            options = {"timeout_minutes": -1, "idle_timeout_minutes": idle_minutes}
+        elif self.config.checkpoint:
             source = {"checkpoint_id": self.config.checkpoint}
         else:
             source = {
@@ -212,60 +253,94 @@ class PrimeBackend(RuntimeBackend):
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
-            async with (
-                creation_limiter(
-                    (self.config.creates_per_min or 0) / 60,
-                    "prime-sandbox",
-                    scope,
-                )
-                or contextlib.nullcontext()
-            ):
-                for name in dict.fromkeys(m.name for m in self.config.mounts.values()):
-                    try:
-                        await self._client.volumes.create(name)
-                    except APIError as error:
-                        # Create returns 409 when this scoped name already exists,
-                        # including when another runtime creates it concurrently.
-                        if not str(error).startswith("HTTP 409:"):
-                            raise
-
-                # Shielded through the id capture: a cancel that aborts the POST
-                # mid-flight leaves the platform creating a sandbox this side
-                # never learned the id of — teardown() then cannot delete it
-                async def create_and_capture_id():
-                    sandbox = await self._client.create(
-                        CreateSandboxRequest(
-                            name=self.name,
-                            labels=list(dict.fromkeys(labels)),
-                            **source,
-                            environment_vars=self.env,
-                            **{k: v for k, v in options.items() if v is not None},
-                        )
+            if memory:
+                # A save returns before its snapshot is uploaded: a box on another
+                # node restores only a durable one. One that never gets there fails
+                # this boot, and the rollout starts over.
+                await self._wait_durable(self.config.checkpoint)
+            attempts = _FORK_ATTEMPTS if memory else 1
+            for attempt in range(attempts):
+                async with (
+                    creation_limiter(
+                        (self.config.creates_per_min or 0) / 60,
+                        "prime-sandbox",
+                        scope,
                     )
-                    self.info.id = sandbox.id
-                    return sandbox
+                    or contextlib.nullcontext()
+                ):
+                    for name in dict.fromkeys(
+                        m.name for m in self.config.mounts.values()
+                    ):
+                        try:
+                            await self._client.volumes.create(name)
+                        except APIError as error:
+                            # Create returns 409 when this scoped name already exists,
+                            # including when another runtime creates it concurrently.
+                            if not str(error).startswith("HTTP 409:"):
+                                raise
 
-                sandbox = await run_shielded(create_and_capture_id())
-            # The create response says whether the platform already has the image:
-            # `pending_image_build_id` set means a first-use auto-build is running and the
-            # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase
-            # its own budget, separate from the normal boot attempts).
-            self.info.image_cached = sandbox.pending_image_build_id is None
-            if not self.info.image_cached:
-                logger.warning(
-                    "Building image %s on the platform for prime runtime %s - the "
-                    "first use of an image can take ~10 minutes, later runs start "
-                    "in seconds",
-                    self.config.image,
-                    self.info.id,
-                )
-            await self._client.wait_for_creation(self.info.id, max_attempts=900)
+                    # Shielded through the id capture: a cancel that aborts the POST
+                    # mid-flight leaves the platform creating a sandbox this side
+                    # never learned the id of — teardown() then cannot delete it
+                    async def create_and_capture_id():
+                        sandbox = await self._client.create(
+                            CreateSandboxRequest(
+                                name=self.name,
+                                labels=list(dict.fromkeys(labels)),
+                                **({} if memory else {"environment_vars": self.env}),
+                                **source,
+                                **{k: v for k, v in options.items() if v is not None},
+                            )
+                        )
+                        self.info.id = sandbox.id
+                        return sandbox
+
+                    sandbox = await run_shielded(create_and_capture_id())
+                # The create response says whether the platform already has the image:
+                # `pending_image_build_id` set means a first-use auto-build is running and the
+                # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase
+                # its own budget, separate from the normal boot attempts).
+                self.info.image_cached = sandbox.pending_image_build_id is None
+                if not self.info.image_cached:
+                    logger.warning(
+                        "Building image %s on the platform for prime runtime %s - the "
+                        "first use of an image can take ~10 minutes, later runs start "
+                        "in seconds",
+                        self.config.image,
+                        self.info.id,
+                    )
+                try:
+                    await self._client.wait_for_creation(self.info.id, max_attempts=900)
+                    break
+                except SandboxNotRunningError as error:
+                    # A box that continues an old memory snapshot also continues its
+                    # idle clock: the platform can end it as idle before it runs.
+                    if attempt + 1 == attempts:
+                        raise
+                    logger.warning(
+                        "Prime runtime %s ended before it ran from memory snapshot "
+                        "%s; creating it again (attempt %d/%d) - %s",
+                        self.info.id,
+                        self.config.checkpoint,
+                        attempt + 2,
+                        attempts,
+                        error,
+                    )
+                    # Teardown deletes only the newest id.
+                    with contextlib.suppress(Exception):
+                        await self._client.delete(self.info.id)
             logger.debug(
-                "Started prime runtime %s in %s image=%s",
+                "Started prime runtime %s in %s image=%s%s",
                 self.info.id,
                 format_time(time.perf_counter() - started),
                 self.config.image,
+                f" checkpoint={self.config.checkpoint}"
+                if self.config.checkpoint
+                else "",
             )
+            if memory:
+                # The paused box was already prepared; its processes run again.
+                return
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
@@ -280,6 +355,166 @@ class PrimeBackend(RuntimeBackend):
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+
+    async def snapshot(self) -> Snapshot:
+        # A pause is the platform's memory snapshot: it stops the box, and the resume
+        # continues it. The platform uploads the snapshot after the pause. Until it is
+        # durable the snapshot is stray: the platform refuses to delete it while this
+        # box lives, so teardown frees it after.
+        async def create() -> Snapshot:
+            # Shielded as one: a box left paused never runs its rollout again.
+            self._awake.clear()
+            self._snapshots += 1
+            try:
+                try:
+                    paused = await self._client.pause(self.info.id)
+                except BaseException:
+                    # The platform may have accepted a pause whose answer was lost:
+                    # such a box must run again. One that runs, died or is gone is
+                    # left as it is, so a dead box costs no resume retries. A lookup
+                    # that fails otherwise (a 429) may hide a pause: resume, which
+                    # asks again.
+                    try:
+                        status = (await self._client.get(self.info.id)).status
+                    except Exception as e:  # noqa: BLE001 - decides only the resume
+                        gone = "HTTP 404" in str(e) or "not found" in str(e).lower()
+                        status = None if gone else "UNKNOWN"
+                    if status is not None and status not in (
+                        "RUNNING",
+                        *_DEAD_STATUSES,
+                    ):
+                        with contextlib.suppress(Exception):
+                            await self._resume()
+                    raise
+                snapshot = Snapshot(id=paused.checkpoint_id)
+                # Kept whatever comes next: a pause that was not seen to finish can
+                # still have made the snapshot.
+                self.stray_snapshots.append(snapshot)
+                try:
+                    await self._client.wait_for_pause(
+                        self.info.id, timeout_seconds=_PAUSE_SETTLE_SECONDS
+                    )
+                finally:
+                    # The pause was accepted, so the box stops or has stopped. It must
+                    # run again also when the wait for it failed.
+                    await self._resume()
+            finally:
+                self._awake.set()
+            return snapshot
+
+        try:
+            return await run_shielded(create())
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint failed: {e}") from e
+
+    @asynccontextmanager
+    async def snapshot_pace(self) -> AsyncIterator[None]:
+        limiter = creation_limiter(
+            (self.config.snapshots_per_min or 0) / 60, "prime-snapshot", run_scope()
+        )
+        if limiter is not None:
+            async with limiter:
+                pass
+        loop = asyncio.get_running_loop()
+        slots = _snapshot_slots.get(loop)
+        if slots is None:
+            slots = _snapshot_slots[loop] = asyncio.Semaphore(_SNAPSHOTS_IN_FLIGHT)
+        async with slots:
+            yield
+
+    async def _resume(self) -> None:
+        """Resume the paused box. The pause freed its memory on its node, which another
+        box may have taken: the platform then refuses the resume until there is room
+        again, so ask until it runs or `_RESUME_RETRY_SECONDS` passed."""
+        deadline = time.monotonic() + _RESUME_RETRY_SECONDS
+        delay = 1.0
+        while True:
+            try:
+                # An earlier request may have taken effect after it was given up on.
+                if (await self._client.get(self.info.id)).status == "RUNNING":
+                    return
+                await self._client.resume(self.info.id)
+                await self._client.wait_for_resume(
+                    self.info.id, timeout_seconds=_PAUSE_SETTLE_SECONDS
+                )
+                return
+            except Exception as e:
+                if time.monotonic() > deadline:
+                    raise SandboxError(
+                        f"prime sandbox {self.info.id} did not resume after its "
+                        f"memory snapshot: {e}"
+                    ) from e
+                logger.warning(
+                    "prime: sandbox %s did not resume, asking again in %.0fs: %s",
+                    self.info.id,
+                    delay,
+                    e,
+                )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 15)
+
+    def _stopped_by_snapshot(self, error: Exception) -> bool:
+        """Whether a call failed because a memory snapshot had stopped the box: the
+        call is safe to repeat once the box runs again."""
+        return not self._awake.is_set() or "sandbox is paused" in str(error).lower()
+
+    async def _wait_durable(self, checkpoint_id: str) -> Any:
+        """The checkpoint once it is DURABLE, the only state a box on another node can
+        restore from."""
+        deadline = time.monotonic() + _CHECKPOINT_DURABLE_SECONDS
+        while True:
+            try:
+                return await self._client.wait_for_checkpoint(
+                    checkpoint_id,
+                    timeout_seconds=max(1.0, deadline - time.monotonic()),
+                )
+            except Exception as e:
+                # The SDK gives up on a rate-limited lookup while the upload goes on.
+                # Spread the next waits out: thousands of boxes wait at once.
+                if "HTTP 429" in str(e) and time.monotonic() < deadline:
+                    await asyncio.sleep(random.uniform(5, 15))
+                    continue
+                raise SandboxError(f"prime checkpoint {checkpoint_id}: {e}") from e
+
+    async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
+        started = time.monotonic()
+        durable = await self._wait_durable(snapshot.id)
+        self.stray_snapshots.remove(snapshot)
+        logger.debug(
+            "prime: checkpoint %s durable after %.1fs on sandbox %s",
+            snapshot.id,
+            time.monotonic() - started,
+            self.info.id,
+        )
+        return durable.stored_bytes
+
+    @classmethod
+    async def discard(cls, snapshots: list[Snapshot]) -> list[str]:
+        # The platform refuses only the newest checkpoint of a running box (the parent
+        # of its live state); older ones go while it runs, their data kept as long as a
+        # newer one needs it. Usually called after teardown released `_client`.
+        deleted = []
+        async with leased_client() as client:
+            for snapshot in snapshots:
+                try:
+                    await client.delete_checkpoint(snapshot.id)
+                except Exception as e:  # noqa: BLE001 - provider cleanup is best-effort
+                    if "HTTP 404" in str(e):
+                        # Already gone: an owner that asks again must not ask forever.
+                        deleted.append(snapshot.id)
+                        continue
+                    logger.warning(
+                        "prime: failed to delete checkpoint %s: %s", snapshot.id, e
+                    )
+                else:
+                    deleted.append(snapshot.id)
+        return deleted
+
+    @classmethod
+    def restore_config(cls, config: PrimeConfig, snapshot: Snapshot) -> PrimeConfig:
+        return config.model_copy(
+            update={"checkpoint": snapshot.id, "restore_memory": True}
+        )
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
@@ -329,15 +564,14 @@ class PrimeBackend(RuntimeBackend):
         )
 
     async def run(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+        self,
+        runtime: Runtime,
+        argv: list[str],
+        env: dict[str, str],
+        *,
+        program: Program | None = None,
     ) -> ProgramResult:
-        async def collect(stream: AsyncIterator[bytes]) -> bytes:
-            tail = bytearray()
-            async for chunk in stream:
-                tail.extend(chunk[-_OUTPUT_TAIL_BYTES:])
-                del tail[:-_OUTPUT_TAIL_BYTES]
-            return bytes(tail)
-
+        await self._awake.wait()
         try:
             # Command sessions survive task cleanup of shared scratch directories.
             # Close stdin explicitly: the live-process API keeps it open by default.
@@ -349,17 +583,89 @@ class PrimeBackend(RuntimeBackend):
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
-            try:
-                stdout, stderr, exit_code = await asyncio.gather(
-                    collect(process.stdout), collect(process.stderr), process.wait()
-                )
-            finally:
-                # Closing signals and reaps a running process, then releases its stream.
-                await run_shielded(process.aclose())
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime exec failed: {e}") from e
+        if program is not None:
+            program.job = {"session": process.session_uuid}
+        try:
+            return await self._collect(process)
+        finally:
+            if program is not None:
+                program.job = None
+
+    async def attach(
+        self,
+        runtime: Runtime,
+        job: dict[str, Any],
+        *,
+        program: Program | None = None,
+    ) -> ProgramResult:
+        while True:
+            await self._awake.wait()
+            snapshots = self._snapshots
+            try:
+                # The session and its process came with the snapshot; only the box is
+                # new.
+                process = await self._client.attach_process(
+                    self.info.id, job["session"]
+                )
+                break
+            except Exception as e:
+                # The running harness can take a snapshot while this attaches. Only a
+                # new snapshot is waited out: a box that stays paused fails here.
+                if snapshots == self._snapshots:
+                    raise SandboxError(f"prime attach failed: {e}") from e
+        if program is not None:
+            program.job = dict(job)
+        try:
+            return await self._collect(process)
+        finally:
+            if program is not None:
+                program.job = None
+
+    async def _collect(self, process: Any) -> ProgramResult:
+        """Wait for `process` and keep the tail of each output stream. A memory
+        snapshot stops the box, which ends the stream but not the process: attach to
+        it again when the box runs. The output of that gap can be missing."""
+
+        async def collect(stream: AsyncIterator[bytes], tail: bytearray) -> None:
+            async for chunk in stream:
+                tail.extend(chunk[-_OUTPUT_TAIL_BYTES:])
+                del tail[:-_OUTPUT_TAIL_BYTES]
+
+        stdout, stderr = bytearray(), bytearray()
+        try:
+            while True:
+                snapshots = self._snapshots
+                try:
+                    *_, exit_code = await asyncio.gather(
+                        collect(process.stdout, stdout),
+                        collect(process.stderr, stderr),
+                        process.wait(),
+                    )
+                    break
+                except Exception as e:
+                    if snapshots == self._snapshots and not self._stopped_by_snapshot(
+                        e
+                    ):
+                        raise
+                    session = process.session_uuid
+                    # A close would signal the process; a detach only drops the stream.
+                    await run_shielded(process.detach())
+                    await self._awake.wait()
+                    process = await self._client.attach_process(self.info.id, session)
+                    # The new stream replays the output sandboxd kept from the start.
+                    stdout.clear()
+                    stderr.clear()
+        except (
+            Exception
+        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+            raise SandboxError(f"prime exec failed: {e}") from e
+        finally:
+            # Closing signals and reaps a running process, then releases its stream.
+            await run_shielded(process.aclose())
         return ProgramResult(
             exit_code=exit_code,
             stdout=stdout.decode(errors="replace"),
@@ -418,6 +724,7 @@ class PrimeBackend(RuntimeBackend):
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
+        await self._awake.wait()
         # A server-owned job runs without a client stream for its whole life.
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
         try:
@@ -434,6 +741,7 @@ class PrimeBackend(RuntimeBackend):
     async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
+        await self._awake.wait()
         # The file API acts as the default user; a user view reads through exec.
         if max_bytes is not None or runtime.user is not None:
             reader = "cat" if max_bytes is None else f"head -c {max_bytes}"
@@ -482,6 +790,7 @@ class PrimeBackend(RuntimeBackend):
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
+        await self._awake.wait()
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (

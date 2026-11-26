@@ -464,8 +464,8 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             "output_config",
         }
     )
-    routes = ("/v1/messages",)
-    aux_routes = ("/v1/messages/count_tokens",)
+    routes = ("/v1/messages", "/v1/v1/messages")
+    aux_routes = ("/v1/messages/count_tokens", "/v1/v1/messages/count_tokens")
     upstream_path = "/v1/messages"
     response_type = ModdedAnthropicMessage
 
@@ -691,11 +691,16 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         return SamplingConfig.model_validate(settings)
 
     def apply_overrides(
-        self, body: RawRequest, model: str, sampling: SamplingConfig
+        self,
+        body: RawRequest,
+        model: str,
+        sampling: SamplingConfig,
+        *,
+        authoritative: bool = True,
     ) -> RawRequest:
-        # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
-        # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
-        # the API, so the program's is kept unless the eval sets one.
+        # Preserve native fields except `model` + `sampling`. When `authoritative`,
+        # `temperature`/`top_p` are dropped unless set in `sampling`; `max_tokens` is
+        # required by the API, so the caller's is kept unless `sampling` sets one.
         s = sampling.model_dump(exclude_none=True)
         reasoning_effort = s.pop("reasoning_effort", None)
         sampling_output_config = s.pop("output_config", None)
@@ -707,9 +712,8 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             }
             if reasoning_effort is not None:
                 overrides["output_config"]["effort"] = reasoning_effort
+        drop = ("temperature", "top_p") if authoritative else ()
         steered = {
-            k: v
-            for k, v in body.items()
-            if k not in ("temperature", "top_p") and k not in overrides
+            k: v for k, v in body.items() if k not in drop and k not in overrides
         }
         return {**steered, **overrides}

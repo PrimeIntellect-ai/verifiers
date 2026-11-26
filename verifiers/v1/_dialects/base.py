@@ -398,8 +398,14 @@ class Dialect(ABC, Generic[RespT]):
 
     @abstractmethod
     def apply_overrides(
-        self, body: RawRequest, model: str, sampling: SamplingConfig
+        self,
+        body: RawRequest,
+        model: str,
+        sampling: SamplingConfig,
+        *,
+        authoritative: bool = True,
     ) -> RawRequest:
-        """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
-        model overlays; sampling is authoritative (the program's sampling keys are dropped, the
-        eval's applied). Capability mediation may subsequently remove restricted fields."""
+        """Return `body` with `model` + `sampling` imposed in this protocol's shape.
+        When `authoritative` is true (eval rollouts), the program's sampling keys are
+        dropped and replaced by `sampling`; when false (packaged graders), unset
+        sampling keys in `sampling` preserve the caller's request."""

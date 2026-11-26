@@ -604,7 +604,12 @@ class ChatDialect(Dialect[ChatCompletion]):
         return ChatStreamParser()
 
     def apply_overrides(
-        self, body: RawRequest, model: str, sampling: SamplingConfig
+        self,
+        body: RawRequest,
+        model: str,
+        sampling: SamplingConfig,
+        *,
+        authoritative: bool = True,
     ) -> RawRequest:
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set. The selected model is authoritative even if a permissive

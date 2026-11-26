@@ -30,8 +30,9 @@ class Interception(ABC):
     even if one teardown fails; `async with` wraps the two. Each rollout `acquire`s a slot
     and frees it on exit."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, requires_tunnel: bool = False) -> None:
         self.stack = AsyncExitStack()
+        self.requires_tunnel = requires_tunnel
 
     @abstractmethod
     async def start(self) -> None:

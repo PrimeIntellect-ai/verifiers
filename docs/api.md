@@ -57,6 +57,7 @@ Import the namespace as `import verifiers.v1 as vf`.
 | `RewardFunctionConfig` | A plugged function that replaces a `@vf.reward` method. |
 | `StopFunctionConfig` | A plugged function that replaces a `@vf.stop` method. |
 | `ScoringConfig` | How and where a task is scored: shared or isolated runtime, retries and network. |
+| `ScoringJudgeConfig` | Host inference for a packaged grader, reached through a temporary endpoint. |
 | `State` | Base class of the mutable state of one rollout. |
 | `StateT` | Type variable for a `State` subclass. |
 
@@ -99,6 +100,7 @@ Import the namespace as `import verifiers.v1 as vf`.
 | `Agent` | A harness, a model and a runtime policy that can run any task. |
 | `AgentConfig` | Config of one agent seat. |
 | `AgentTimeoutConfig` | Timeouts of the stages of one agent run, in seconds. |
+| `RolloutCheckpointConfig` | Memory snapshots of the box, so a retry or another process continues the rollout. |
 | `AgentRun` | One run that `Agent.start()` schedules, including its retries. |
 | `Agents` | The agents of a config, addressed by attribute (`agents.solver`). |
 | `make_agent` | Make the agent for an `AgentConfig`. |
@@ -123,6 +125,7 @@ Import the namespace as `import verifiers.v1 as vf`.
 | --- | --- |
 | `Runtime` | Command and file access to one box, with fixed user and environment bindings. |
 | `RuntimeProcess` | A process whose input and output stream across a runtime boundary. |
+| `Program` | A harness's main program, as its runtime started it. |
 | `ProgramResult` | Exit code, stdout and stderr of one finished program. |
 | `RuntimeConfig` | Any runtime config, discriminated by `type`. |
 | `SubprocessConfig` | Run on the host as subprocesses. |
@@ -133,6 +136,7 @@ Import the namespace as `import verifiers.v1 as vf`.
 | `PrimeVolume` | A named Prime volume to mount into a sandbox. |
 | `NetworkPolicyConfig` | What a box can reach. |
 | `RuntimeInfo` | Any resolved runtime, discriminated by `type`. |
+| `Snapshot` | A snapshot of a box's files and memory, which a new box can continue from. |
 | `BaseRuntimeInfo` | Base class of a resolved runtime. A custom backend sets its `info` to a subclass. |
 | `SubprocessRuntimeInfo` | A resolved subprocess runtime. |
 | `DockerRuntimeInfo` | A resolved Docker runtime. |
@@ -246,6 +250,7 @@ Import the namespace as `import verifiers.v1 as vf`.
 | `TimeSpan` | Start and end timestamps, with their duration in seconds. |
 | `TimeSplit` | One measured duration, in seconds. |
 | `Branch` | One root-to-leaf path of the message graph: one training sample. |
+| `Checkpoint` | A memory snapshot of the rollout's running box, which a retry restores. |
 | `MessageNode` | One message of the message graph and the tokens that it adds. |
 | `TRACE_VERSION` | The current trace schema version. |
 | `ACPInfo` | The metadata that an ACP harness sends with one model request. |
@@ -290,6 +295,7 @@ Import the namespace as `import verifiers.v1 as vf`.
 | `ProviderError` | A model provider call failed. |
 | `InterceptionError` | Communication with the interception server failed. |
 | `TunnelError` | The tunnel to the interception server failed. |
+| `RelayError` | The relay in the box between the harness and the interception server failed. |
 
 ### Plugin loading
 
@@ -318,6 +324,9 @@ Import the namespace as `import verifiers.v1 as vf`.
 | `DeltaStreamer` | Send the changes of live traces as deltas. |
 | `EpisodeAssembly` | Apply received deltas to rebuild the traces. |
 | `plan_rollouts` | Assign accepted episodes to task occurrences by content hash. |
+| `save_all` | Snapshot every running rollout of this process and return their traces to store. |
+| `release_all` | Let every rollout that `save_all(hold=True)` holds go on. |
+| `arm_hold_watchdogs` | Start the timer that releases each held rollout by itself. |
 
 ## `verifiers.v1.harnesses`
 
@@ -518,6 +527,7 @@ Each built-in judge is a module that a judge `id` names.
 | Name | Description |
 | --- | --- |
 | `DecisionJudge`, `DecisionJudgeConfig` | A judge that grades how well the response satisfies the task, on graded levels. |
+| `DecisionScoreError` | The judge's response has no valid numeric grade. |
 
 ## `verifiers.v1.judges.reference`
 

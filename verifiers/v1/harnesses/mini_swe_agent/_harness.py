@@ -1,3 +1,4 @@
+from math import ceil
 from pathlib import Path
 from typing import Literal
 
@@ -5,11 +6,17 @@ from verifiers.v1._clients import ModelContext
 from verifiers.v1._configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1._harness import Harness
 from verifiers.v1._runtimes import ProgramResult, Runtime
+from verifiers.v1._runtimes.base import current_program
 from verifiers.v1._task import TaskData
 from verifiers.v1._trace import Trace
 from verifiers.v1.harnesses._utils.launch import stage_text
 
-PROGRAM_SOURCE = (Path(__file__).resolve().parent / "_program.py").read_text()
+REPEATED_FORMAT_ERROR_EXIT_CODE = 98
+PROGRAM_SOURCE = (
+    (Path(__file__).resolve().parent / "_program.py")
+    .read_text()
+    .replace("{repeated_format_error_exit_code}", str(REPEATED_FORMAT_ERROR_EXIT_CODE))
+)
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
@@ -25,10 +32,19 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
 
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
+    SUPPORTS_MEMORY_RESTORE = True
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         await runtime.prepare_uv_script(source, self.config.resolved_env)
+
+    async def _check_result(
+        self, trace: Trace, runtime: Runtime, result: ProgramResult
+    ) -> None:
+        if result.exit_code == REPEATED_FORMAT_ERROR_EXIT_CODE:
+            trace.stop("format_violation")
+            return
+        await super()._check_result(trace, runtime, result)
 
     async def launch(
         self,
@@ -61,9 +77,9 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "mini",
             "-c",
             "agent.cost_limit=0",
-            # Effectively unlimited; Verifiers owns the rollout timeout.
+            # mini-SWE-agent's timeout is in whole seconds.
             "-c",
-            "environment.timeout=86400",
+            f"environment.timeout={ceil(self.config.tool_timeout)}",
             "-c",
             "model.cost_tracking=ignore_errors",
             "-c",
@@ -81,4 +97,4 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "MSWEA_SILENT_STARTUP": "true",
         }
         program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-        return await runtime.run([*program, *args], env)
+        return await runtime.run([*program, *args], env, program=current_program.get())

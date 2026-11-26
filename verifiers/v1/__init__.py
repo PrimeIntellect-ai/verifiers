@@ -29,7 +29,11 @@ if TYPE_CHECKING:
         resolve_client,
     )
     from verifiers.v1._clients.base import build_async_openai
-    from verifiers.v1._configs.agent import AgentConfig, AgentTimeoutConfig
+    from verifiers.v1._configs.agent import (
+        AgentConfig,
+        AgentTimeoutConfig,
+        RolloutCheckpointConfig,
+    )
     from verifiers.v1._configs.cli.env import narrowed_env_annotation, resolve_env_field
     from verifiers.v1._configs.client import (
         BaseClientConfig,
@@ -69,7 +73,7 @@ if TYPE_CHECKING:
         SubprocessConfig,
     )
     from verifiers.v1._configs.sampling import SamplingConfig
-    from verifiers.v1._configs.scoring import ScoringConfig
+    from verifiers.v1._configs.scoring import ScoringConfig, ScoringJudgeConfig
     from verifiers.v1._configs.select import (
         SelectCLIConfig,
         SelectConfig,
@@ -91,6 +95,7 @@ if TYPE_CHECKING:
         HarnessError,
         InterceptionError,
         ProviderError,
+        RelayError,
         RolloutError,
         SandboxError,
         TaskError,
@@ -107,16 +112,19 @@ if TYPE_CHECKING:
         ToolsetConfig,
         ToolsetTimeoutConfig,
     )
+    from verifiers.v1._restore import arm_hold_watchdogs, release_all, save_all
     from verifiers.v1._runtimes import (
         BaseRuntimeInfo,
         CustomRuntimeInfo,
         DockerRuntimeInfo,
         PrimeRuntimeInfo,
+        Program,
         ProgramResult,
         Runtime,
         RuntimeBackend,
         RuntimeInfo,
         RuntimeProcess,
+        Snapshot,
         SubprocessRuntimeInfo,
         provision_runtime,
         set_base_sandbox_labels,
@@ -146,6 +154,7 @@ if TYPE_CHECKING:
         AgentInfo,
         AgentSpan,
         Branch,
+        Checkpoint,
         Error,
         EvalRunInfo,
         EvalWorkInfo,
@@ -258,6 +267,7 @@ _NAME_TO_MODULE = {
     "BaseConfig": "pydantic_config",
     "BindMount": "verifiers.v1._configs.runtime",
     "Branch": "verifiers.v1._trace",
+    "Checkpoint": "verifiers.v1._trace",
     "Client": "verifiers.v1._clients",
     "ClientConfig": "verifiers.v1._configs.client",
     "ComposeSpec": "verifiers.v1._runtimes.compose",
@@ -310,6 +320,7 @@ _NAME_TO_MODULE = {
     "PolicySpan": "verifiers.v1._trace",
     "PrimeConfig": "verifiers.v1._configs.runtime",
     "PrimeVolume": "verifiers.v1._configs.runtime",
+    "Program": "verifiers.v1._runtimes",
     "ProgramResult": "verifiers.v1._runtimes",
     "ProviderError": "verifiers.v1._errors",
     "ReferenceJudge": "verifiers.v1.judges",
@@ -328,10 +339,12 @@ _NAME_TO_MODULE = {
     "RuntimeConfig": "verifiers.v1._configs.runtime",
     "RuntimeInfo": "verifiers.v1._runtimes",
     "RuntimeProcess": "verifiers.v1._runtimes",
+    "Snapshot": "verifiers.v1._runtimes",
     "SamplingConfig": "verifiers.v1._configs.sampling",
     "SamplerSupport": "verifiers.v1._types",
     "SandboxError": "verifiers.v1._errors",
     "ScoringConfig": "verifiers.v1._configs.scoring",
+    "ScoringJudgeConfig": "verifiers.v1._configs.scoring",
     "ServicesSpec": "verifiers.v1._runtimes.deployment",
     "Segment": "verifiers.v1._agent",
     "SelectCLIConfig": "verifiers.v1._configs.select",
@@ -375,6 +388,7 @@ _NAME_TO_MODULE = {
     "TrainRunInfo": "verifiers.v1._trace",
     "TrainWorkInfo": "verifiers.v1._trace",
     "TunnelError": "verifiers.v1._errors",
+    "RelayError": "verifiers.v1._errors",
     "TurnTokens": "verifiers.v1._types",
     "Usage": "verifiers.v1._types",
     "UserMessage": "verifiers.v1._types",
@@ -429,6 +443,7 @@ _NAME_TO_MODULE = {
     "resolve_headers": "verifiers.v1._configs.client",
     "TaskMatchFilesConfig": "verifiers.v1._configs.select",
     "AgentTimeoutConfig": "verifiers.v1._configs.agent",
+    "RolloutCheckpointConfig": "verifiers.v1._configs.agent",
     "EnvTimeoutConfig": "verifiers.v1._configs.env",
     "InterceptionServerConfig": "verifiers.v1._configs.interception",
     "StaticInterceptionPoolConfig": "verifiers.v1._configs.interception",
@@ -446,6 +461,9 @@ _NAME_TO_MODULE = {
     "DeltaStreamer": "verifiers.v1._delta",
     "EpisodeAssembly": "verifiers.v1._delta",
     "plan_rollouts": "verifiers.v1._utils.eval",
+    "save_all": "verifiers.v1._restore",
+    "release_all": "verifiers.v1._restore",
+    "arm_hold_watchdogs": "verifiers.v1._restore",
     "PrimeTunnelConfig": "verifiers.v1._configs.interception",
     "CustomTunnelConfig": "verifiers.v1._configs.interception",
     "RuntimeBackend": "verifiers.v1._runtimes",
@@ -473,6 +491,7 @@ __all__ = [  # noqa: RUF022 - grouped by API area, as in docs/api.md
     "RewardFunctionConfig",
     "StopFunctionConfig",
     "ScoringConfig",
+    "ScoringJudgeConfig",
     "State",
     "StateT",
     # decorators
@@ -503,6 +522,7 @@ __all__ = [  # noqa: RUF022 - grouped by API area, as in docs/api.md
     "Agent",
     "AgentConfig",
     "AgentTimeoutConfig",
+    "RolloutCheckpointConfig",
     "AgentRun",
     "Agents",
     "make_agent",
@@ -523,6 +543,7 @@ __all__ = [  # noqa: RUF022 - grouped by API area, as in docs/api.md
     # runtimes
     "Runtime",
     "RuntimeProcess",
+    "Program",
     "ProgramResult",
     "RuntimeConfig",
     "SubprocessConfig",
@@ -533,6 +554,7 @@ __all__ = [  # noqa: RUF022 - grouped by API area, as in docs/api.md
     "PrimeVolume",
     "NetworkPolicyConfig",
     "RuntimeInfo",
+    "Snapshot",
     "SubprocessRuntimeInfo",
     "DockerRuntimeInfo",
     "PrimeRuntimeInfo",
@@ -626,6 +648,7 @@ __all__ = [  # noqa: RUF022 - grouped by API area, as in docs/api.md
     "TimeSpan",
     "TimeSplit",
     "Branch",
+    "Checkpoint",
     "MessageNode",
     "TRACE_VERSION",
     "ACPInfo",
@@ -662,6 +685,7 @@ __all__ = [  # noqa: RUF022 - grouped by API area, as in docs/api.md
     "ProviderError",
     "InterceptionError",
     "TunnelError",
+    "RelayError",
     # plugin loading
     "taskset_class",
     "harness_class",
@@ -682,6 +706,9 @@ __all__ = [  # noqa: RUF022 - grouped by API area, as in docs/api.md
     "DeltaStreamer",
     "EpisodeAssembly",
     "plan_rollouts",
+    "save_all",
+    "release_all",
+    "arm_hold_watchdogs",
 ]
 
 

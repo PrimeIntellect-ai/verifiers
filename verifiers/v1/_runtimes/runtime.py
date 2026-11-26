@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import shlex
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Self
+from typing import Any, Self
 
 from verifiers.v1._configs.runtime import NetworkPolicyConfig
 from verifiers.v1._errors import SandboxError
 from verifiers.v1._runtimes.base import (
     _ENSURE_UV,
     _INSTALL_CURL,
+    Program,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
@@ -103,13 +105,16 @@ class Runtime:
     async def _expose(self, port: int) -> str:
         return await self.backend.expose(port)
 
-    async def set_network(self, network: NetworkPolicyConfig) -> None:
+    async def set_network(
+        self, network: NetworkPolicyConfig, *, routes: Sequence[str] = ()
+    ) -> None:
         """Enforce `network` as given, in place of the policy the runtime started with,
         on the whole runtime rather than only this view; return once the provider
-        enforces it. Framework routes are not added. A runtime that started without a
-        policy can only stay open."""
+        enforces it. Framework routes are only added when passed in `routes`. A runtime
+        that started without a policy can only stay open."""
         if not network.network_restricted:
             await self.backend.prepare_execution(None)
+            self.backend.active_network = NetworkPolicyConfig()
             return
         config = self.backend.config
         if not self.backend.network_restricted or not isinstance(
@@ -122,11 +127,26 @@ class Runtime:
         policy = type(config).model_validate(
             {**config.model_dump(), "allow": network.allow, "block": network.block}
         )
-        await self.backend.prepare_execution([], policy)
+        await self.backend.prepare_execution(list(routes), policy)
+        self.backend.active_network = network
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        """Run `argv` to completion and collect its output."""
+    async def run(
+        self, argv: list[str], env: dict[str, str], *, program: Program | None = None
+    ) -> ProgramResult:
+        """Run `argv` to completion and collect its output. `program` marks the run as
+        a harness's main program: a runtime that takes memory snapshots records the
+        job there while it runs, for `attach`."""
+        if program is not None and self.backend.SUPPORTS_MEMORY_SNAPSHOTS:
+            return await self.backend.run(self, argv, env, program=program)
         return await self.backend.run(self, argv, env)
+
+    async def attach(
+        self, job: dict[str, Any], *, program: Program | None = None
+    ) -> ProgramResult:
+        """Wait for the job a box started before the memory snapshot this box booted
+        from, and return its result like `run`. `program` records the job while it
+        runs, as `run` does, so the restored box can be snapshotted again."""
+        return await self.backend.attach(self, job, program=program)
 
     async def exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
         """Start `argv` and return a handle that streams its stdio."""
@@ -211,9 +231,20 @@ class Runtime:
                     )
                     # Bootstrap dependencies before task networking is restricted;
                     # keep task offline settings on the returned program's processes.
-                    result = await self.run(
-                        ["sh", "-c", command], {**(env or {}), "UV_OFFLINE": "false"}
-                    )
+                    # Scripts prepare in parallel once uv is there; until then one at
+                    # a time, so only one bootstraps it.
+                    cache, user = self.backend.cache, self.user or ""
+                    async with (
+                        contextlib.nullcontext()
+                        if user in cache.uv_ready
+                        else cache.uv_bootstrap_lock
+                    ):
+                        result = await self.run(
+                            ["sh", "-c", command],
+                            {**(env or {}), "UV_OFFLINE": "false"},
+                        )
+                    if result.exit_code == 0:
+                        cache.uv_ready.add(user)
                     if result.exit_code != 0:
                         raise RuntimeError(
                             "failed to prepare uv script: "

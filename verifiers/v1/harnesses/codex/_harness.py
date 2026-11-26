@@ -63,6 +63,11 @@ class CodexHarnessConfig(HarnessConfig):
     """Enable Code Mode when the model's metadata does not select its tool mode."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
+    web_search: Literal["disabled", "cached", "live"] = "disabled"
+    """Codex's native web search tool (Codex's own `web_search` setting). Off by
+    default: it needs a provider that serves the Responses `web_search` tool, which
+    self-hosted models (vLLM, Dynamo) do not, and Dynamo refuses a request that
+    carries it."""
 
 
 class CodexHarness(ACPHarness[CodexHarnessConfig]):
@@ -214,6 +219,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 }
             },
             "features": {"mcp_2026_07_28": True},
+            "web_search": self.config.web_search,
             "mcp_servers": {
                 name: {
                     "url": url,

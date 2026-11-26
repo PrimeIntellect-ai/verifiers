@@ -92,7 +92,7 @@ class ModelContext:
 
     model: str
     """Model id."""
-    client: ClientConfig
+    client: BaseClientConfig
     """Endpoint config."""
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     """Sampling values for each request."""
