@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import Field, SerializationInfo, field_serializer
+from pydantic import Field, FiniteFloat, SerializationInfo, field_serializer
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.client import BaseClientConfig
@@ -50,12 +50,14 @@ class ScoringConfig(BaseConfig):
     combined with the runtime's own rules the same way. None keeps the default: isolated
     scoring runs under `TaskData.network`, shared scoring keeps the agent phase's network,
     and Harbor's shared grading lifts the policy."""
-    skip_on_truncated: bool = False
-    """Skip task scoring for a truncated trace (`Trace.is_truncated`): it keeps no
-    rewards, so its reward is 0."""
-    skip_on_timeout: bool = False
-    """Skip task scoring for a trace whose stage deadline expired before scoring
-    (`Trace.is_timeout`): it keeps no rewards, so its reward is 0."""
+    skip: dict[Literal["truncated", "timeout", "format_violation"], FiniteFloat] = (
+        Field(default_factory=dict)
+    )
+    """Skip task scoring for these reasons and record the value as a fixed reward named
+    after the reason. `truncated` matches `Trace.is_truncated`, `timeout` a stage
+    deadline that expired before scoring (`Trace.is_timeout`). A format violation is
+    never scored, so `format_violation` only sets its reward. A reason left out is
+    scored as usual, or, for a format violation, keeps no rewards."""
 
     @field_serializer("runtime")
     def serialize_runtime(

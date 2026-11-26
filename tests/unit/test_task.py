@@ -144,6 +144,17 @@ def test_plugged_stops_set_skip_scoring(tmp_path) -> None:
     )
 
 
+def test_skip_scoring_takes_a_reward(tmp_path) -> None:
+    fns = tmp_path / "fns.py"
+    fns.write_text(PLUGGED_FNS_PY)
+    config = vf.TaskConfig(stops={"no_reply": vf.StopFunctionConfig(skip_scoring=-1)})
+    stops = HookTask(HookData(idx=0, prompt="abc"), config).hooks("stop")
+    assert {fn.__name__: fn.stop_skip_scoring for fn in stops}["no_reply"] == -1.0
+    assert vf.StopFunctionConfig(skip_scoring=True).skip_scoring is True
+    with pytest.raises(ValueError, match="must be finite"):
+        vf.stop(skip_scoring=float("nan"))
+
+
 def test_a_nan_reward_is_an_error() -> None:
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),

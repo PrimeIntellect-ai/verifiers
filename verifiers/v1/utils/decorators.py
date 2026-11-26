@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import math
 from collections.abc import Callable, Iterable
 from typing import Any, TypeVar, get_origin, get_type_hints, overload
 
@@ -83,19 +84,26 @@ def tool(func: F | None = None, name: str | None = None) -> F | Callable[[F], F]
 
 
 @overload
-def stop(func: F, priority: int = 0, skip_scoring: bool = False) -> F: ...
+def stop(func: F, priority: int = 0, skip_scoring: bool | float = False) -> F: ...
 @overload
 def stop(
-    func: None = None, priority: int = 0, skip_scoring: bool = False
+    func: None = None, priority: int = 0, skip_scoring: bool | float = False
 ) -> Callable[[F], F]: ...
 def stop(
-    func: F | None = None, priority: int = 0, skip_scoring: bool = False
+    func: F | None = None, priority: int = 0, skip_scoring: bool | float = False
 ) -> F | Callable[[F], F]:
     """Stop when a typed `Request`, `Response`, or `Trace` predicate returns true (or
     `(True, metadata)` to populate `trace.stop_info`). With `skip_scoring`, a trace
-    this stop ends skips task scoring: it keeps no rewards, so its reward is 0."""
+    this stop ends skips task scoring and keeps no task rewards; a number instead of
+    `True` also records it as a fixed reward named after the stop."""
+    check_skip_scoring(skip_scoring)
     decorator = mark("stop", stop_priority=priority, stop_skip_scoring=skip_scoring)
     return decorator if func is None else decorator(func)
+
+
+def check_skip_scoring(skip_scoring: bool | float) -> None:
+    if not isinstance(skip_scoring, bool) and not math.isfinite(skip_scoring):
+        raise ValueError(f"skip_scoring reward must be finite, got {skip_scoring}")
 
 
 @overload
