@@ -37,7 +37,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.restore import open_restore, restoring, unsaveable
+from verifiers.v1.restore import CallKey, EpisodeCalls, open_restore, unsaveable
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
@@ -82,6 +82,8 @@ _checkpointing_warned: set[tuple[str, str]] = set()
 _scoring_runs: ContextVar[list[tuple["_EpisodeAgent", Trace]] | None] = ContextVar(
     "scoring_runs", default=None
 )
+# The episode call whose scoring runs now, for the calls it makes.
+_scoring_call: ContextVar[CallKey | None] = ContextVar("scoring_call", default=None)
 
 
 def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
@@ -856,9 +858,6 @@ class Agent:
         target: Checkpoint | None = None  # the checkpoint the next attempt restores
         first_attempt = 0  # the attempts the trace made before this run
         offered: str | None = None  # the checkpoint of the owner's saved trace
-        pending = restoring.get()
-        if restore is None and pending:
-            restore = pending.pop()
         if restore is not None:
             if checkpointing is None:
                 logger.warning(
@@ -1234,6 +1233,7 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
+        calls: EpisodeCalls | None = None,
     ) -> None:
         super().__init__(config, interception=interception)
         # Resource warnings dedupe env-wide, not per episode.
@@ -1246,6 +1246,8 @@ class _EpisodeAgent(Agent):
         self._on_trace = on_trace
         self._on_discard = on_discard
         self._log_name = name
+        # Shared by every copy of this agent, as an env's per-call view of a seat.
+        self._calls = calls
 
     def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
         return self._shared_tools if isinstance(task, self._task_cls) else {}
@@ -1274,7 +1276,7 @@ class _EpisodeAgent(Agent):
 
         return watch
 
-    def _scoring_callback(self, callback):
+    def _scoring_callback(self, callback, key: CallKey | None = None):
         if callback is None:
             return None
 
@@ -1282,6 +1284,7 @@ class _EpisodeAgent(Agent):
             parent_runs = _scoring_runs.get()
             runs = []
             token = _scoring_runs.set(runs)
+            call_token = _scoring_call.set(key)
             # The solver is idle while an Env runs a judge. Release its permit
             # so a one-agent episode can enter the nested judge rollout.
             if self._gate is not None:
@@ -1290,6 +1293,7 @@ class _EpisodeAgent(Agent):
                 try:
                     await callback(trace, runtime)
                 finally:
+                    _scoring_call.reset(call_token)
                     _scoring_runs.reset(token)
                     if self._gate is not None:
                         await run_shielded(self._gate.acquire())
@@ -1323,18 +1327,46 @@ class _EpisodeAgent(Agent):
         route: ModelRoute | None = None,
         restore: dict[str, Any] | None = None,
     ) -> Trace:
+        # Keyed before the first await: calls started together keep their order.
+        key, saved = (
+            self._calls.start(self._name, task, _scoring_call.get())
+            if self._calls is not None and restore is None
+            else (None, None)
+        )
+        watch = self._watch(on_trace)
+        if saved is not None and saved["state"] == "finished":
+            assert self._calls is not None and key is not None
+            trace, nested = self._calls.replay(key, saved, task)
+            # The calls its scoring made join the episode before it, as they did.
+            for child in nested:
+                self._completed.append(child)
+                if self._on_trace is not None:
+                    self._on_trace(child)
+            watch(trace)
+            self._completed.append(trace)
+            return trace
+
+        def record(trace: Trace) -> None:
+            if key is not None:
+                assert self._calls is not None
+                self._calls.minted(key, trace)
+            watch(trace)
+
         async with self._gate or nullcontext():
             trace = await super()._run(
                 handle,
                 task,
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
-                on_trace=self._watch(on_trace),
+                on_trace=record,
                 collect_artifacts=collect_artifacts,
-                on_score=self._scoring_callback(on_score),
+                on_score=self._scoring_callback(on_score, key),
                 route=route,
-                restore=restore,
+                restore=saved["trace"] if saved is not None else restore,
             )
+        if key is not None:
+            assert self._calls is not None
+            self._calls.finished(key, trace)
         self._completed.append(trace)
         return trace
 
@@ -1356,10 +1388,20 @@ class _EpisodeAgent(Agent):
         its caller, so peer interactions still interleave where an episode plays one
         agent at a time."""
         trace: Trace | None = None
+        key = (
+            self._calls.start(self._name, task, _scoring_call.get(), interaction=True)[
+                0
+            ]
+            if self._calls is not None
+            else None
+        )
 
         def remember(current: Trace) -> None:
             nonlocal trace
             trace = current
+            if key is not None:
+                assert self._calls is not None
+                self._calls.minted(key, current)
             if on_trace is not None:
                 on_trace(current)
 

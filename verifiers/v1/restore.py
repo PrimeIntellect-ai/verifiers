@@ -8,6 +8,12 @@ needs. A later process hands that trace back (`RunSlot.restore`, `Agent.run(rest
 and the rollout continues in a new box from the checkpoint: its trace up to there, and
 the harness program the box still runs.
 
+An episode of several agent runs continues the same way (`episode_restore_point`). The
+env's program runs again from the start, and each agent call, keyed by its seat and its
+number within the episode, replays: a call that had finished returns its saved trace, a
+call that was running continues from its checkpoint, and a call that had not started
+runs fresh (`EpisodeCalls`).
+
 The owner holds the snapshot of a saved rollout (`Checkpoint.pinned`): no rollout
 deletes it, and the owner deletes it once nothing will restore it
 (`RuntimeBackend.discard`).
@@ -16,9 +22,13 @@ deletes it, and the owner deletes it once nothing will restore it
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import weakref
-from contextvars import ContextVar
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+from pydantic import TypeAdapter
 
 from verifiers.v1.state import state_cls
 from verifiers.v1.trace import Checkpoint, Trace
@@ -26,6 +36,7 @@ from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.configs.agent import AgentConfig
+    from verifiers.v1.env import RunSlot
     from verifiers.v1.harness import Harness
     from verifiers.v1.rollout import Rollout
     from verifiers.v1.task import Task
@@ -35,11 +46,212 @@ logger = get_logger(__name__)
 LIVE: weakref.WeakSet[Rollout] = weakref.WeakSet()
 """The rollouts of this process that run a box (between `open` and `close`)."""
 
-restoring: ContextVar[list[dict[str, Any]] | None] = ContextVar(
-    "vf_restoring", default=None
-)
-"""The saved trace the episode this task runs continues from (`Env.run_episode`), in a
-list its first agent run takes it out of."""
+EPISODE_POINT_VERSION = 1
+
+CallKey = tuple[str, int]
+"""An agent call within an episode: its seat, and how many calls that seat made before."""
+
+
+class ReplayDiverged(Exception):
+    """A continued episode asked for a call the restore point does not hold: the env's
+    program took another path than in the saved episode."""
+
+
+def fingerprint(task: Task) -> str:
+    """What an agent call was asked to do, to tell that a replayed call is the saved one."""
+    data = task.data.model_dump_json(exclude_none=True)
+    return hashlib.sha256(f"{type(task).__qualname__}:{data}".encode()).hexdigest()
+
+
+@dataclass
+class _Call:
+    seat: str
+    n: int
+    fingerprint: str
+    parent: CallKey | None
+    """The call whose scoring made this one (an agentic judge's), if any."""
+    trace: Trace | None = None
+    finished: bool = False
+    interaction: bool = False
+
+
+@dataclass
+class EpisodeCalls:
+    """The agent calls of one episode attempt, in the order they started, and the saved
+    calls a continued episode replays (`memo`, from `episode_restore_point`)."""
+
+    memo: dict[CallKey, dict[str, Any]] = field(default_factory=dict)
+    calls: dict[CallKey, _Call] = field(default_factory=dict)
+    counts: Counter[str] = field(default_factory=Counter)
+    diverged: str | None = None
+    """Why the replay stopped, once a call did not match the saved one."""
+
+    @classmethod
+    def continuing(cls, point: dict[str, Any] | None) -> EpisodeCalls:
+        """The calls of an attempt that continues `point`: an episode restore point, or
+        the saved trace of a single rollout (`restorable`), which continues the first
+        call of its seat."""
+        if point is None:
+            return cls()
+        if "episode_point" not in point:
+            seat = (point.get("agent") or {}).get("name") or "agent"
+            point = {
+                "calls": [
+                    {
+                        "seat": seat,
+                        "n": 0,
+                        "fingerprint": None,
+                        "parent": None,
+                        "state": "running",
+                        "trace": point,
+                    }
+                ]
+            }
+        return cls(memo={(c["seat"], c["n"]): c for c in point["calls"]})
+
+    def start(
+        self,
+        seat: str,
+        task: Task,
+        parent: CallKey | None,
+        *,
+        interaction: bool = False,
+    ) -> tuple[CallKey, dict[str, Any] | None]:
+        """Key a new call of `seat` and return what the restore point holds for it.
+        Raises `ReplayDiverged` when the saved call was asked to do something else. An
+        `interaction` is keyed and recorded, but never saved, so it replays nothing."""
+        key = (seat, self.counts[seat])
+        self.counts[seat] += 1
+        call = _Call(seat, key[1], fingerprint(task), parent, interaction=interaction)
+        self.calls[key] = call
+        saved = None if interaction else self.memo.pop(key, None)
+        if saved is None:
+            return key, None
+        if (
+            saved["fingerprint"] is not None
+            and saved["fingerprint"] != call.fingerprint
+        ):
+            self.diverged = (
+                f"{seat} call {key[1]} was asked for another task than at the save"
+            )
+            raise ReplayDiverged(self.diverged)
+        return key, saved
+
+    def minted(self, key: CallKey, trace: Trace) -> None:
+        self.calls[key].trace = trace
+
+    def finished(self, key: CallKey, trace: Trace) -> None:
+        call = self.calls[key]
+        call.trace, call.finished = trace, True
+
+    def replay(
+        self, key: CallKey, saved: dict[str, Any], task: Task
+    ) -> tuple[Trace, list[Trace]]:
+        """The finished call `saved`, and the calls its scoring made, in the order they
+        finished, as traces for the episode. They keep their keys, so a later save of
+        this episode holds them again."""
+        children = sorted(
+            (c for c in self.memo.values() if c["parent"] == [*key]),
+            key=lambda c: c["order"],
+        )
+        nested: list[Trace] = []
+        for child in children:
+            child_key = (child["seat"], child["n"])
+            self.memo.pop(child_key)
+            self.counts[child["seat"]] = max(self.counts[child["seat"]], child["n"] + 1)
+            trace = _finished_trace(child, None)
+            self.calls[child_key] = _Call(
+                child["seat"], child["n"], child["fingerprint"], key, trace, True
+            )
+            nested.append(trace)
+        trace = _finished_trace(saved, task)
+        self.finished(key, trace)
+        return trace, nested
+
+
+def _finished_trace(saved: dict[str, Any], task: Task | None) -> Trace:
+    trace = Trace.model_validate(saved["trace"])
+    if task is not None and saved.get("task_state") is not None:
+        trace.state = state_cls(type(task)).model_validate(saved["task_state"])
+    return trace
+
+
+def _skip_reason(trace_id: str) -> str:
+    for rollout in list(LIVE):
+        if rollout.trace.id == trace_id and rollout.save_skipped:
+            return rollout.save_skipped
+    return "it took no memory snapshot"
+
+
+def episode_restore_point(
+    slot: RunSlot, saved: list[dict[str, Any]]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The restore point of `slot`'s running episode, built from the rollouts `save_all`
+    just saved, or None and why the episode has none. The point holds every call that
+    finished with its trace, and every running call with its saved trace; a call that
+    made no turn yet runs fresh on replay. It is all or nothing: a running call that
+    made turns but has no saved trace leaves the episode without a restore point.
+    `point["snapshots"]` are the snapshots it continues from, which the caller owns;
+    the caller also owns every saved rollout the point does not use."""
+    calls = slot.calls
+    if calls is None:
+        return None, "it has not started"
+    by_trace = {trace["id"]: trace for trace in saved}
+    nested = {call.parent for call in calls.calls.values() if call.parent is not None}
+    entries: list[dict[str, Any]] = []
+    snapshots: list[dict[str, Any]] = []
+    for order, (key, call) in enumerate(calls.calls.items()):
+        trace = call.trace
+        if call.interaction:
+            reason = "it is an interaction, which no checkpoint can continue"
+            return None, f"{call.seat} call {call.n}: {reason}"
+        if trace is None:
+            continue
+        entry: dict[str, Any] = {
+            "seat": call.seat,
+            "n": call.n,
+            "fingerprint": call.fingerprint,
+            "parent": None if call.parent is None else [*call.parent],
+            "order": order,
+        }
+        if call.finished:
+            try:
+                state = TypeAdapter(type(trace.state)).dump_python(
+                    trace.state, mode="json"
+                )
+            except Exception:  # noqa: BLE001 - the state's values decide it
+                return (
+                    None,
+                    f"{call.seat} call {call.n}: its task state cannot be serialized",
+                )
+            entries.append(
+                {
+                    **entry,
+                    "state": "finished",
+                    "trace": trace.model_dump(context={"token_arrays": True}),
+                    "task_state": state,
+                }
+            )
+            continue
+        point = by_trace.get(trace.id)
+        if point is None:
+            if call.parent is not None or key in nested:
+                return (
+                    None,
+                    f"{call.seat} call {call.n}: it runs inside another run's scoring",
+                )
+            if trace.num_turns == 0:
+                continue
+            return None, f"{call.seat} call {call.n}: {_skip_reason(trace.id)}"
+        entries.append({**entry, "state": "running", "trace": point})
+        snapshots.append(restore_entry(point)["snapshot"])
+    point = {
+        "episode_point": EPISODE_POINT_VERSION,
+        "episode_id": slot.id,
+        "calls": entries,
+        "snapshots": snapshots,
+    }
+    return point, None
 
 
 def restorable(trace: Trace, checkpoint: Checkpoint) -> dict[str, Any]:
