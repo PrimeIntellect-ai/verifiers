@@ -22,7 +22,9 @@ deletes it, and the owner deletes it once nothing will restore it
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
+import time
 import weakref
 from collections import Counter
 from dataclasses import dataclass, field
@@ -176,6 +178,38 @@ def _finished_trace(saved: dict[str, Any], task: Task | None) -> Trace:
     return trace
 
 
+def scoring_point(trace: Trace, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """`trace`, of a rollout whose agent is done and which is in scoring, as a saved
+    trace (`restorable`) that continues its scoring in a box restored from `snapshot`:
+    the box another run of its scoring took while it ran in this rollout's box. The
+    restored rollout scores again, without running its agent (`Rollout.resumes_scoring`)."""
+    data = trace.model_dump(context={"token_arrays": True})
+    session = {
+        "stage": "scoring",
+        "finalized": bool(trace.timing.finalize.end),
+        "stop": [trace.stop_condition, trace.stop_info],
+        "state": TypeAdapter(type(trace.state)).dump_python(trace.state, mode="json"),
+        "info": copy.deepcopy(trace.info),
+        "rewrites": (len(trace.request_rewrites), len(trace.response_rewrites)),
+        "pins": [],
+        "decisions": [],
+        "gated": [],
+        "prepared": {},
+        "replays": {},
+    }
+    data["checkpoints"] = [
+        {
+            "id": snapshot["id"],
+            "snapshot": snapshot,
+            "node": len(trace.nodes) - 1 if trace.nodes else None,
+            "session": session,
+            "captured": time.time(),
+            "pinned": True,
+        }
+    ]
+    return data
+
+
 def _skip_reason(trace_id: str) -> str:
     for rollout in list(LIVE):
         if rollout.trace.id == trace_id and rollout.save_skipped:
@@ -198,6 +232,23 @@ def episode_restore_point(
         return None, "it has not started"
     by_trace = {trace["id"]: trace for trace in saved}
     nested = {call.parent for call in calls.calls.values() if call.parent is not None}
+
+    def scoring_box(key: CallKey, trace: Trace) -> dict[str, Any] | None:
+        """The snapshot of `key`'s box that a running call of its scoring took, which
+        holds that call and `key`'s scored work."""
+        box = trace.agent.runtime.id if trace.agent.runtime is not None else None
+        for child in calls.calls.values():
+            saved_child = by_trace.get(child.trace.id) if child.trace else None
+            runtime = child.trace.agent.runtime if child.trace else None
+            if (
+                child.parent == key
+                and saved_child is not None
+                and runtime is not None
+                and runtime.id == box
+            ):
+                return restore_entry(saved_child)["snapshot"]
+        return None
+
     entries: list[dict[str, Any]] = []
     snapshots: list[dict[str, Any]] = []
     for order, (key, call) in enumerate(calls.calls.items()):
@@ -234,6 +285,12 @@ def episode_restore_point(
             )
             continue
         point = by_trace.get(trace.id)
+        if point is None and key in nested and (box := scoring_box(key, trace)):
+            try:
+                point = scoring_point(trace, box)
+            except Exception:  # noqa: BLE001 - the state's values decide it
+                reason = "its task state cannot be serialized"
+                return None, f"{call.seat} call {call.n}: {reason}"
         if point is None:
             if call.parent is not None or key in nested:
                 return (
@@ -244,7 +301,10 @@ def episode_restore_point(
                 continue
             return None, f"{call.seat} call {call.n}: {_skip_reason(trace.id)}"
         entries.append({**entry, "state": "running", "trace": point})
-        snapshots.append(restore_entry(point)["snapshot"])
+        snapshot = restore_entry(point)["snapshot"]
+        # A call in scoring continues from the snapshot its scoring's call took.
+        if all(s["id"] != snapshot["id"] for s in snapshots):
+            snapshots.append(snapshot)
     point = {
         "episode_point": EPISODE_POINT_VERSION,
         "episode_id": slot.id,

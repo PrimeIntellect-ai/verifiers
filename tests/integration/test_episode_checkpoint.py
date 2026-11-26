@@ -40,14 +40,15 @@ from verifiers.v1.restore import episode_restore_point, restore_entry, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
 from verifiers.v1.utils.loaders import load_environment
 
-SUPPORTED = 1
+SUPPORTED = 2
 """The highest phase this branch implements:
 1. Agent runs in boxes of their own: fan-out and pipelines (`tick-duet`, `tick-pipeline`),
    and an agentic judge's solver before its scoring starts.
-2. Agent runs inside another run's scoring: the agentic judge, in shared and isolated
-   scoring. The scoring box is snapshotted once, the solver continues in its scoring,
-   and the judge continues in the restored box.
-3. Interactions: the turns of an `interaction()` replay, and the open turn continues
+2. An agent run inside another run's scoring, in that run's box: the agentic judge with
+   shared scoring. The judge's snapshot of the box continues both: the solver scores
+   again in the restored box, and the judge continues in it.
+3. The same with isolated scoring, where the judge runs in a scoring box of its own.
+4. Interactions: the turns of an `interaction()` replay, and the open turn continues
    from its snapshot (user-sim)."""
 
 # Each step is a tool call ("bash", {...}) or a text reply ("say", "...").
@@ -257,7 +258,7 @@ CASES = [
         {**JUDGE_ENV, "solver": {**seat("solver"), "scoring": {"mode": "isolated"}}},
         JUDGE_SCRIPTS,
         [("judge", 2)],
-        phase=2,
+        phase=3,
         restored={"solver": None, "judge": 2},
         skip_reason="it runs inside another run's scoring",
     ),
@@ -308,7 +309,7 @@ CASES = [
         },
         {"user": USER, "assistant": ASSISTANT},
         [("assistant", 1)],
-        phase=3,
+        phase=4,
         restored={"user": 2, "assistant": 1},
         skip_reason="it is an interaction, which no checkpoint can continue",
     ),
@@ -322,7 +323,7 @@ CASES = [
         },
         {"user": USER, "assistant": ASSISTANT},
         [("user", 2)],
-        phase=3,
+        phase=4,
         restored={"user": 2, "assistant": 3},
         skip_reason="it is an interaction, which no checkpoint can continue",
     ),
@@ -397,16 +398,17 @@ async def saved_episode(case: Case, config, models: ScriptedModels):
                     await asyncio.sleep(0.2)
             points = await save_all()
             point, reason = episode_restore_point(slot, points)
-            # The owner deletes what it saved but the point does not continue from.
-            kept = {s["id"] for s in point["snapshots"]} if point is not None else set()
-            unused = [restore_entry(p)["snapshot"] for p in points]
-            unused = [Snapshot.model_validate(s) for s in unused if s["id"] not in kept]
-            if unused:
-                await PrimeBackend.discard(unused)
         finally:
             running.cancel()
             await asyncio.gather(running, return_exceptions=True)
             models.release()
+    # The owner deletes what it saved but the point does not continue from, once the
+    # boxes are gone: Prime refuses the newest snapshot of a box that still runs.
+    kept = {s["id"] for s in point["snapshots"]} if point is not None else set()
+    unused = [restore_entry(p)["snapshot"] for p in points]
+    unused = [Snapshot.model_validate(s) for s in unused if s["id"] not in kept]
+    if unused:
+        assert len(await PrimeBackend.discard(unused)) == len(unused)
     return (
         slot,
         (pickle.loads(pickle.dumps(point)) if point is not None else None),

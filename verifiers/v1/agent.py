@@ -851,7 +851,7 @@ class Agent:
         route = route or ModelRoute(self.ctx)
         retry = self.config.retries
         retry_state = RetryState(retry)
-        checkpointing = self._checkpointing() if runtime is None else None
+        checkpointing = self._checkpointing()
         trace_id = uuid.uuid4().hex  # one id for the run across its attempts
         history: list[Error] = []  # errors of the attempts started over from
         trace: Trace | None = None
@@ -1053,7 +1053,8 @@ class Agent:
             **params,
         )
         try:
-            if await run.open():
+            # A run that continues its scoring goes straight to it.
+            if await run.open() and not run.resumes_scoring:
                 if handle is not None:
                     handle._active = run
                 try:

@@ -9,6 +9,7 @@ from collections import defaultdict
 from types import SimpleNamespace
 
 import pytest
+from pydantic import TypeAdapter
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Agent, _EpisodeAgent
@@ -216,8 +217,14 @@ def test_an_episode_with_an_interaction_or_a_run_inside_scoring_has_no_restore_p
     calls = EpisodeCalls()
     calls.start("solver", task("solve"), None)
     calls.start("judge", task("judge"), ("solver", 0))
-    calls.minted(("solver", 0), SimpleNamespace(id="t-s", num_turns=3))
-    calls.minted(("judge", 0), SimpleNamespace(id="t-j", num_turns=1))
+    calls.minted(
+        ("solver", 0),
+        SimpleNamespace(id="t-s", num_turns=3, agent=SimpleNamespace(runtime=None)),
+    )
+    calls.minted(
+        ("judge", 0),
+        SimpleNamespace(id="t-j", num_turns=1, agent=SimpleNamespace(runtime=None)),
+    )
     point, reason = episode_restore_point(SimpleNamespace(id="e1", calls=calls), [])
     assert point is None and "inside another run's scoring" in reason
 
@@ -272,3 +279,49 @@ async def test_a_diverged_attempt_starts_over_and_keeps_its_retries():
     episode = await Env.run_slot(FakeEnv(), slot, ctx=None)
     assert seen == [True, False]
     assert episode.attempt == 1 and episode.ok
+
+
+def in_box(trace: vf.Trace, box: str) -> vf.Trace:
+    trace.agent.runtime = TypeAdapter(vf.RuntimeInfo).validate_python(
+        {"type": "prime", "id": box}
+    )
+    return trace
+
+
+def test_a_run_in_scoring_continues_from_the_box_its_judge_saved():
+    """An agentic judge runs in the solver's box during the solver's scoring: the
+    judge's snapshot of that box continues both, the solver by scoring again."""
+    calls = EpisodeCalls()
+    calls.start("solver", task("solve"), None)
+    calls.start("judge", task("judge"), ("solver", 0))
+    solver = in_box(new_trace("solve"), "box-1")
+    solver.stop("agent_completed")
+    solver.timing.finalize.end = 1.0
+    judge = in_box(new_trace("judge"), "box-1")
+    calls.minted(("solver", 0), solver)
+    calls.minted(("judge", 0), judge)
+
+    point, reason = episode_restore_point(
+        SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
+    )
+
+    assert reason is None
+    point = pickle.loads(pickle.dumps(point))
+    by_seat = {c["seat"]: c for c in point["calls"]}
+    assert by_seat["judge"]["parent"] == ["solver", 0]
+    (checkpoint,) = by_seat["solver"]["trace"]["checkpoints"]
+    assert checkpoint["snapshot"] == {"id": f"s-{judge.id}"}
+    assert (
+        checkpoint["session"]["stage"] == "scoring"
+        and checkpoint["session"]["finalized"]
+    )
+    assert checkpoint["session"]["stop"][0] == "agent_completed"
+    # One box: both calls continue from the same snapshot.
+    assert point["snapshots"] == [{"id": f"s-{judge.id}"}]
+
+    # The judge in a box of its own (isolated scoring): the solver's box is not saved.
+    in_box(judge, "box-2")
+    point, reason = episode_restore_point(
+        SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
+    )
+    assert point is None and "inside another run's scoring" in reason

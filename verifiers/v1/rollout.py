@@ -212,6 +212,10 @@ class Rollout:
         self._last_capture = 0.0
         self._snapshot_request = asyncio.Lock()
         self._snapshot_timer: asyncio.TimerHandle | None = None
+        self.resumes_scoring = False
+        """Whether this run continues a rollout saved in scoring: its box is restored,
+        its agent's turns are done, and its scoring runs again (`scoring_point`)."""
+        self._finalized = False
         if restore is not None:
             self.trace, self._restore = restore
             self.trace.attempt = attempt
@@ -225,6 +229,11 @@ class Rollout:
             self.rewound_snapshots = self.trace.rewind(self._restore)
             self.restored_turns = self.trace.num_turns
             self._restore.restored = True
+            session = self._restore.session or {}
+            if session.get("stage") == "scoring":
+                self.resumes_scoring = True
+                self._finalized = session["finalized"]
+                self.trace.stop_condition, self.trace.stop_info = session["stop"]
         else:
             self.trace = Trace(
                 **({"id": trace_id} if trace_id is not None else {}),
@@ -479,6 +488,11 @@ class Rollout:
                 self.trace.timing.boot.end = now
                 self.trace.timing.setup.start = now
                 self.trace.notify()
+                if self.resumes_scoring:
+                    # The agent's turns are done: the restored box only gets scored.
+                    self.unsaveable = "it continues its scoring"
+                    self.trace.timing.setup.end = time.time()
+                    return True
                 # A restored box already holds the task's setup.
                 if self._restore is None:
                     started = time.perf_counter()
@@ -515,10 +529,8 @@ class Rollout:
                     if not restored:
                         await self.harness.setup(self._agent_runtime)
                 self.unsaveable = unsaveable(self.trace.agent.config, self.harness) or (
-                    "it runs in a borrowed box"
-                    if self._borrowed_runtime is not None
                     # Only `Agent.run` continues a rollout from a checkpoint.
-                    else "it is an interaction, which no checkpoint can continue"
+                    "it is an interaction, which no checkpoint can continue"
                     if self._has_user
                     else "its agent takes no checkpoints"
                     if self._checkpointing is None
@@ -1523,14 +1535,16 @@ class Rollout:
                         asyncio.timeout_at(finalize_deadline),
                         boundary(TaskError, "task finalize"),
                     ):
-                        await invoke(
-                            self.task.finalize,
-                            {
-                                "trace": trace,
-                                "runtime": runtime,
-                                "deployment": self.deployment,
-                            },
-                        )
+                        # A rollout saved in scoring already ran it.
+                        if not self._finalized:
+                            await invoke(
+                                self.task.finalize,
+                                {
+                                    "trace": trace,
+                                    "runtime": runtime,
+                                    "deployment": self.deployment,
+                                },
+                            )
                         if (
                             self._collect_artifacts or grader is not None
                         ) and not trace.state.artifacts:
