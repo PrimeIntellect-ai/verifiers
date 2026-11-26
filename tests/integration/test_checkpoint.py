@@ -38,14 +38,18 @@ SUB_AGENTS = {"id": "rlm", "delegation_prompt": True}
 
 @pytest.fixture
 def taken(monkeypatch) -> list[str]:
-    """The id of every snapshot the run's boxes take, in every attempt."""
+    """The id of every snapshot the run's boxes take, in every attempt, recorded once
+    the platform names it: a save returns from then on."""
     snapshots: list[str] = []
     snapshot = PrimeBackend.snapshot
 
     async def recording(self, named=None):
-        result = await snapshot(self, named)
-        snapshots.append(result.id)
-        return result
+        def record(result):
+            snapshots.append(result.id)
+            if named is not None:
+                named(result)
+
+        return await snapshot(self, record)
 
     monkeypatch.setattr(PrimeBackend, "snapshot", recording)
     return snapshots
