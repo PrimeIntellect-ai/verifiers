@@ -320,8 +320,8 @@ async def test_a_failed_upload_leaves_the_owners_snapshot_to_the_owner():
 
 
 async def test_released_save_does_not_reapply_its_hold():
-    """A release that arrives while the save still waits to take its snapshot ends
-    the hold: the save does not hold the box again when it returns."""
+    """A release can arrive while the save still waits to take its snapshot. The
+    release ends the hold, and the save does not hold the box again later."""
     run, _, session = make_rollout()
     with session.committing():
         saving = asyncio.create_task(run.save(hold=True))
@@ -337,8 +337,8 @@ async def test_released_save_does_not_reapply_its_hold():
 
 async def test_a_save_returns_before_the_box_stops():
     """The owner gets the restore point once the snapshot is named. The box keeps
-    its hold until it runs again, also past the owner's release, and only then does
-    the snapshot's upload wait start."""
+    its hold until it runs again, also past the owner's release. Only then does the
+    wait for the snapshot's upload start."""
     run, backend, session = make_rollout(stops=True)
     backend.durable.set()
     saved = await asyncio.wait_for(run.save(hold=True), 1)
@@ -354,9 +354,9 @@ async def test_a_save_returns_before_the_box_stops():
 
 
 async def test_a_snapshot_that_fails_after_it_was_named_is_freed_with_the_box():
-    """A box that never stops leaves the owner a restore point nothing continues:
-    the rollout drops it and the box's teardown frees it, so the owner's restore
-    from it starts over."""
+    """A box that never stops leaves the owner a restore point nothing continues.
+    The rollout drops it and the box's teardown frees it. The owner's restore from
+    it then starts over."""
     run, backend, session = make_rollout(stops=True)
     backend.stop_fails = True
     saved = await asyncio.wait_for(run.save(hold=True), 1)
@@ -716,8 +716,8 @@ async def test_a_held_save_all_arms_the_watchdog_once_every_save_is_in(monkeypat
 
 
 async def test_a_save_past_the_timeout_goes_back_to_its_rollout(monkeypatch):
-    """`save_all` returns at its timeout without the late saves: each one gives its
-    snapshot and hold back to its rollout when it ends."""
+    """`save_all` returns at its timeout without the late saves. Each late save
+    gives its snapshot and hold back to its rollout when it ends."""
     from verifiers.v1 import restore
 
     fast, fast_backend, _ = make_rollout()
@@ -759,7 +759,7 @@ async def test_a_release_does_not_answer_a_box_that_another_snapshot_stops():
 
 async def test_a_cancelled_held_save_does_not_hold_the_box():
     """A save cancelled before its snapshot is named leaves the snapshot to the
-    rollout: unpinned, and the box answered again once it runs."""
+    rollout. The snapshot is unpinned, and the box gets replies once it runs."""
     run, backend, session = make_rollout(stops=True)
     with session.committing():
         saving = asyncio.create_task(run.save(hold=True))
@@ -847,8 +847,8 @@ async def test_a_save_whose_program_ended_is_skipped():
 
 
 async def test_a_snapshot_dropped_before_the_save_resumes_is_no_restore_point():
-    """A backend can name a snapshot and fail before the save runs again: the save
-    returns no restore point, and the box's teardown frees the snapshot."""
+    """A backend can name a snapshot and fail before the save runs again. The save
+    then returns no restore point, and the box's teardown frees the snapshot."""
     run, backend, session = make_rollout()
 
     async def named_then_failed(taken=None):
@@ -867,8 +867,8 @@ async def test_a_snapshot_dropped_before_the_save_resumes_is_no_restore_point():
 
 
 async def test_a_timed_snapshot_whose_program_ends_while_the_box_stops_is_dropped():
-    """No owner holds the snapshot: with no program left to continue, the rollout
-    drops it and its box's teardown frees it."""
+    """No owner holds the snapshot, and no program is left to continue. The rollout
+    drops the snapshot, and its box's teardown frees it."""
     run, backend, session = make_rollout(stops=True)
     assert await run._checkpoint() is not None
     run._harness_session = SimpleNamespace(memory_state=lambda: None)  # type: ignore[assignment]
@@ -880,8 +880,8 @@ async def test_a_timed_snapshot_whose_program_ends_while_the_box_stops_is_droppe
 
 
 async def test_an_owners_snapshot_outlives_the_end_of_its_program():
-    """The owner already has the restore point, and may have ended the rollout
-    itself: the snapshot stays the owner's and becomes durable."""
+    """The owner already has the restore point and may have ended the rollout
+    itself. The snapshot stays the owner's and becomes durable."""
     run, backend, session = make_rollout(stops=True)
     backend.durable.set()
     saved = await run.save(hold=True)
@@ -1170,7 +1170,7 @@ async def test_a_hold_stops_the_agent_deadline():
 
 
 async def test_the_agent_deadline_stays_stopped_until_the_box_runs_again():
-    """An owner can release a save before its box has stopped and run again: the
+    """An owner can release a save before its box has stopped and run again. The
     agent deadline goes on only once the box gets its replies again."""
     run, backend, _ = make_rollout(stops=True)
     backend.durable.set()
@@ -1189,8 +1189,8 @@ async def test_the_agent_deadline_stays_stopped_until_the_box_runs_again():
 
 
 async def test_an_owner_does_not_pin_a_snapshot_dropped_while_it_waited():
-    """A timed snapshot that fails after the owner picked it is not the owner's
-    restore point: the save takes a snapshot of its own."""
+    """A timed snapshot can fail after the owner picked it. It is then not the
+    owner's restore point, and the save takes a snapshot of its own."""
     run, backend, _ = make_rollout()
     backend.durable.set()
     timed = await run._checkpoint()

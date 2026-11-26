@@ -38,8 +38,8 @@ SUB_AGENTS = {"id": "rlm", "delegation_prompt": True}
 
 @pytest.fixture
 def taken(monkeypatch) -> list[str]:
-    """The id of every snapshot the run's boxes take, in every attempt, recorded once
-    the platform names it: a save returns from then on."""
+    """The id of every snapshot the run's boxes take, in every attempt. Each id is
+    recorded once the platform names the snapshot, since a save returns then."""
     snapshots: list[str] = []
     snapshot = PrimeBackend.snapshot
 

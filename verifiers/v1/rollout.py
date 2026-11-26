@@ -1177,7 +1177,7 @@ class Rollout:
         if self._release_timer is not None:
             self._release_timer.cancel()
             self._release_timer = None
-        # A snapshot that is being taken holds the box for itself, and ends the hold
+        # A snapshot that is being taken holds the box for itself. It ends the hold
         # and lets the replies flow when the box runs again.
         if not self._capturing.locked():
             self._end_hold()
@@ -1186,7 +1186,7 @@ class Rollout:
     async def _take_snapshot(self, *, pinned: bool = False) -> Checkpoint | None:
         """Hold replies and snapshot the box at a replayable trace boundary. Returns
         the checkpoint once the provider names the snapshot, before the box has
-        stopped: the rest of the capture goes on in the background (`_capture`)."""
+        stopped. The rest of the capture goes on in the background (`_capture`)."""
         assert self.runtime is not None and self._relay is not None
         if self._harness_session is None:
             return None
@@ -1210,8 +1210,8 @@ class Rollout:
     ) -> Checkpoint | None:
         """Take the snapshot `_take_snapshot` hands out through `taken`, and hold the
         box's replies until it runs again. A snapshot that fails after it was handed
-        out, or that no owner holds and whose program ended while the box stopped, is
-        dropped (`_drop_capture`)."""
+        out is dropped (`_drop_capture`). So is a snapshot that no owner holds and
+        whose program ended while the box stopped."""
         assert self.runtime is not None and self._relay is not None
         assert self._harness_session is not None
         session = self._session
@@ -1290,8 +1290,8 @@ class Rollout:
                 ):
                     # The program left while the box was being stopped: the snapshot
                     # may hold a box with nothing to continue. An owner's snapshot
-                    # stays the owner's: the owner may have ended the rollout itself,
-                    # and a restore that leads nowhere starts over.
+                    # stays the owner's, since the owner may have ended the rollout
+                    # itself. A restore that leads nowhere starts over.
                     self._drop_capture(checkpoint)
                     return None
                 # The box's connections to the server did not survive the stop: its
@@ -1322,9 +1322,9 @@ class Rollout:
         return checkpoint
 
     def _drop_capture(self, checkpoint: Checkpoint | None) -> None:
-        """Drop a snapshot that failed after `_take_snapshot` handed it out: no retry
-        restores from it, and the box's teardown frees it, also when an owner holds
-        it (the owner's restore from it then starts over)."""
+        """Drop a snapshot that failed after `_take_snapshot` handed it out. No retry
+        restores from it. The box's teardown frees it, also when an owner holds it.
+        The owner's restore from it then starts over."""
         if checkpoint is None:
             return
         assert self.runtime is not None
