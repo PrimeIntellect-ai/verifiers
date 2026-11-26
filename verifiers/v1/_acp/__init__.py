@@ -1,0 +1,596 @@
+"""Public Agent Client Protocol support for harness programs."""
+
+import asyncio
+import contextlib
+import json
+import shlex
+import time
+import uuid
+from abc import abstractmethod
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, ClassVar, TypeAlias, TypeVar, cast
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from verifiers.v1._clients import ModelContext
+from verifiers.v1._configs.harness import HarnessConfig
+from verifiers.v1._errors import HarnessError, InterceptionError
+from verifiers.v1._harness import Harness, HarnessSession
+from verifiers.v1._runtimes import ProgramResult, Runtime, RuntimeProcess
+from verifiers.v1._runtimes.base import current_program
+from verifiers.v1._semantic import (
+    ACP_SEMANTIC_EDGES_METADATA_KEY,
+    SemanticEdgeSet,
+)
+from verifiers.v1._task import TaskData
+from verifiers.v1._trace import Trace
+from verifiers.v1._types import Messages
+from verifiers.v1._utils.aio import run_shielded
+
+ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
+MAX_PACKET_BYTES = 128 * 1024 * 1024
+ACP_ROOT = "/tmp/vf-acp"
+"""Where a detached runner keeps its socket, log and request files, per rollout."""
+RUNNER_START_SECONDS = 120
+_STOP_CONDITIONS = {
+    "max_tokens": "max_output_tokens",
+    "max_turn_requests": "max_turns",
+    "refusal": "refusal",
+    "cancelled": "cancelled",
+}
+
+__all__ = ["ACPConfig", "ACPHarness", "ACPTurn"]
+
+ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
+JsonValue: TypeAlias = (
+    str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+)
+JsonObject: TypeAlias = dict[str, JsonValue]
+
+
+class ACPTurn(BaseModel):
+    """One completed ACP prompt and its extension metadata."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reply: str
+    """The agent's visible reply text."""
+    stop_reason: str | None = None
+    """ACP stop reason of the prompt, e.g. `end_turn` or `max_tokens`."""
+    response_metadata: dict[str, Any] = Field(default_factory=dict)
+    """Extension metadata on the prompt response."""
+    update_metadata: list[dict[str, Any]] = Field(default_factory=list)
+    """Extension metadata from each session update, in order."""
+
+
+@dataclass
+class ACPConfig:
+    """One harness's ACP process and initial prompt."""
+
+    env: dict[str, str]
+    """Environment variables for the ACP process."""
+    command: list[str]
+    """Command that starts the ACP agent."""
+    prompt: str | Messages | None
+    """Initial user prompt."""
+    mcp_urls: dict[str, str] | None = None
+    """MCP servers to wire in by name (None = the task's servers)."""
+    system_prompt: str | None = None
+    """System prompt for the session."""
+    session_meta: JsonObject | None = None
+    """Extra fields sent with the `session/new` request."""
+    client_capabilities: JsonObject | None = None
+    """ACP client capabilities announced to the agent."""
+    session_title: str | None = None
+    """Title to give the session, if the agent supports renaming."""
+
+
+class ACPHarness(Harness[ConfigT]):
+    """Harness backed by one live ACP process and native session per rollout."""
+
+    SUPPORTS_MEMORY_RESTORE: ClassVar[bool] = True
+
+    async def setup(self, runtime: Runtime) -> None:
+        await runtime.prepare_uv_script(
+            ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
+        )
+
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+        """Consume the typed result of one ACP prompt."""
+
+    def acp_close_result(self, trace: Trace, response_metadata: dict[str, Any]) -> None:
+        """Consume extension metadata returned by `session/close`, when supported."""
+
+    def _consume_protocol_metadata(
+        self, trace: Trace, response_metadata: dict[str, Any]
+    ) -> None:
+        """Attach optional protocol extensions understood by every ACP harness."""
+        if ACP_SEMANTIC_EDGES_METADATA_KEY in response_metadata:
+            edge_set = SemanticEdgeSet.model_validate(
+                response_metadata[ACP_SEMANTIC_EDGES_METADATA_KEY]
+            )
+            trace._add_semantic_edges(edge_set)
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        """Configure the agent to ask before every tool call, so each request reaches the
+        runner's gate (`/tool` at `url`, keyed by `secret`). A harness that advertises
+        `SUPPORTS_TOOL_INTERCEPTION` implements this with the agent's own config."""
+
+    @abstractmethod
+    async def prepare_acp(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> ACPConfig:
+        """Return the ACP process and initial prompt for one rollout."""
+
+    async def session(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+        tool_interception_url: str | None = None,
+    ) -> HarnessSession:
+        config = await self.prepare_acp(
+            ctx, trace, runtime, endpoint, secret, mcp_urls, data
+        )
+        if tool_interception_url is not None:
+            await self.gate_tools(config, runtime, tool_interception_url, secret)
+        return ACPHarnessSession(
+            self,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls if config.mcp_urls is None else config.mcp_urls,
+            data,
+            config,
+            tool_interception_url,
+        )
+
+    async def launch(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> ProgramResult:
+        raise HarnessError(
+            f"harness {self.config.id!r} requires a rollout-scoped session"
+        )
+
+
+def _packet(value: JsonObject) -> bytes:
+    data = json.dumps(value, ensure_ascii=False).encode()
+    if len(data) > MAX_PACKET_BYTES:
+        raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
+    return len(data).to_bytes(8, "big") + data
+
+
+def _turn_result(response: JsonObject) -> ACPTurn:
+    value = response.get("result")
+    return ACPTurn.model_validate(value)
+
+
+def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
+    if (
+        result.exit_code
+        or trace.stop_condition is not None
+        or any(call.node is not None for call in trace.calls[calls_before:])
+    ):
+        return
+    detail = (result.stderr or result.stdout).strip()[-500:] or "<no output>"
+    raise RuntimeError("ACP agent completed without committing a model turn: " + detail)
+
+
+class _PacketReader:
+    def __init__(self, source: AsyncIterator[bytes]) -> None:
+        self._source = source.__aiter__()
+        self._buffer = bytearray()
+
+    async def _readexactly(self, size: int) -> bytes:
+        while len(self._buffer) < size:
+            try:
+                self._buffer.extend(await anext(self._source))
+            except StopAsyncIteration as e:
+                raise EOFError("ACP process closed its stdout") from e
+        data = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return data
+
+    async def read(self) -> JsonObject:
+        size = int.from_bytes(await self._readexactly(8), "big")
+        if size > MAX_PACKET_BYTES:
+            raise ValueError(f"ACP session packet is too large: {size} bytes")
+        return json.loads((await self._readexactly(size)).decode())
+
+
+class ACPHarnessSession(HarnessSession):
+    """A live ACP process, connection, and native session for one rollout."""
+
+    def __init__(
+        self,
+        harness: ACPHarness,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+        config: ACPConfig,
+        tool_interception_url: str | None = None,
+    ) -> None:
+        super().__init__(
+            harness,
+            ctx,
+            trace,
+            runtime,
+            endpoint,
+            secret,
+            mcp_urls,
+            data,
+            tool_interception_url,
+        )
+        self.config = config
+        self._process: RuntimeProcess | None = None
+        self._reader: _PacketReader | None = None
+        self._stderr_tail = bytearray()
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
+        self._responses: dict[int, asyncio.Future] = {}
+        self._request_id = 0
+        self._response_task: asyncio.Task | None = None
+        self._detached: list[str] | None = None
+        """The runner's argv once it runs as a job of the box (`memory`): each request
+        is then a job too, since no connection from the host survives a stopped box."""
+        self._prompt: dict[str, Any] | None = None
+        """The reply file and the trace's call count of the prompt request under way."""
+
+    @property
+    def _dir(self) -> str:
+        return f"{ACP_ROOT}/{self.trace.id}"
+
+    @property
+    def _running(self) -> bool:
+        return self._process is not None or self._detached is not None
+
+    async def _start(self) -> None:
+        self._stderr_tail.clear()
+        program = await self.runtime.prepare_uv_script(
+            ACP_SOURCE,
+            {**self.config.env, "UV_FROZEN": "false"},
+            activate=False,
+        )
+        if self.memory:
+            socket = f"{self._dir}/socket"
+            await self.runtime.run(["mkdir", "-p", self._dir], {})
+            await self.runtime.run_background(
+                [*program, "--socket", socket],
+                self.config.env,
+                log=f"{self._dir}/runner.log",
+            )
+            deadline = time.monotonic() + RUNNER_START_SECONDS
+            while (await self.runtime.run(["test", "-S", socket], {})).exit_code:
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        f"ACP runner did not start: {await self._runner_log()}"
+                    )
+                await asyncio.sleep(0.2)
+            self._detached = program
+            return
+        process = await self.runtime.exec(program, self.config.env)
+        self._process = process
+        self._reader = _PacketReader(process.stdout)
+        self._response_task = asyncio.create_task(self._read_responses(self._reader))
+        self._stderr_task = asyncio.create_task(self._drain_stderr(process.stderr))
+
+    async def _read_responses(self, reader: _PacketReader) -> None:
+        try:
+            while True:
+                response = await reader.read()
+                future = self._responses.get(response.get("id"))
+                if future is not None and not future.done():
+                    future.set_result(response)
+        except BaseException as error:  # noqa: BLE001 - settle callers on disconnect or shutdown
+            for future in self._responses.values():
+                if not future.done():
+                    future.set_exception(
+                        RuntimeError(f"ACP connection closed: {error}")
+                    )
+
+    async def _runner_log(self) -> str:
+        with contextlib.suppress(Exception):
+            log = await self.runtime.run(
+                ["tail", "-c", "4000", f"{self._dir}/runner.log"], {}
+            )
+            return log.stdout.strip()
+        return ""
+
+    async def _call(self, operation: str, payload: dict[str, Any]) -> JsonObject:
+        """One request to the detached runner, as a job of the box."""
+        assert self._detached is not None
+        name = uuid.uuid4().hex
+        request, reply = f"{self._dir}/{name}.request", f"{self._dir}/{name}.reply"
+        await self.runtime.write(
+            request,
+            json.dumps({"id": name, "operation": operation, **payload}).encode(),
+        )
+        program = None
+        if operation == "prompt":
+            program = current_program.get()
+            self._prompt = {"reply": reply, "calls_before": len(self.trace.calls)}
+        try:
+            result = await self.runtime.run(
+                [*self._detached, "--call", f"{self._dir}/socket", request, reply],
+                self.config.env,
+                program=program,
+            )
+        finally:
+            if operation == "prompt":
+                self._prompt = None
+        return await self._reply(result, reply)
+
+    async def _reply(self, result: ProgramResult, reply: str) -> JsonObject:
+        if result.exit_code:
+            detail = (result.stderr or result.stdout).strip()[-1000:]
+            raise RuntimeError(
+                f"ACP runner request failed (exit {result.exit_code}): {detail}"
+            )
+        response = json.loads(await self.runtime.read(reply))
+        if not response.get("ok"):
+            self._stderr_tail[:] = (await self._runner_log()).encode()
+        return response
+
+    def memory_state(self) -> dict[str, Any] | None:
+        state = super().memory_state()
+        if state is None or self._prompt is None or self._detached is None:
+            return None
+        return {**state, **self._prompt, "runner": list(self._detached)}
+
+    async def _continue(self, state: dict[str, Any]) -> ProgramResult:
+        # The restored box runs the runner and the request's job; only their result
+        # is still to collect.
+        self._detached = list(state["runner"])
+        async with self._lock:
+            self._prompt = {
+                "reply": state["reply"],
+                "calls_before": state["calls_before"],
+            }
+            try:
+                result = await self.runtime.attach(state["job"], program=self.program)
+                response = await self._reply(result, state["reply"])
+            except BaseException:
+                await run_shielded(self._stop(graceful=False))
+                raise
+            finally:
+                self._prompt = None
+        return self._finish(response, state["calls_before"])
+
+    async def _request(self, operation: str, **payload: Any) -> JsonObject:
+        if self._detached is not None:
+            return await self._call(operation, payload)
+        process = self._process
+        if process is None or self._response_task is None or self._response_task.done():
+            raise RuntimeError("ACP process is not running")
+        self._request_id += 1
+        request_id = self._request_id
+        future = asyncio.get_running_loop().create_future()
+        self._responses[request_id] = future
+        try:
+            async with self._write_lock:
+                await process.write(
+                    _packet({"id": request_id, "operation": operation, **payload})
+                )
+            return await future
+        finally:
+            self._responses.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        if self._closed:
+            raise RuntimeError("ACP session is closed")
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("steering requires a nonempty user message")
+        if not self._running:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        response = await self._request("steer", message=message, message_id=message_id)
+        if not response.get("ok"):
+            if response.get("error_type") == "NotImplementedError":
+                error = str(response.get("error"))
+                raise NotImplementedError(error.removeprefix("NotImplementedError: "))
+            raise RuntimeError(response.get("error") or "ACP steering failed")
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise TypeError("invalid ACP steering receipt")
+        return result
+
+    async def _drain_stderr(self, stream: AsyncIterator[bytes]) -> None:
+        async for chunk in stream:
+            self._stderr_tail.extend(chunk)
+            if len(self._stderr_tail) > 4000:
+                del self._stderr_tail[:-4000]
+
+    def _stderr(self) -> str:
+        return self._stderr_tail.decode(errors="replace").strip()
+
+    async def _run(self, messages: Messages | None) -> ProgramResult:
+        prompt = self.config.prompt if messages is None else messages
+        if prompt is None:
+            raise ValueError("ACP requires a prompt")
+        if not isinstance(prompt, str) and (
+            not prompt or any(message.role != "user" for message in prompt)
+        ):
+            raise ValueError("an ACP turn must contain user messages only")
+        user_contents = (
+            [prompt]
+            if isinstance(prompt, str)
+            else [
+                message.model_dump(mode="json", include={"content"})["content"]
+                for message in prompt
+            ]
+        )
+        config = {
+            "command": self.config.command,
+            "user_contents": user_contents,
+            "mcp_urls": self.mcp_urls,
+            "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
+            "system_prompt": self.config.system_prompt or "",
+            "session_meta": self.config.session_meta or {},
+            "client_capabilities": self.config.client_capabilities or {},
+            "session_title": self.config.session_title,
+            "tool_interception": {
+                "url": self.tool_interception_url,
+                "secret": self.secret,
+            }
+            if self.tool_interception_url
+            else None,
+        }
+        async with self._lock:
+            if self._closed:
+                raise HarnessError(
+                    f"harness {self.harness.config.id!r} session is already closed"
+                )
+            if not self._running:
+                await self._start()
+            calls_before = len(self.trace.calls)
+            try:
+                response = await self._request("prompt", config=config)
+            except BaseException:
+                await run_shielded(self._stop(graceful=False))
+                raise
+        return self._finish(response, calls_before)
+
+    def _finish(self, response: JsonObject, calls_before: int) -> ProgramResult:
+        """Consume a prompt request's response as the segment's result."""
+        turn = _turn_result(response)
+        self.trace.root_reply = turn.reply.strip()
+        self.trace.info["acp_stop_reason"] = turn.stop_reason
+        if not response.get("ok"):
+            detail = response.get("error") or "ACP session request failed"
+            if stderr := self._stderr():
+                detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+            error_data = response.get("error_data")
+            if (
+                isinstance(error_data, dict)
+                and error_data.get("kind") == "model_transport"
+            ):
+                raise InterceptionError(detail)
+            raise RuntimeError(detail)
+        harness = cast(ACPHarness, self.harness)
+        harness._consume_protocol_metadata(self.trace, turn.response_metadata)
+        harness.acp_turn_result(self.trace, turn)
+        if condition := _STOP_CONDITIONS.get(turn.stop_reason or ""):
+            self.trace.stop(condition)
+        result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
+        _require_model_turn(self.trace, calls_before, result)
+        return result
+
+    async def _stop_detached(self, *, graceful: bool) -> dict[str, Any]:
+        response_metadata: dict[str, Any] = {}
+        try:
+            if graceful:
+                with contextlib.suppress(BaseException):
+                    response = await asyncio.wait_for(self._call("shutdown", {}), 30)
+                    result = response.get("result")
+                    if response.get("ok") and isinstance(result, dict):
+                        metadata = result.get("response_metadata")
+                        if isinstance(metadata, dict):
+                            response_metadata = metadata
+            # Best effort: the box may be gone already.
+            pid = shlex.quote(f"{self._dir}/socket.pid")
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(
+                    self.runtime.run(
+                        ["sh", "-c", f'kill "$(cat {pid})" 2>/dev/null; true'], {}
+                    ),
+                    30,
+                )
+        finally:
+            self._detached = None
+        return response_metadata
+
+    async def _stop(self, *, graceful: bool) -> dict[str, Any]:
+        if self._detached is not None:
+            return await self._stop_detached(graceful=graceful)
+        process = self._process
+        response_task = self._response_task
+        stderr_task, self._stderr_task = self._stderr_task, None
+        if process is None:
+            return {}
+        response_metadata: dict[str, Any] = {}
+        try:
+            if graceful:
+                with contextlib.suppress(BaseException):
+                    response = await asyncio.wait_for(
+                        self._request("shutdown"), timeout=10
+                    )
+                    result = response.get("result")
+                    if response.get("ok") and isinstance(result, dict):
+                        metadata = result.get("response_metadata")
+                        if isinstance(metadata, dict):
+                            response_metadata = metadata
+            for timeout, stop in (
+                (10 if graceful else 0.1, None),
+                (5, process.terminate),
+                (5, process.kill),
+            ):
+                if stop is not None:
+                    with contextlib.suppress(BaseException):
+                        await stop()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout)
+                    break
+                except TimeoutError:
+                    continue
+        finally:
+            self._process = None
+            self._reader = None
+            self._response_task = None
+            if response_task is not None:
+                response_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await response_task
+            if stderr_task is not None:
+                if not stderr_task.done():
+                    stderr_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await stderr_task
+        return response_metadata
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        # Publish closure before waiting for the process lock. A turn that
+        # already passed HarnessSession.turn()'s fast check rechecks under the
+        # same lock in _run(), so it cannot restart after teardown.
+        await super().close()
+
+        async def close_process() -> None:
+            async with self._lock:
+                response_metadata = await self._stop(graceful=True)
+                if response_metadata:
+                    harness = cast(ACPHarness, self.harness)
+                    harness._consume_protocol_metadata(self.trace, response_metadata)
+                    harness.acp_close_result(self.trace, response_metadata)
+
+        await run_shielded(close_process())

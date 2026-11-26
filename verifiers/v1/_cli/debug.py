@@ -1,0 +1,337 @@
+"""The debug entrypoint: setup tasks, run one shell action, and persist traces."""
+
+import asyncio
+import contextlib
+import os
+import shlex
+import sys
+import time
+import uuid
+from collections.abc import Awaitable
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from pydantic_config import cli
+
+import verifiers.v1 as vf
+from verifiers.v1._cli.output import save_config
+from verifiers.v1._cli.resolve import (
+    extract_id,
+    narrow_taskset_config,
+    plugin_errors,
+    references_config_file,
+    with_positional_taskset,
+)
+from verifiers.v1._configs.cli.debug import DebugConfig
+from verifiers.v1._runtimes import ProgramResult, Runtime, make_backend
+from verifiers.v1._state import state_cls
+from verifiers.v1._task import Task
+from verifiers.v1._trace import AgentInfo, Error, Trace, TraceTask
+from verifiers.v1._utils.compile import resolve_runtime_config
+from verifiers.v1._utils.decorators import invoke
+from verifiers.v1._utils.interrupt import install_interrupt
+from verifiers.v1._utils.logging import get_logger, setup_logging
+from verifiers.v1._utils.trace_store import append_trace
+
+logger = get_logger(__name__)
+
+USAGE = (
+    "usage: uv run vf-debug [<taskset-id>] (--command <cmd> | --script-path <path>) "
+    "[--runtime.type subprocess] [options] [@ file.toml]\n"
+    "       runs setup, then one command or uploaded host script, and saves traces"
+)
+
+
+def _narrow(argv: list[str]) -> type[DebugConfig]:
+    """`DebugConfig` with `taskset` narrowed to the config type of the id on the CLI."""
+    return narrow_taskset_config(DebugConfig, extract_id(argv, "taskset"))
+
+
+def output_path(config: DebugConfig) -> Path:
+    if config.output_dir is not None:
+        return config.output_dir
+    return Path("outputs") / f"{config.taskset._name}--debug" / config.uuid
+
+
+def task_info(task) -> dict[str, Any]:
+    return {"idx": task.data.idx, "name": task.data.name, "workdir": task.data.workdir}
+
+
+def result_info(result: ProgramResult, start: float) -> dict[str, Any]:
+    ok = result.exit_code == 0
+    return {
+        "ok": ok,
+        "reason": "pass" if ok else "nonzero_exit",
+        "exit_code": result.exit_code,
+        "elapsed": round(time.time() - start, 2),
+        "stdout": result.stdout or "",
+        "stderr": result.stderr or "",
+    }
+
+
+def error_info(
+    error: BaseException,
+    start: float,
+    timeout: float | None,
+    stage: str,
+) -> dict[str, Any]:
+    if isinstance(error, asyncio.TimeoutError):
+        message = (
+            f"{stage} timed out after {timeout}s"
+            if timeout is not None
+            else f"{stage} timed out"
+        )
+        reason = "timeout"
+    elif isinstance(error, asyncio.CancelledError):
+        message = f"{stage} cancelled"
+        reason = "cancelled"
+    else:
+        message = str(error)
+        reason = "error"
+    return {
+        "ok": False,
+        "reason": reason,
+        "exit_code": None,
+        "elapsed": round(time.time() - start, 2),
+        "error": message,
+        "error_type": type(error).__name__,
+        "stdout": "",
+        "stderr": "",
+    }
+
+
+def capture_trace_error(trace: Trace, error: BaseException) -> None:
+    # CancelledError is a BaseException; Trace.record_error accepts Exception.
+    if isinstance(error, Exception):
+        trace.record_error(error)
+        return
+    trace.errors.append(Error.from_exception(error))
+    trace.stop("error")
+
+
+def record_debug_error(
+    trace: Trace,
+    debug: dict[str, Any],
+    error: BaseException,
+    setup_timeout: float | None,
+    action_timeout: float | None,
+) -> None:
+    now = time.time()
+    for span in (trace.timing.boot, trace.timing.setup, trace.timing.agent):
+        if span.start and not span.end:
+            span.end = now
+    in_action = bool(trace.timing.agent.start)
+    stage = (
+        "debug action" if in_action else "setup" if trace.timing.setup.start else "boot"
+    )
+    timeout = action_timeout if in_action else setup_timeout
+    error_start = (
+        trace.timing.agent.start
+        if in_action
+        else trace.timing.setup.start or trace.timing.boot.start
+    )
+    debug.update(error_info(error, error_start, timeout, stage))
+    capture_trace_error(trace, error)
+
+
+def record_action_failure(trace: Trace, debug: dict[str, Any]) -> None:
+    message = debug.get("error") or f"debug action failed: {debug['reason']}"
+    trace.errors.append(
+        Error(
+            type=debug.get("error_type") or "DebugActionError",
+            message=str(message),
+            traceback=None,
+        )
+    )
+
+
+async def run_timed(
+    action: Awaitable[ProgramResult], config: DebugConfig
+) -> dict[str, Any]:
+    """Run the whole debug action under one `--timeout.total` budget."""
+    start = time.time()
+    try:
+        result = await asyncio.wait_for(action, config.timeout.total)
+    except Exception as e:  # noqa: BLE001 - report any debug action failure
+        return error_info(e, start, config.timeout.total, "debug action")
+    return result_info(result, start)
+
+
+async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
+    if config.command is not None:
+        return {
+            "action": "command",
+            "command": config.command,
+            **(await run_timed(runtime.run(["sh", "-lc", config.command], {}), config)),
+        }
+    assert config.script_path is not None
+    # /tmp keyed by the (run-unique) runtime name: outside the task workdir so the script
+    # doesn't show up in the repo state being inspected, and never shared between runs on
+    # the subprocess runtime, where an absolute path is a host path.
+    remote_path = f"/tmp/{runtime.name}-script.sh"
+    quoted = shlex.quote(remote_path)
+    command = f"chmod +x {quoted} && {quoted}"
+
+    async def upload_and_run() -> ProgramResult:
+        await runtime.write(remote_path, config.script_path.read_bytes())
+        return await runtime.run(["sh", "-lc", command], {})
+
+    return {
+        "action": "script",
+        "script_path": str(config.script_path),
+        "remote_script_path": remote_path,
+        "command": command,
+        **(await run_timed(upload_and_run(), config)),
+    }
+
+
+async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
+    trace = Trace(
+        task=TraceTask._from_task(task),
+        state=state_cls(type(task))(),
+        # No agent plays here (no model, no harness): the seat records the
+        # runtime policy, and the provisioned box lands on it below (id, resolved
+        # type, cache status).
+        agent=AgentInfo(
+            config=vf.AgentConfig(runtime=config.runtime),
+            name="debug",
+            trainable=False,
+        ),
+    )
+    debug = {
+        "task": task_info(task),
+        "action": "command" if config.command is not None else "script",
+        "ok": False,
+        "reason": "not_run",
+    }
+    cancelled = False
+    backend = make_backend(
+        resolve_runtime_config(config.runtime, task),
+        name=f"debug-{task.data.idx}-{uuid4().hex[:8]}",
+    )
+    trace.agent.runtime = backend.info
+    setup_timeout = (
+        config.timeout.setup
+        if config.timeout.setup is not None
+        else task.data.timeout.setup
+    )
+    try:
+        backend.env = dict(task.runtime_env())
+        trace.timing.boot.start = time.time()
+        await backend.start()
+        runtime = backend.bind()
+        now = time.time()
+        trace.timing.boot.end = now
+        trace.timing.setup.start = now
+        await asyncio.wait_for(
+            invoke(task.setup, {"trace": trace, "runtime": runtime}),
+            setup_timeout,
+        )
+        await backend.prepare_execution([])
+        trace.timing.setup.end = time.time()
+
+        trace.timing.agent.start = time.time()
+        debug.update(await run_action(runtime, config))
+        trace.timing.agent.end = time.time()
+        trace.ok = bool(debug["ok"])
+        if not trace.ok:
+            record_action_failure(trace, debug)
+        trace.stop(str(debug["reason"]))
+    except asyncio.CancelledError as e:
+        cancelled = True
+        record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
+    except Exception as e:  # noqa: BLE001 - persist any framework failure on the trace
+        record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
+    finally:
+        trace._split_agent_time()
+        trace.info["debug"] = debug
+        try:
+            await backend.stop()
+        except asyncio.CancelledError:
+            # a task cancellation delivered mid-stop would abort before the caller can
+            # persist the trace — absorb it here; the caller re-raises after appending
+            cancelled = True
+        except Exception:
+            logger.warning(
+                "runtime teardown failed (task %s)", task.data.idx, exc_info=True
+            )
+    return trace, cancelled
+
+
+async def run_debug(config: DebugConfig) -> list[Trace]:
+    taskset = vf.load_taskset(config.taskset).select(config.select)
+    if not taskset.bounded:
+        raise ValueError(
+            f"{type(taskset).__name__} is infinite - bound the run with -n"
+        )
+    tasks = list(taskset)
+    if isinstance(config.runtime, vf.SubprocessConfig) and any(
+        type(t).NEEDS_CONTAINER or t.data.image for t in tasks
+    ):
+        raise SystemExit(
+            "taskset needs a container runtime to debug - pass --runtime.type docker (or prime)"
+        )
+
+    out = output_path(config)
+    save_config(config, out, "debug.json")
+    logger.info(
+        "debugging %d task(s) from %s on the %s runtime",
+        len(tasks),
+        config.name,
+        config.runtime.type,
+    )
+    logger.info("results: %s", out)
+
+    sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    write_lock = asyncio.Lock()
+
+    async def one(task) -> Trace:
+        async with sem or contextlib.nullcontext():
+            trace, cancelled = await debug_task(task, config)
+        await append_trace(out, trace, write_lock)
+        info = trace.info["debug"]
+        detail = f" - {info['error']}" if info.get("error") else ""
+        logger.info(
+            "idx=%s ok=%s reason=%s%s",
+            task.data.idx,
+            info["ok"],
+            info["reason"],
+            detail,
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return trace
+
+    return await asyncio.gather(*(one(task) for task in tasks))
+
+
+def main(argv: list[str] | None = None) -> None:
+    # The run identity: every process this run spawns inherits it.
+    os.environ.setdefault("VF_RUN_ID", uuid.uuid4().hex)
+    argv = with_positional_taskset(
+        list(sys.argv[1:]) if argv is None else list(argv), flag="--taskset.id"
+    )
+
+    if not argv or any(arg in ("-h", "--help") for arg in argv):
+        print(USAGE)
+        sys.argv = [sys.argv[0], "--help"]
+        with plugin_errors():
+            cli(_narrow(argv))
+        return
+    if not extract_id(argv, "taskset") and not references_config_file(argv):
+        raise SystemExit(USAGE)
+
+    with plugin_errors():
+        config_type = _narrow(argv)
+        sys.argv = [sys.argv[0], *argv]
+        config = cli(config_type)
+    setup_logging("DEBUG" if config.verbose else "INFO")
+    # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`;
+    # a second is swallowed so it can't orphan containers/sandboxes mid-cleanup.
+    install_interrupt()
+    asyncio.run(run_debug(config))
+
+
+if __name__ == "__main__":
+    main()

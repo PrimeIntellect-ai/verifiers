@@ -8,14 +8,14 @@ import asyncio
 from pydantic import PositiveInt
 
 import verifiers.v1 as vf
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.harnesses.utils.launch import (
+from verifiers.v1._clients import ModelContext
+from verifiers.v1._configs.harness import HarnessConfig
+from verifiers.v1._harness import Harness
+from verifiers.v1._runtimes import ProgramResult, Runtime
+from verifiers.v1.harnesses._utils.launch import (
     CHAT_PROGRAM_SOURCE,
     launch_chat_program,
 )
-from verifiers.v1.runtimes import ProgramResult, Runtime
 
 __all__ = ["ParallelHarness", "ParallelTaskset"]
 

@@ -1,0 +1,206 @@
+"""Attempt-scoped target ownership, independent of placement."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
+
+from verifiers.v1._configs.deployment import DeploymentConfig
+from verifiers.v1._runtimes import (
+    PrimeConfig,
+    Runtime,
+    RuntimeBackend,
+    RuntimeConfig,
+    provision_backend,
+)
+from verifiers.v1._runtimes.base import (
+    register,
+)
+from verifiers.v1._runtimes.compose import ComposeSpec
+from verifiers.v1._utils.aio import run_shielded
+from verifiers.v1._utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class ServicesSpec:
+    """Named Prime VMs beside the task's `main` workspace, on one private LAN.
+
+    Each config selects a service's image and resources. Task setup starts its
+    processes through `deployment.target(name)` and waits for them to be ready.
+    `deployment.hosts` maps every target, including `main`, to its LAN hostname.
+    """
+
+    services: dict[str, PrimeConfig]
+    """Config of each service VM, by service name."""
+
+
+class _DeploymentStrategy:
+    """Placement, connectivity and lifecycle hooks for one deployment attempt."""
+
+    async def start(self, deployment: Deployment) -> None:
+        raise NotImplementedError
+
+    async def prepare_execution(
+        self, deployment: Deployment, routes: list[str], state_route: str | None = None
+    ) -> None:
+        await deployment._harness_backend.prepare_execution(routes)
+
+    async def stop_execution(self, deployment: Deployment) -> None:
+        return
+
+    async def close(self, deployment: Deployment) -> None:
+        return
+
+    async def prepare_verifier(self, deployment: Deployment) -> None:
+        return
+
+    @asynccontextmanager
+    async def verifier(
+        self, deployment: Deployment, config: RuntimeConfig, env: dict[str, str]
+    ) -> AsyncIterator[RuntimeBackend]:
+        async with provision_backend(config, env=env) as backend:
+            yield backend
+
+
+class Deployment:
+    """Coordinate the execution resources for one rollout attempt.
+
+    Provisions and connects the harness, task workspace, and supporting services,
+    and cleans up resources it acquires, including fresh verification environments.
+    Runtimes implement resource operations; the rollout controls agent execution.
+    """
+
+    def __init__(
+        self,
+        backend: RuntimeBackend,
+        *,
+        spec: ComposeSpec | ServicesSpec | None = None,
+        tool_vms: Mapping[str, PrimeConfig] | None = None,
+        env: dict[str, str] | None = None,
+        config: DeploymentConfig | None = None,
+        borrowed_runtime: Runtime | None = None,
+    ):
+        self._backend = backend
+        self._spec = spec
+        self.tool_vms = dict(tool_vms or {})
+        """Tool servers on Prime runtimes of their own, by server name, which join the
+        workspace over the rollout's private network."""
+        self._env = dict(env or {})
+        self._config = config or DeploymentConfig()
+        self._borrowed_runtime = borrowed_runtime
+        from verifiers.v1._runtimes.strategies import _deployment_strategy
+
+        self._strategy = _deployment_strategy(
+            self._config, backend, spec, self.tool_vms
+        )
+        self._target_backends: dict[str, RuntimeBackend] = {}
+        self.hosts: dict[str, str] = {}
+        """LAN hostnames of native services or tool servers on their own VMs."""
+        self._harness_backend: RuntimeBackend | None = None
+        self._execution_backend: RuntimeBackend | None = None
+        self._stack = AsyncExitStack()
+        self._owned: set[int] = set()
+        self._close_task: asyncio.Task[None] | None = None
+
+    async def _own(self, backend: RuntimeBackend) -> RuntimeBackend:
+        """Acquire a target; register cleanup before startup can partially fail."""
+        if id(backend) in self._owned:
+            raise ValueError("runtime already owned by this deployment")
+        self._owned.add(id(backend))
+        register(backend)
+        self._stack.push_async_callback(backend.stop)
+        await backend.start()
+        return backend
+
+    async def _enter(self, resource):
+        """Own a provider resource such as a network or composed service group."""
+        return await self._stack.enter_async_context(resource)
+
+    async def start(self) -> None:
+        """Provision and connect every resource of the deployment."""
+        try:
+            await self._strategy.start(self)
+            if self._harness_backend is None or self._execution_backend is None:
+                raise ValueError(
+                    "deployment strategy must bind harness and execution roles"
+                )
+        except BaseException:
+            try:
+                await self.close()
+            except Exception:
+                logger.warning(
+                    "Failed to tear down the deployment after a startup error",
+                    exc_info=True,
+                )
+            raise
+
+    @property
+    def target_names(self) -> list[str]:
+        """The names `target()` accepts: the workspace and every service."""
+        return list(self._target_backends)
+
+    @property
+    def workspace(self) -> Runtime:
+        """Runtime view where task commands execute and task files live.
+
+        This is the single runtime for ordinary tasks, or the selected Compose
+        service; it names an execution role rather than a separate resource type.
+        """
+        if self._borrowed_runtime is not None:
+            return self._borrowed_runtime.with_env(self._env)
+        return self._execution_backend.bind(env=self._env)
+
+    def target(self, name: str) -> Runtime:
+        """Access a named service or workspace through an execution view."""
+        return (
+            self.workspace
+            if self._target_backends[name] is self._execution_backend
+            else self._target_backends[name].bind()
+        )
+
+    @asynccontextmanager
+    async def _verifier(
+        self, config: RuntimeConfig, env: dict[str, str]
+    ) -> AsyncIterator[Runtime]:
+        # Parent ownership is registered before acquisition, including cancellation.
+        stack = AsyncExitStack()
+        self._stack.push_async_callback(stack.aclose)
+        async with stack:
+            backend = await stack.enter_async_context(
+                self._strategy.verifier(self, config, env)
+            )
+            yield backend.bind()
+
+    async def _prepare_verifier(self) -> None:
+        """Release solver resources after collection, outside verifier budgets.
+
+        Finish cleanup even if the caller is cancelled, then propagate cancellation.
+        """
+        await run_shielded(self._strategy.prepare_verifier(self))
+
+    async def _stop_execution(self) -> None:
+        await self._strategy.stop_execution(self)
+
+    async def _prepare_execution(
+        self, routes: list[str], *, state_route: str | None = None
+    ) -> None:
+        """Apply each target's execution policy: the harness's keeps `routes`, and a tool
+        server's own VM keeps only `state_route`, its state channel."""
+        await self._strategy.prepare_execution(self, routes, state_route)
+
+    async def close(self) -> None:
+        """Release every resource the deployment acquired."""
+
+        async def release():
+            try:
+                await self._strategy.close(self)
+            finally:
+                await self._stack.aclose()
+
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(release())
+        await run_shielded(self._close_task)

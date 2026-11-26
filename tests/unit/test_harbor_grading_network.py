@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("harbor")
 
 import verifiers.v1 as vf
-from verifiers.v1.tasksets.harbor.taskset import HarborConfig, parse_task
+from verifiers.v1.tasksets.harbor._taskset import HarborConfig, parse_task
 
 
 def task(tmp_path, *, environment=None, agent=None, verifier=None):

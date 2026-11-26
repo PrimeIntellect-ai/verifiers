@@ -1,4 +1,4 @@
-from verifiers.v1.harnesses.hermes_agent.harness import (
+from verifiers.v1.harnesses.hermes_agent._harness import (
     HermesAgentHarness,
     HermesAgentHarnessConfig,
 )

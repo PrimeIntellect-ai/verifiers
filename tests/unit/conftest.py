@@ -4,8 +4,8 @@ trace with reasoning and a tool call."""
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1._graph import MessageNode
+from verifiers.v1._types import AssistantMessage, UserMessage
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -46,7 +46,7 @@ def _make_trace(
 
 def _make_full_trace() -> vf.Trace:
     """A multi-turn trace: user -> assistant (reasoning + tool call) -> tool -> final reply."""
-    from verifiers.v1.types import ToolCall, ToolMessage
+    from verifiers.v1._types import ToolCall, ToolMessage
 
     return vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),

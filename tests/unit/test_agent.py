@@ -7,17 +7,17 @@ from types import SimpleNamespace
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1 import graph
-from verifiers.v1.agent import Interaction
-from verifiers.v1.clients import EvalClientConfig, ModelContext, ModelRoute
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.dialects.anthropic import AnthropicDialect
-from verifiers.v1.errors import HarnessError
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
-from verifiers.v1.rollout import Rollout, RolloutTimeouts
-from verifiers.v1.session import RolloutSession
-from verifiers.v1.types import AssistantMessage
+from verifiers.v1 import _graph as graph
+from verifiers.v1._agent import Interaction
+from verifiers.v1._clients import EvalClientConfig, ModelContext, ModelRoute
+from verifiers.v1._configs.runtime import NetworkPolicyConfig
+from verifiers.v1._dialects.anthropic import AnthropicDialect
+from verifiers.v1._errors import HarnessError
+from verifiers.v1._graph import MessageNode
+from verifiers.v1._rollout import Rollout, RolloutTimeouts
+from verifiers.v1._session import RolloutSession
+from verifiers.v1._types import AssistantMessage
+from verifiers.v1.harnesses._utils.replay import drop_blank_text_blocks
 
 
 class FailingSegmentRollout:

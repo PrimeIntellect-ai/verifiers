@@ -11,18 +11,18 @@ import httpx
 import pytest
 from prime_tunnel import TunnelGoneError
 
-from verifiers.v1.configs.interception import (
+from verifiers.v1._configs.interception import (
     InterceptionServerConfig,
     StaticInterceptionPoolConfig,
 )
-from verifiers.v1.errors import TunnelError
-from verifiers.v1.interception.pool import (
+from verifiers.v1._errors import TunnelError
+from verifiers.v1._interception.pool import (
     ElasticInterceptionPool,
     StaticInterceptionPool,
 )
-from verifiers.v1.interception.server import InterceptionServer
-from verifiers.v1.interception.tunnel import prime
-from verifiers.v1.interception.tunnel.base import HEALTH_PATH
+from verifiers.v1._interception.server import InterceptionServer
+from verifiers.v1._interception.tunnel import prime
+from verifiers.v1._interception.tunnel.base import HEALTH_PATH
 
 
 class FakeClient:

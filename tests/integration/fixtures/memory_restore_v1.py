@@ -19,8 +19,8 @@ import asyncio
 import uuid
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1._errors import SandboxError
+from verifiers.v1._runtimes import Runtime
 
 FIFO = "nonce.fifo"
 STEP_ONE = "step1.txt"

@@ -6,7 +6,7 @@ on prime."""
 import pytest
 from grid import assert_one_branch, grid
 
-from verifiers.v1.utils.loaders import harness_class
+from verifiers.v1._utils.loaders import harness_class
 
 NOTICES = {
     "open": None,

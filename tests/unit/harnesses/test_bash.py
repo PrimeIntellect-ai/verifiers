@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from verifiers.v1.harnesses.utils.launch import CHAT_PROGRAM_SOURCE
+from verifiers.v1.harnesses._utils.launch import CHAT_PROGRAM_SOURCE
 
 # The real chat program, with compaction bundled into core as the harness runs it.
 PROGRAM = {"__name__": "chat_program"}

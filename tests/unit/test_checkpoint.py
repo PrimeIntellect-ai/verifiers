@@ -9,24 +9,24 @@ from types import SimpleNamespace
 from typing import Literal
 
 import verifiers.v1 as vf
-import verifiers.v1.agent as agent_module
-from verifiers.v1.clients import ModelContext, ModelRoute
-from verifiers.v1.configs.agent import RolloutCheckpointConfig
-from verifiers.v1.configs.client import EvalClientConfig
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.restore import open_restore, restorable, restore_entry, unsaveable
-from verifiers.v1.rollout import Rollout, kept
-from verifiers.v1.runtimes.backends.prime import PrimeBackend
-from verifiers.v1.runtimes.base import Program
-from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
-from verifiers.v1.trace import (
+import verifiers.v1._agent as agent_module
+from verifiers.v1._clients import ModelContext, ModelRoute
+from verifiers.v1._configs.agent import RolloutCheckpointConfig
+from verifiers.v1._configs.client import EvalClientConfig
+from verifiers.v1._graph import MessageNode
+from verifiers.v1._restore import open_restore, restorable, restore_entry, unsaveable
+from verifiers.v1._rollout import Rollout, kept
+from verifiers.v1._runtimes.backends.prime import PrimeBackend
+from verifiers.v1._runtimes.base import Program
+from verifiers.v1._session import IdempotentRequest, ReplayResponse, RolloutSession
+from verifiers.v1._trace import (
     Checkpoint,
     InterceptRecord,
     ModelCall,
     TimeSpan,
     TraceTask,
 )
-from verifiers.v1.types import (
+from verifiers.v1._types import (
     AssistantMessage,
     ToolCall,
     ToolMessage,
@@ -115,7 +115,7 @@ def test_restored_span_counts_only_its_own_calls():
     trace = make_trace()
     trace.timing.agent.start, trace.timing.agent.end = 100.0, 120.0
     trace.calls.append(ModelCall(time=TimeSpan(start=105.0, end=110.0)))
-    trace.split_agent_time()
+    trace._split_agent_time()
     assert trace.timing.agent.model.duration == 5.0
     assert trace.timing.agent.harness.duration == 15.0
 
@@ -128,7 +128,7 @@ def test_agent_time_splits_off_the_checkpoint_hold():
         Checkpoint(id="old", snapshot=vf.Snapshot(id="old"), captured=90.0, held=3.0),
         Checkpoint(id="new", snapshot=vf.Snapshot(id="new"), captured=107.0, held=1.5),
     ]
-    trace.split_agent_time()
+    trace._split_agent_time()
     assert trace.timing.agent.checkpoint.duration == 1.5
     assert trace.timing.agent.model.duration == 3.5
     assert trace.timing.agent.harness.duration == 15.0
@@ -339,7 +339,7 @@ async def test_save_takes_a_fresh_snapshot_when_the_timed_one_expired(monkeypatc
     run, backend, _ = make_rollout(interval=60)
     point = await run._checkpoint()
     assert point is not None
-    monkeypatch.setattr("verifiers.v1.rollout.time.time", lambda: point.captured + 61)
+    monkeypatch.setattr("verifiers.v1._rollout.time.time", lambda: point.captured + 61)
     saved = await run.save(hold=True)
     assert saved is not None and restore_entry(saved)["id"] == "ck2"
     assert not point.pinned and backend.taken == 2
@@ -635,7 +635,7 @@ async def test_a_held_save_all_arms_the_watchdog_once_every_save_is_in(monkeypat
     """A save of many rollouts takes minutes: a watchdog armed at each rollout's own
     save would let the first ones go on before the owner has them all. `save_all`
     arms the watchdogs when it returns, or leaves them to the owner."""
-    from verifiers.v1 import restore
+    from verifiers.v1 import _restore as restore
 
     first, first_backend, first_session = make_rollout()
     second, second_backend, _ = make_rollout()
@@ -869,9 +869,9 @@ async def test_an_attached_program_can_be_snapshotted_again():
 async def test_restore_applies_egress_before_connecting_relay(monkeypatch):
     """On restore, prepare_execution must allow the new tunnel host before Relay.connect
     reloads the already-running relay."""
-    import verifiers.v1.rollout as rollout_module
-    from verifiers.v1.runtimes.backends.prime import PrimeRuntimeInfo
-    from verifiers.v1.runtimes.base import RuntimeBackend
+    import verifiers.v1._rollout as rollout_module
+    from verifiers.v1._runtimes.backends.prime import PrimeRuntimeInfo
+    from verifiers.v1._runtimes.base import RuntimeBackend
 
     events: list[str] = []
 
@@ -989,8 +989,8 @@ async def test_restore_applies_egress_before_connecting_relay(monkeypatch):
     )
     trace.checkpoints.append(ckpt)
 
-    from verifiers.v1.rollout import RolloutTimeouts
-    from verifiers.v1.session import RolloutLimits
+    from verifiers.v1._rollout import RolloutTimeouts
+    from verifiers.v1._session import RolloutLimits
 
     run = Rollout(
         task=vf.Task(vf.TaskData(idx=0, prompt="q")),

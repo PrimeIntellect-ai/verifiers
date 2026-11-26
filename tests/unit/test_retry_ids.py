@@ -4,10 +4,10 @@ across attempts, and so do an episode's attempts."""
 import pytest
 
 import verifiers.v1 as vf
-import verifiers.v1.agent as agent_module
-import verifiers.v1.utils.retries as retries_module
-from verifiers.v1.configs.agent import RolloutCheckpointConfig
-from verifiers.v1.env import Env, RunSlot
+import verifiers.v1._agent as agent_module
+import verifiers.v1._utils.retries as retries_module
+from verifiers.v1._configs.agent import RolloutCheckpointConfig
+from verifiers.v1._env import Env, RunSlot
 
 RETRIES = vf.RetryConfig(max_retries=2)
 FAILURE = vf.Error(type="SandboxError", message="boom")

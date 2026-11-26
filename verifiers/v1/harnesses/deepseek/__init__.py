@@ -1,4 +1,4 @@
-from verifiers.v1.harnesses.deepseek.harness import (
+from verifiers.v1.harnesses.deepseek._harness import (
     DeepSeekHarness,
     DeepSeekHarnessConfig,
 )

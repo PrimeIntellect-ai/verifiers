@@ -4,8 +4,8 @@ own config type, and an unknown id fails with the bundled ids in the message."""
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.harness import Harness
-from verifiers.v1.utils.loaders import (
+from verifiers.v1._harness import Harness
+from verifiers.v1._utils.loaders import (
     builtin_harness_ids,
     env_config_type,
     environment_class,

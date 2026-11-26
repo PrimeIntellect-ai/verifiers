@@ -1,0 +1,414 @@
+"""Task data + behavior.
+
+`TaskData` is the wire half: a frozen pydantic model carrying the data which
+initializes a task instance. Rides on `trace.task.data` in `traces.jsonl`.
+
+`Task` is the behavior half: runtime prep (`setup`/`finalize`), tool servers
+(`toolsets`), and scoring (`@reward`/`@metric`) methods.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import inspect
+import json
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
+
+from pydantic import BaseModel, ConfigDict, Field
+from typing_extensions import TypeVar
+
+from verifiers.v1._configs.harness import SkillSource
+from verifiers.v1._configs.runtime import NetworkPolicyConfig
+from verifiers.v1._configs.scoring import ScoringConfig
+from verifiers.v1._configs.task import TaskConfig
+from verifiers.v1._errors import TaskError, boundary
+from verifiers.v1._state import StateT
+from verifiers.v1._types import Messages, content_text
+from verifiers.v1._utils.artifacts import MAX_ARTIFACT_BYTES, Artifact
+from verifiers.v1._utils.decorators import (
+    discover_decorated,
+    invoke_all,
+    seed,
+    unseed,
+)
+from verifiers.v1._utils.generic import concrete_type
+from verifiers.v1._utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from verifiers.v1._judge import Judge
+    from verifiers.v1._mcp import Toolset
+    from verifiers.v1._runtimes import Runtime
+    from verifiers.v1._runtimes.compose import ComposeSpec
+    from verifiers.v1._runtimes.deployment import Deployment, ServicesSpec
+    from verifiers.v1._trace import Trace
+
+logger = get_logger(__name__)
+
+
+def task_key(data: Mapping) -> str:
+    """Content identity for task wire data, independent of field order."""
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+class TaskResources(BaseModel):
+    """Optional resource limits for the task."""
+
+    model_config = ConfigDict(frozen=True)
+
+    cpu: float | None = None
+    """CPU cores."""
+    memory: float | None = None
+    """Memory in GB."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
+    disk: float | None = None
+    """Disk in GB (enforced by prime; advisory on local containers)."""
+
+
+class TaskTimeout(BaseModel):
+    """Optional per-task timeout overrides, in seconds."""
+
+    model_config = ConfigDict(frozen=True)
+
+    setup: float | None = None
+    """Timeout (in seconds) for the task's setup hook."""
+    agent: float | None = None
+    """Timeout (in seconds) for the agent's solve attempt."""
+    finalize: float | None = None
+    """Timeout (in seconds) for the task's finalize hook."""
+    scoring: float | None = None
+    """Timeout (in seconds) for the task's scoring."""
+
+
+class TaskData(BaseModel):
+    """Data that initializes a task; recorded on each of its traces."""
+
+    model_config = ConfigDict(frozen=True)
+
+    idx: int | None = None
+    """Task index in the taskset's `load()` stream - automatically set."""
+    id: str | None = None
+    """Optional durable id from the task's source, e.g. a dataset's instance id."""
+    name: str | None = None
+    """Optional human-readable task name."""
+    description: str | None = None
+    """Optional human-readable task description."""
+
+    prompt: str | Messages | None = None
+    """Initial user prompt; unset if the user opens the conversation."""
+    system_prompt: str | None = None
+    """Optional system prompt to prepend to the user prompt."""
+
+    scoring: ScoringConfig = ScoringConfig()
+    """Task scoring defaults; explicitly set agent.scoring fields take precedence."""
+
+    image: str | None = None
+    """Optional Docker image to use for the task. Only relevant for tasks that run in a container."""
+    workdir: str | None = None
+    """Optional working directory to use for the task. Only relevant for tasks that run in a container."""
+    agent_user: str | None = None
+    """Existing user in the task's box that the harness, and so every command the agent
+    runs, executes as. None uses the runtime's default user (usually root). Task setup,
+    artifact collection, and grading keep running as the default user."""
+    agent_home: str | None = None
+    """Home directory for `agent_user`; None uses the account's passwd home.
+    Must already exist and be writable by that user."""
+
+    skills: list[SkillSource] = Field(default_factory=list)
+    """Skill sources installed before the harness's configured skills for this task."""
+
+    network: NetworkPolicyConfig = Field(default_factory=NetworkPolicyConfig)
+    """What the task's box may reach once the agent starts, combined with the runtime's
+    own rules: `allow=["*"]` leaves the runtime's allowlist unchanged, concrete allowlists
+    intersect with it, and blocklists merge. Unsupported intersections are rejected, and a
+    concrete allowlist cannot be combined with a blocklist. Prime runtimes accept
+    host-level entries; Docker framework routes take precedence."""
+
+    artifacts: list[Artifact] = Field(default_factory=list)
+    """Paths collected from one runtime and restored at the same locations in another,
+    on top of the implicitly collected `/logs/artifacts/` convention dir. Declare
+    runtime outputs that must cross that boundary. A declared path that is missing at
+    collection time fails the rollout."""
+    artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
+    """Total byte limit for collected artifact archives, including the convention dir."""
+
+    timeout: TaskTimeout = TaskTimeout()
+    """Per-stage timeout overrides."""
+    resources: TaskResources = TaskResources()
+    """Resource limits for the task's runtime."""
+
+    @property
+    def prompt_text(self) -> str:
+        """Text of the prompt, with messages joined by blank lines."""
+        if isinstance(self.prompt, str):
+            return self.prompt
+        texts = [content_text(message.content) for message in self.prompt or []]
+        return "\n\n".join(text for text in texts if text)
+
+
+class WireTaskData(TaskData):
+    """Wire form that preserves task-specific fields without importing the task class."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+DataT = TypeVar("DataT", bound=TaskData)
+ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
+
+
+class Task(Generic[DataT, StateT, ConfigT]):
+    """A task's behavior: runtime setup, tools, and scoring."""
+
+    NEEDS_CONTAINER: ClassVar[bool] = False
+    """Whether the task needs a containerized environment (isolated filesystem, ...)."""
+
+    def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
+        self.data = data
+        """The task's data."""
+        self.config = config if config is not None else self.config_type()()
+        """The task's config."""
+
+    @property
+    def hash(self) -> str:
+        """Content hash of the task's wire data, recorded on the trace as
+        ``task.hash``."""
+        return task_key(self.data.model_dump(mode="json", exclude_none=True))
+
+    @property
+    def key(self) -> str:
+        """Stable task identity, recorded on the trace as ``task.key``.
+
+        The default hashes the task data without the taskset-assigned ``idx``, so
+        inserting, removing or reordering other rows preserves this task's key.
+        Override this for identity independent of other data changes. Keys must be
+        unique within a taskset; use ``TaskData.id`` to distinguish identical rows.
+        """
+        return task_key(
+            self.data.model_dump(mode="json", exclude={"idx"}, exclude_none=True)
+        )
+
+    def with_data(self, **update: Any) -> Self:
+        """A shallow copy whose data has `update` applied."""
+        clone = copy.copy(self)
+        clone.data = self.data.model_copy(update=update)
+        return clone
+
+    def with_system_prompt(self, system_prompt: str) -> Self:
+        """Return a copy whose data has `system_prompt` set."""
+        return self.with_data(system_prompt=system_prompt)
+
+    def runtime_env(self) -> dict[str, str]:
+        """Live-only process environment; unlike TaskData, it is not traced."""
+        return {}
+
+    def deployment_spec(self) -> ComposeSpec | ServicesSpec | None:
+        """Optional service composition for each independent attempt."""
+        return
+
+    @property
+    def scoring(self) -> ScoringConfig:
+        """Task scoring defaults, including any task-format-specific defaults."""
+        return self.data.scoring
+
+    def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig) -> Self:
+        """Adapt scoring inputs to the resolved policy without changing the solver task."""
+        return self
+
+    async def finalize_services(
+        self, trace: Trace, targets: dict[str, Runtime]
+    ) -> None:
+        """Collect isolated-grading evidence after the workspace has stopped."""
+        return
+
+    async def setup(self, trace: Trace, runtime: Runtime) -> None:
+        """Prepare the runtime before the agent starts."""
+        return
+
+    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
+        """Inspect the runtime after the agent finishes, before scoring."""
+        return
+
+    async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
+        """Prepare trusted verifier-only inputs after artifacts are restored."""
+        return
+
+    async def validate(self, runtime: Runtime) -> bool | None:
+        """Check the ground truth, or return None when no model-free check exists.
+
+        Request `trace` by name for the check's trace, which `setup` ran with and which
+        records vf-validate's runtime config; pass it to `vf.grade_submission` to grade
+        as a rollout would."""
+        return None
+
+    async def rescore(self, trace: Trace) -> None:
+        """Score a finished trace again, offline: clear its rewards, metrics, judge
+        calls and drop, then run this task's signals that need only the trace."""
+        if trace.has_error:
+            raise ValueError("the rollout errored: its transcript is incomplete")
+        trace.info.pop("judge_calls", None)
+        trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+        trace.dropped = None
+        await self.score(trace)
+
+    def defer_scoring(self) -> Self:
+        """An independent copy whose task signals are deferred.
+
+        Lifecycle hooks still run normally: in particular, ``finalize`` can prepare
+        state before declared artifacts are collected and the solver runtime is
+        destroyed. Only task metrics, rewards, and judges are skipped; harness
+        metrics remain attached to the solver trace.
+        """
+        clone = copy.deepcopy(self)
+        clone.scoring_deferred = True
+        return clone
+
+    scoring_deferred: bool = False
+    """Whether the task skips its metrics, rewards, and judges."""
+
+    async def score(
+        self,
+        trace: Trace,
+        runtime: Runtime | None = None,
+        deployment: Deployment | None = None,
+    ) -> None:
+        """Run the task's metrics, rewards, and judges on the trace."""
+        if self.scoring_deferred or trace.is_format_violation:
+            return
+
+        def requires_unavailable_resource(fn) -> bool:
+            parameters = inspect.signature(fn).parameters
+            return any(
+                value is None
+                and (param := parameters.get(name)) is not None
+                and param.default is inspect.Parameter.empty
+                for name, value in (
+                    ("runtime", runtime),
+                    ("deployment", deployment),
+                )
+            )
+
+        judges = self._plugged_judges()
+        available = {"task": self.data, "trace": trace}
+        if runtime is not None:
+            available["runtime"] = runtime
+        if deployment is not None:
+            available["deployment"] = deployment
+
+        async with boundary(TaskError, f"task {type(self).__name__} scoring"):
+            metrics = self._hooks("metric")
+            rewards = self._hooks("reward")
+            if runtime is None or deployment is None:
+                skipped = [
+                    fn.__name__
+                    for fn in (*metrics, *rewards)
+                    if requires_unavailable_resource(fn)
+                ] + [
+                    judge._reward_name
+                    for judge in judges
+                    if requires_unavailable_resource(judge.score)
+                ]
+                if skipped:
+                    logger.debug(
+                        "Skipped signals that need an unavailable runtime or deployment "
+                        "signals=%s",
+                        skipped,
+                    )
+                metrics = [
+                    fn for fn in metrics if not requires_unavailable_resource(fn)
+                ]
+                rewards = [
+                    fn for fn in rewards if not requires_unavailable_resource(fn)
+                ]
+                judges = [
+                    judge
+                    for judge in judges
+                    if not requires_unavailable_resource(judge.score)
+                ]
+
+            seed(trace.metrics, (fn.__name__ for fn in metrics))
+            seed(trace.rewards, (fn.__name__ for fn in rewards))
+            seed(trace.rewards, (judge._reward_name for judge in judges))
+
+            metric_results = await invoke_all(metrics, available)
+            for fn, result in zip(metrics, metric_results):
+                if isinstance(result, Mapping):
+                    unseed(trace.metrics, fn.__name__)
+                    trace.record_metrics(result)
+                else:
+                    trace.record_metric(fn.__name__, result)
+            reward_results = await invoke_all(rewards, available)
+            for fn, result in zip(rewards, reward_results):
+                weight = getattr(fn, "_vf_weight", 1.0)
+                if isinstance(result, Mapping):
+                    unseed(trace.rewards, fn.__name__)
+                    items = result.items()
+                else:
+                    items = [(fn.__name__, result)]
+                for key, value in items:
+                    if value is not None:
+                        trace.record_reward(key, value, weight)
+            judge_results = await invoke_all(
+                [judge.score for judge in judges], available
+            )
+            for judge, result in zip(judges, judge_results):
+                if isinstance(result, Mapping):
+                    unseed(trace.rewards, judge._reward_name)
+                    items = result.items()
+                else:
+                    items = [(judge._reward_name, result)]
+                for key, value in items:
+                    if value is not None:
+                        trace.record_reward(key, value, judge.config.weight)
+
+    @classmethod
+    def data_type(cls) -> type[TaskData]:
+        """Return the task's data class."""
+        return concrete_type(cls, TaskData) or TaskData
+
+    @classmethod
+    def config_type(cls) -> type[TaskConfig]:
+        """Return the task's config class."""
+        return concrete_type(cls, TaskConfig) or TaskConfig
+
+    def _plugged_judges(self) -> list[Judge]:
+        from verifiers.v1._utils.loaders import load_judge
+
+        return [load_judge(config) for config in self.config.judges]
+
+    def _hooks(self, attr: str) -> list[Callable[..., Any]]:
+        """The task's `@vf.<attr>` methods merged with the config-plugged functions —
+        a plugged function replaces a decorated method with the same name (a `fn`-less
+        entry only overrides its metadata) — sorted by descending priority then name."""
+        from verifiers.v1._utils.loaders import load_plugged_fn
+
+        plugged = {
+            "stop": self.config.stops,
+            "metric": self.config.metrics,
+            "reward": self.config.rewards,
+        }[attr]
+        merged = {fn.__name__: fn for fn in discover_decorated(self, attr)}
+        merged |= {
+            name: load_plugged_fn(name, spec, attr, decorated=merged.get(name))
+            for name, spec in plugged.items()
+        }
+        fns = list(merged.values())
+        fns.sort(key=lambda fn: (-getattr(fn, f"{attr}_priority", 0), fn.__name__))
+        return fns
+
+    @classmethod
+    def toolsets(cls, config: ConfigT) -> list[Toolset]:
+        """Tool servers launched per rollout, each constructed with its config off
+        `config` — override and wire explicitly:
+
+            @classmethod
+            def toolsets(cls, config: MyTaskConfig) -> list[vf.Toolset]:
+                return [SearchToolset(config.tools)]
+
+        A classmethod so consumers can size placement (tunnels) off the class
+        before any task instance exists."""
+        return []
+
+
+TaskT = TypeVar("TaskT", bound=Task)

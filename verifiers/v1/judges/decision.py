@@ -6,19 +6,19 @@ from typing import Any, TypeVar, cast
 
 from pydantic import Field
 
-from verifiers.v1.clients.base import build_async_openai
-from verifiers.v1.configs.harness import ID
-from verifiers.v1.configs.judge import JudgeConfig
-from verifiers.v1.judge import (
+from verifiers.v1._clients.base import build_async_openai
+from verifiers.v1._configs.harness import ID
+from verifiers.v1._configs.judge import JudgeConfig
+from verifiers.v1._judge import (
     Judge,
     JudgeResponse,
     JudgeView,
     judge_question,
     judge_response,
 )
-from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages, Usage
+from verifiers.v1._task import TaskData
+from verifiers.v1._trace import Trace
+from verifiers.v1._types import Messages, Usage
 
 _Result = TypeVar("_Result")
 _MAX_QUESTIONS = 64
@@ -29,8 +29,11 @@ class DecisionScoreError(ValueError):
 
 
 class DecisionJudgeConfig(JudgeConfig):
+    """Config for the decision-model judge."""
+
     id: ID = "decision"
     model: str = "cloudflare/clef"
+    """Decision model to grade with."""
     base_url: str = "https://api.pinference.ai/api/v1/evaluations"
     """Full URL to POST evaluation requests to."""
     levels: list[str] = Field(
@@ -45,9 +48,12 @@ class DecisionJudgeConfig(JudgeConfig):
     images_field: str = ""
     """Optional task field containing an ordered list of image data URLs."""
     view: JudgeView = "last_reply"
+    """How much of the rollout the judge grades."""
 
 
 class DecisionJudge(Judge[float, DecisionJudgeConfig]):
+    """Judge that grades a response on weighted levels with a decision model."""
+
     prompt = (
         "Grade how well the response satisfies the task in question. "
         "Use the reference answer when provided; equivalent answers are acceptable."
@@ -166,10 +172,11 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
                 if trace_state is not None:
                     logged["state"] = trace_state
                 trace.record_judge_call(
-                    name=self.reward_name, request=logged, response=response
+                    name=self._reward_name, request=logged, response=response
                 )
 
     async def score(self, task: TaskData, trace: Trace) -> float:
+        """Grade the trace's response from 0 to 1."""
         response = judge_response(trace, self.config.view)
         if not response.strip():
             return 0.0

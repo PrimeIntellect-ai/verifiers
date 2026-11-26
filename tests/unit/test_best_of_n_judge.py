@@ -9,13 +9,13 @@ from types import SimpleNamespace
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.envs.agentic_judge.env import VERDICT_FILE
-from verifiers.v1.envs.best_of_n_judge.env import (
+from verifiers.v1._utils.loaders import resolve_env_config
+from verifiers.v1.envs.agentic_judge._env import VERDICT_FILE
+from verifiers.v1.envs.best_of_n_judge._env import (
     BestOfNJudgeEnv,
     Ranking,
     RankTask,
 )
-from verifiers.v1.utils.loaders import resolve_env_config
 
 
 class VerdictBox:

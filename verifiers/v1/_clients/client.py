@@ -1,0 +1,191 @@
+"""Client interfaces for model inference and relay."""
+
+import asyncio
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import dataclass, field, replace
+
+from verifiers.v1._configs.client import (
+    BaseClientConfig,
+    ClientConfig,
+    TrainClientConfig,
+)
+from verifiers.v1._configs.sampling import SamplingConfig
+from verifiers.v1._dialects import Dialect
+from verifiers.v1._errors import ProviderError
+from verifiers.v1._graph import PendingTurn
+from verifiers.v1._types import Response
+
+SESSION_ID_HEADER = "X-Session-ID"
+"""Per-rollout routing header (the trace id, same value every turn), so a session-affinity
+router pins a rollout's turns to one engine and its growing prefix stays KV-cached."""
+
+
+@dataclass
+class RelayReply:
+    """A relayed upstream response: content type, complete SSE events, and connection cleanup."""
+
+    content_type: str
+    chunks: AsyncIterator[bytes]
+    close: Callable[[], Awaitable[None]]
+
+
+class Client(ABC):
+    """A connection to a model endpoint."""
+
+    @abstractmethod
+    async def get_response(
+        self,
+        dialect: Dialect,
+        body: dict,
+        sampling: SamplingConfig,
+        session_id: str | None = None,
+        turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Response:
+        """Run one completion -> a vf `Response`. `body` is the final effective native
+        request after overrides and policy mediation: the eval client forwards it unchanged,
+        while the train client renders it to token ids using the resolved `sampling` config.
+        `session_id` is the rollout's trace id (sent as `SESSION_ID_HEADER`); `turn` is the
+        graph-resolved prompt prefix, used by train clients for renderer bridging."""
+
+    async def _relay(
+        self,
+        dialect: Dialect,
+        body: dict,
+        session_id: str | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> RelayReply:
+        """Stream a response for the final effective `body`, relaying the provider's bytes.
+        Only the relay (eval) client supports it; the renderer generates and cannot stream."""
+        raise NotImplementedError(f"{type(self).__name__} does not support streaming")
+
+    async def _relay_aux(
+        self,
+        dialect: Dialect,
+        route: str,
+        body: dict,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict:
+        """Relay a non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`)
+        as native JSON and return the provider JSON. Only the relay (eval) client supports it."""
+        raise NotImplementedError(f"{type(self).__name__} does not relay aux routes")
+
+    async def close(self) -> None:
+        """Release the client's connections."""
+
+
+def resolve_client(config: BaseClientConfig) -> Client:
+    """Build the client for `config`: a train or eval client."""
+    if isinstance(config, TrainClientConfig):
+        from verifiers.v1._clients.train import TrainClient
+
+        return TrainClient(config)
+    from verifiers.v1._clients.eval import EvalClient
+
+    return EvalClient(config)
+
+
+@dataclass(frozen=True)
+class ModelContext:
+    """Model, endpoint config, and sampling for one rollout."""
+
+    model: str
+    """Model id."""
+    client: BaseClientConfig
+    """Endpoint config."""
+    sampling: SamplingConfig = field(default_factory=SamplingConfig)
+    """Sampling values for each request."""
+
+
+class RouteRejected(Exception):
+    """A route change the rollout can't take; its route is left as it was."""
+
+
+PROBE_TOKENS = 16
+"""Output tokens a route change's probe asks for (16 is the least Responses accepts)."""
+PROBE_TIMEOUT = 60.0
+"""Seconds a route change's probe may take, retries included, before the change is refused."""
+PROBE_RETRY_DELAYS = (1.0, 4.0)
+"""Waits before retrying a probe the endpoint failed transiently (429, 5xx, timeout)."""
+
+
+class ModelRoute:
+    """Where one rollout's model turns go while it runs: its `ModelContext`, which the
+    caller may change mid-rollout with `update`. The interception server reads the
+    current context on every model request, so a change applies from the rollout's
+    next turn (and to any retry of it); a new client config gets the server's shared
+    client for it. A scheduler moving a running rollout to another endpoint, or a live
+    sampling change, is one `update`. The new endpoint starts without the rollout's
+    prompt cache, so the first turn after a move pays for its whole prompt. Model and
+    client changes are supported for eval clients only; training routes may update sampling."""
+
+    def __init__(self, ctx: ModelContext) -> None:
+        self.ctx = ctx
+        """The rollout's current model context."""
+        self._updating = asyncio.Lock()
+        self.dialect: Dialect | None = None
+        """The wire format the rollout's harness speaks, set by the interception server
+        from its first model request; None until then."""
+
+    async def update(
+        self,
+        *,
+        model: str | None = None,
+        client: ClientConfig | None = None,
+        sampling: SamplingConfig | None = None,
+    ) -> None:
+        """Change the model, client or sampling of the rollout's next turns; a value left
+        out stays as it is. Raises `RouteRejected`, leaving the route unchanged, when the
+        rollout can't take the change: a client of another type (eval and train clients
+        don't mix within a rollout), a model or client change on a training route, or an
+        eval endpoint that refuses a request in the dialect the harness speaks. That probe
+        is one short request, sent when the model or client changes once the harness has
+        made its first request."""
+        changes = {"model": model, "client": client, "sampling": sampling}
+        changes = {k: v for k, v in changes.items() if v is not None}
+        # One update at a time, each from the context as the last one left it, so a change
+        # made while another one's probe was in flight is never undone.
+        async with self._updating:
+            new = replace(self.ctx, **changes)
+            if type(new.client) is not type(self.ctx.client):
+                raise RouteRejected(
+                    f"a rollout's client stays {self.ctx.client.type}: it can't move to a "
+                    f"{new.client.type} client"
+                )
+            moved = (new.model, new.client) != (self.ctx.model, self.ctx.client)
+            if moved and isinstance(self.ctx.client, TrainClientConfig):
+                raise RouteRejected(
+                    "training routes can't change model or client; only sampling may change"
+                )
+            if moved and self.dialect is not None:
+                await _probe(new, self.dialect)
+            self.ctx = new
+
+
+async def _probe(ctx: ModelContext, dialect: Dialect) -> None:
+    """Send `ctx`'s model one short request in `dialect`; RouteRejected if the endpoint refuses
+    it, or still fails transiently (429, 5xx) after a retry or two, or PROBE_TIMEOUT passes."""
+    message = [{"role": "user", "content": "Reply with OK."}]
+    body = {"input": message} if dialect.name == "responses" else {"messages": message}
+    sampling = SamplingConfig(max_tokens=PROBE_TOKENS)
+    request = dialect.apply_overrides(body, ctx.model, sampling)
+    client = resolve_client(ctx.client)
+    try:
+        async with asyncio.timeout(PROBE_TIMEOUT):
+            for delay in (*PROBE_RETRY_DELAYS, None):
+                try:
+                    await client.get_response(dialect, request, sampling)
+                    return
+                except ProviderError as e:
+                    transient = e.status_code == 429 or e.status_code >= 500
+                    if not transient or delay is None:
+                        raise
+                await asyncio.sleep(delay)
+    except Exception as e:
+        reason = "no answer in time" if isinstance(e, TimeoutError) else str(e)
+        raise RouteRejected(
+            f"{ctx.model} at {ctx.client.base_url} failed a {dialect.name} request: {reason}"
+        ) from e
+    finally:
+        await client.close()

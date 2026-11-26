@@ -9,11 +9,11 @@ runtime file I/O act as the user. The reward is 1 only if every check holds. Nee
 import json
 
 import verifiers.v1 as vf
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import SandboxError
-from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1._clients import ModelContext
+from verifiers.v1._configs.harness import HarnessConfig
+from verifiers.v1._errors import SandboxError
+from verifiers.v1._harness import Harness
+from verifiers.v1._runtimes import ProgramResult, Runtime
 
 __all__ = ["AgentUserTaskset", "ScriptedAgentUserHarness"]
 

@@ -1,4 +1,4 @@
-from verifiers.v1.harnesses.claude_code.harness import (
+from verifiers.v1.harnesses.claude_code._harness import (
     ClaudeCodeHarness,
     ClaudeCodeHarnessConfig,
 )

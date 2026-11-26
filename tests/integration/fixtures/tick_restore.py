@@ -9,8 +9,8 @@ a turn lands on the trace stops the box while that turn's command runs.
 """
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1._errors import SandboxError
+from verifiers.v1._runtimes import Runtime
 
 TURNS = 4
 FIFO = "tick.fifo"

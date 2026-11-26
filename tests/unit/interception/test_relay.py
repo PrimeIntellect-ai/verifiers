@@ -20,8 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from verifiers.v1.interception.relay import RELAY_SOURCE, relay_config
-from verifiers.v1.interception.server import SERVER_HEADER
+from verifiers.v1._interception.relay import RELAY_SOURCE, relay_config
+from verifiers.v1._interception.server import SERVER_HEADER
 
 TIMEOUT = 5
 
@@ -610,8 +610,8 @@ class FakeRuntime:
     ids=["gave-up", "exited", "recovered", "healthy"],
 )
 async def test_relay_failure_names_the_relay(monkeypatch, stdout, expected):
-    from verifiers.v1.errors import RelayError
-    from verifiers.v1.interception.relay import Relay
+    from verifiers.v1._errors import RelayError
+    from verifiers.v1._interception.relay import Relay
 
     monkeypatch.setattr(Relay, "_start", lambda self: asyncio.sleep(0))
     relay = Relay(FakeRuntime(stdout), "trace")
@@ -627,9 +627,9 @@ async def test_relay_failure_names_the_relay(monkeypatch, stdout, expected):
 def test_server_keepalive_events_are_not_response_data():
     """A retry's body can follow the keepalive events the interception server sends
     while a turn is produced, as it follows comment lines."""
-    from verifiers.v1.dialects.anthropic import AnthropicDialect
-    from verifiers.v1.dialects.responses import ResponsesDialect
-    from verifiers.v1.interception.relay.server import Scanner
+    from verifiers.v1._dialects.anthropic import AnthropicDialect
+    from verifiers.v1._dialects.responses import ResponsesDialect
+    from verifiers.v1._interception.relay.server import Scanner
 
     def scanned(*chunks: bytes) -> Scanner:
         scanner = Scanner()

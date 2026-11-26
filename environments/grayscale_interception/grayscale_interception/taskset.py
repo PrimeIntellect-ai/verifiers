@@ -4,7 +4,7 @@ from io import BytesIO
 from PIL import Image, ImageOps
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.image import image_data_url
+from verifiers.v1 import image_data_url
 
 
 class GrayscaleInterceptionTask(vf.Task):

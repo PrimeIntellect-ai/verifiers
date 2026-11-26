@@ -9,9 +9,9 @@ from typing import cast
 
 from pydantic import model_validator
 
-from verifiers.v1.configs.harness import ID
-from verifiers.v1.configs.judge import JudgeConfig
-from verifiers.v1.judge import (
+from verifiers.v1._configs.harness import ID
+from verifiers.v1._configs.judge import JudgeConfig
+from verifiers.v1._judge import (
     Judge,
     JudgeResponse,
     JudgeView,
@@ -19,15 +19,17 @@ from verifiers.v1.judge import (
     judge_response,
     judge_verdict,
 )
-from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
+from verifiers.v1._task import TaskData
+from verifiers.v1._trace import Trace
 
-REFERENCE_PROMPT = (Path(__file__).resolve().parent / "reference.txt").read_text(
+_REFERENCE_PROMPT = (Path(__file__).resolve().parent / "reference.txt").read_text(
     encoding="utf-8"
 )
 
 
 class ReferenceJudgeConfig(JudgeConfig):
+    """Config for the reference-answer judge."""
+
     id: ID = "reference"
     """Pinned to the built-in, so a code-level default entry needs no explicit id (a TOML
     entry's `id` selects the config type before this default is ever seen)."""
@@ -50,7 +52,7 @@ class ReferenceJudgeConfig(JudgeConfig):
     model 0)."""
 
     @model_validator(mode="after")
-    def check_choices(self) -> "ReferenceJudgeConfig":
+    def _check_choices(self) -> "ReferenceJudgeConfig":
         # Duplicate labels would score every parsable verdict as the positive one; labels
         # are matched case-insensitively (`parse_judge_choice`), so distinctness is too.
         if not all(self.choices) or self.choices[0].upper() == self.choices[1].upper():
@@ -61,14 +63,18 @@ class ReferenceJudgeConfig(JudgeConfig):
 
 
 class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
-    prompt = REFERENCE_PROMPT
+    """Judge that checks a response against a reference answer."""
+
+    prompt = _REFERENCE_PROMPT
 
     def parse(self, response: JudgeResponse[float]) -> float:
+        """Return 1.0 for the positive verdict and 0.0 for the negative."""
         return float(
             judge_verdict(response.text, self.config.choices) == self.config.choices[0]
         )
 
     async def score(self, task: TaskData, trace: Trace) -> float:
+        """Grade the trace's response against the reference answer."""
         answer = getattr(task, self.config.answer_field, None)
         if answer is None:
             raise ValueError(

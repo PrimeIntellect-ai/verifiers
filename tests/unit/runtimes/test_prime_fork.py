@@ -4,9 +4,9 @@ from types import SimpleNamespace
 import pytest
 from prime_sandboxes import SandboxNotRunningError
 
-from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
-from verifiers.v1.runtimes.backends import prime
+from verifiers.v1._errors import SandboxError
+from verifiers.v1._runtimes import PrimeBackend, PrimeConfig
+from verifiers.v1._runtimes.backends import prime
 
 
 class FakeClient:

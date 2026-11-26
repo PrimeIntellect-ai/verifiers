@@ -11,13 +11,13 @@ from typing import Annotated, cast
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
-from verifiers.v1.configs.harness import ID
-from verifiers.v1.configs.judge import JudgeConfig
-from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
-from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
+from verifiers.v1._configs.harness import ID
+from verifiers.v1._configs.judge import JudgeConfig
+from verifiers.v1._judge import Judge, JudgeView, judge_question, judge_response
+from verifiers.v1._task import TaskData
+from verifiers.v1._trace import Trace
 
-CriterionWeight = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+_CriterionWeight = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
     encoding="utf-8"
@@ -55,10 +55,13 @@ def first_verdicts_object(text: str) -> dict | None:
 
 
 class Criterion(BaseModel):
+    """One rubric criterion and its scored answers."""
+
     name: str
     """Key for the criterion's metric (`<judge name>/<name>`) and its `weights` override."""
     text: str
-    weight: CriterionWeight = 1.0
+    """What the judge checks for this criterion."""
+    weight: _CriterionWeight = 1.0
     """The criterion's share of the reward (overridable per name via `weights` in config)."""
     choices: list[str] | dict[str, float] = Field(
         default_factory=lambda: ["no", "yes"], min_length=1
@@ -125,17 +128,17 @@ def weighted_score(scores: dict[str, float], criteria: list[Criterion]) -> float
     return sum(c.weight * scores[c.name] for c in weighted) / total
 
 
-CRITERIA_ADAPTER = TypeAdapter(list[Criterion])
+_CRITERIA_ADAPTER = TypeAdapter(list[Criterion])
 
 
-def load_criteria(
-    path: Path, weights: dict[str, CriterionWeight] | None = None
+def _load_criteria(
+    path: Path, weights: dict[str, _CriterionWeight] | None = None
 ) -> list[Criterion]:
     """Load a JSON or TOML rubric and apply validated config overrides."""
     text = path.read_text(encoding="utf-8")
     data = tomllib.loads(text) if path.suffix.lower() == ".toml" else json.loads(text)
     items = data.get("criteria", []) if isinstance(data, dict) else data
-    criteria = CRITERIA_ADAPTER.validate_python(items)
+    criteria = _CRITERIA_ADAPTER.validate_python(items)
     if not criteria:
         raise ValueError(f"rubric file '{path}' lists no criteria")
     names = [criterion.name for criterion in criteria]
@@ -161,12 +164,14 @@ def load_criteria(
 
 
 class RubricJudgeConfig(JudgeConfig):
+    """Config for the weighted rubric judge."""
+
     id: ID = "rubric"
     """Pinned to the built-in, so a code-level default entry needs no explicit id."""
     path: Path
     """A `.toml` or `.json` file containing a `criteria` list. Relative paths resolve
     against the evaluation's working directory."""
-    weights: dict[str, CriterionWeight] = Field(default_factory=dict)
+    weights: dict[str, _CriterionWeight] = Field(default_factory=dict)
     """Per-criterion weight overrides by criterion name (config wins over the file)."""
     question_field: str = ""
     """Task field to fill the prompt's `{question}`; empty = the task's prompt rendered as
@@ -194,13 +199,21 @@ class RubricJudgeConfig(JudgeConfig):
 
 
 class CriterionVerdict(BaseModel):
+    """The judge's verdict on one criterion."""
+
     name: str
+    """Name of the graded criterion."""
     reason: str
+    """One-sentence reason for the verdict."""
     verdict: str
+    """The judge's answer for the criterion."""
 
 
 class RubricVerdicts(BaseModel):
+    """The judge's verdicts for a set of criteria."""
+
     verdicts: list[CriterionVerdict]
+    """One verdict per criterion."""
 
 
 def score_verdicts(
@@ -273,14 +286,17 @@ def drop_reason(
 
 
 class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
+    """Judge that grades a response against weighted rubric criteria."""
+
     prompt = RUBRIC_PROMPT
     schema = RubricVerdicts
+    """Structured output schema for the verdicts."""
 
     @cached_property
-    def criteria(self) -> list[Criterion]:
-        return load_criteria(self.config.path, self.config.weights)
+    def _criteria(self) -> list[Criterion]:
+        return _load_criteria(self.config.path, self.config.weights)
 
-    async def grade_batch(
+    async def _grade_batch(
         self, task: TaskData, trace: Trace, batch: list[Criterion]
     ) -> list[CriterionVerdict]:
         reference = ""
@@ -326,13 +342,13 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         # A malformed verdict is a judge failure and must error the rollout, not score the model.
         scores = score_verdicts(verdicts, batch, "the batch's")
         trace.record_metrics(
-            criterion_metrics(self.reward_name, verdicts, batch, scores)
+            criterion_metrics(self._reward_name, verdicts, batch, scores)
         )
         return verdicts
 
     async def score(self, task: TaskData, trace: Trace) -> float | None:
         """The weighted score, or None when an answer drops the trace."""
-        criteria = self.criteria
+        criteria = self._criteria
         k = self.config.max_criteria
         batches = (
             [criteria]
@@ -342,7 +358,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         # Fan out one call per batch; if any fails, cancel the siblings so a judge failure
         # doesn't keep billing the remaining batches.
         tasks = [
-            asyncio.ensure_future(self.grade_batch(task, trace, batch))
+            asyncio.ensure_future(self._grade_batch(task, trace, batch))
             for batch in batches
         ]
         try:
@@ -353,7 +369,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
         verdicts = [verdict for batch_verdicts in results for verdict in batch_verdicts]
-        if (reason := drop_reason(self.reward_name, verdicts, criteria)) is not None:
+        if (reason := drop_reason(self._reward_name, verdicts, criteria)) is not None:
             trace.drop(reason)
             return None
         return weighted_score(
@@ -362,6 +378,8 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
 
 
 __all__ = [
+    "JSON_SUFFIX",
+    "RUBRIC_PROMPT",
     "Criterion",
     "CriterionVerdict",
     "RubricJudge",
@@ -369,5 +387,7 @@ __all__ = [
     "RubricVerdicts",
     "criterion_metrics",
     "drop_reason",
+    "first_verdicts_object",
+    "score_verdicts",
     "weighted_score",
 ]

@@ -17,11 +17,11 @@ import pytest
 from aiohttp import web
 
 import verifiers.v1 as vf
-from verifiers.v1.dialects.chat import ChatDialect
+from verifiers.v1._dialects.chat import ChatDialect
+from verifiers.v1._interception import InterceptionServer
+from verifiers.v1._interception.relay import Relay
+from verifiers.v1._utils.prime import load_prime_config
 from verifiers.v1.harnesses.bash import BashHarnessConfig
-from verifiers.v1.interception import InterceptionServer
-from verifiers.v1.interception.relay import Relay
-from verifiers.v1.utils.prime import load_prime_config
 
 pytestmark = pytest.mark.skipif(
     not (os.environ.get("PRIME_API_KEY") or load_prime_config().get("api_key")),

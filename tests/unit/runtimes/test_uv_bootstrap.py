@@ -4,7 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from verifiers.v1.runtimes.base import _DOWNLOAD_UV
+from verifiers.v1._runtimes.base import _DOWNLOAD_UV
 
 
 def test_standalone_uv_install_is_unmanaged(tmp_path: Path) -> None:

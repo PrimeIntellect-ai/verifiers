@@ -1,0 +1,86 @@
+"""The harness plugin's config: which program plays a seat, and its knobs."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Annotated, Literal
+
+from pydantic import ConfigDict, Field, FiniteFloat
+from pydantic_config import BaseConfig
+
+ID = str
+"""Plugin id: the name of an installed package exporting the plugin."""
+
+DialectName = Literal["chat_completions", "responses", "anthropic_messages"]
+"""A model API wire format: a `Dialect.name`, and the values of the harness `dialect`
+setting."""
+
+PinnedVersion = Annotated[str, Field(pattern=r"^[A-Za-z0-9._+-]+$")]
+"""A release/tag a harness pins its program install to."""
+
+
+SkillSource = Path | Annotated[dict[Literal["runtime"], str], Field(min_length=1)]
+
+
+def skill_destination(skill: SkillSource, dest: str) -> str:
+    """Runtime roots merge into `dest`; host folders keep their resolved name."""
+    return dest if isinstance(skill, dict) else f"{dest}/{skill.resolve().name}"
+
+
+class HarnessConfig(BaseConfig):
+    """A harness's config: which program plays a seat, and its knobs."""
+
+    id: ID = "bash"
+    """Installed harness package, set through the seat's
+    `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env)."""
+    env: dict[str, str] = Field(default_factory=dict)
+    """Extra program variables; harness-owned variables take precedence."""
+    forward_env: list[str] = Field(default_factory=list)
+    """Host variables to forward without writing secrets into config; explicit `env` wins."""
+    mcp_header_env: dict[str, dict[str, str]] = Field(default_factory=dict)
+    """ACP MCP headers by server name: header values are read from host env vars."""
+
+    def resolve_mcp_headers(self, servers: dict[str, str]) -> dict[str, dict[str, str]]:
+        """Return the MCP headers for `servers`, read from host env vars."""
+        resolved = {}
+        for name, headers in self.mcp_header_env.items():
+            if name not in servers:
+                continue
+            resolved[name] = {}
+            for header, variable in headers.items():
+                value = os.environ.get(variable)
+                if not value:
+                    raise ValueError(
+                        f"MCP header environment variable {variable!r} is missing"
+                    )
+                resolved[name][header] = value
+        return resolved
+
+    tool_timeout: FiniteFloat = Field(600.0, gt=0)
+    """Seconds a single MCP tool call may take; raise it for tools that boot a VM."""
+    disabled_tools: list[str] | None = None
+    """Names of tools the program must not offer the model."""
+    dialect: DialectName | Literal["auto"] = "auto"
+    """Model API wire format the program speaks. `auto` lets the program pick, e.g. from
+    the model. Each harness narrows this to the formats it can select."""
+    skills: list[SkillSource] = Field(default_factory=list)
+    """Host skill folders or `{runtime: path}` roots of skills inside the runtime.
+    Sources are installed in order; later files override matching earlier files.
+    Only harnesses with native skill support (`SUPPORTS_SKILLS`) accept them."""
+
+    @property
+    def _name(self) -> str:
+        return self.id
+
+    @property
+    def resolved_env(self) -> dict[str, str]:
+        """Program variables: forwarded host variables plus `env`."""
+        forwarded = {k: os.environ[k] for k in self.forward_env if k in os.environ}
+        return {**forwarded, **self.env}
+
+
+class WireHarnessConfig(HarnessConfig):
+    """Wire form that preserves harness-specific knobs without importing the harness."""
+
+    model_config = ConfigDict(extra="allow")

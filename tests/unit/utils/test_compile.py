@@ -4,9 +4,9 @@ before any runtime is provisioned. The integration grid refuses the same cells."
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import DockerConfig, SubprocessConfig
-from verifiers.v1.utils.compile import validate_pairing
-from verifiers.v1.utils.loaders import harness_class, harness_config_type
+from verifiers.v1._runtimes import DockerConfig, SubprocessConfig
+from verifiers.v1._utils.compile import validate_pairing
+from verifiers.v1._utils.loaders import harness_class, harness_config_type
 
 
 def harness(harness_id: str, **config) -> vf.Harness:

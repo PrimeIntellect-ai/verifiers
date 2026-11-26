@@ -7,7 +7,7 @@ import pytest
 from test_prompt_transport import RecordingRuntime
 
 import verifiers.v1 as vf
-from verifiers.v1.clients import EvalClientConfig, ModelContext
+from verifiers.v1._clients import EvalClientConfig, ModelContext
 from verifiers.v1.harnesses import CodexHarness, CodexHarnessConfig
 
 
@@ -25,6 +25,6 @@ async def test_codex_web_search_is_off_unless_asked(config, expected):
         task=vf.TraceTask(type="Task", data=data),
     )
     ctx = ModelContext(model="openai/test-model", client=EvalClientConfig())
-    await harness.build_env(ctx, trace, runtime, "http://127.0.0.1:1/v1", "secret", {})
-    written = runtime.files[f"{harness.trace_home(trace)}/config.toml"]
+    await harness._build_env(ctx, trace, runtime, "http://127.0.0.1:1/v1", "secret", {})
+    written = runtime.files[f"{harness._trace_home(trace)}/config.toml"]
     assert tomllib.loads(written.decode())["web_search"] == expected

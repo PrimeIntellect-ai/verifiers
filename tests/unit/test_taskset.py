@@ -183,7 +183,7 @@ def test_task_match_config_parses_idx() -> None:
 
 def test_select_config_defaults_and_short_aliases() -> None:
     config = vf.SelectConfig()
-    assert config.include.empty and config.exclude.empty
+    assert config.include._empty and config.exclude._empty
     assert (config.shuffle, config.seed, config.skip, config.limit) == (
         False,
         0,

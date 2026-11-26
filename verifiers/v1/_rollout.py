@@ -1,0 +1,1780 @@
+"""Lifecycle of one agent rollout."""
+
+import asyncio
+import contextlib
+import logging
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
+from dataclasses import dataclass
+from typing import Any, Literal
+from urllib.parse import urlsplit
+
+from verifiers.v1._clients import ModelRoute
+from verifiers.v1._configs.agent import AgentConfig, RolloutCheckpointConfig
+from verifiers.v1._configs.runtime import NetworkPolicyConfig
+from verifiers.v1._configs.scoring import resolve_scoring
+from verifiers.v1._errors import (
+    HarnessError,
+    RelayError,
+    RolloutError,
+    SandboxError,
+    TaskError,
+    ToolsetError,
+    boundary,
+)
+from verifiers.v1._grading import (
+    grade_task,
+    score_shared,
+    scoring_transaction,
+    verifier_runtime,
+)
+from verifiers.v1._harness import Harness, HarnessSession
+from verifiers.v1._interception import Interception, serve_interception
+from verifiers.v1._interception.relay import Relay
+from verifiers.v1._mcp import SharedToolServer, serve_tools
+from verifiers.v1._restore import LIVE, restorable, restore_entry, unsaveable
+from verifiers.v1._runtimes import (
+    Runtime,
+    RuntimeConfig,
+    Snapshot,
+    backend_cls,
+    make_backend,
+)
+from verifiers.v1._runtimes.private_network import tool_vms
+from verifiers.v1._session import (
+    RolloutLimits,
+    RolloutSession,
+    hook_boundary,
+)
+from verifiers.v1._state import state_cls
+from verifiers.v1._task import Task
+from verifiers.v1._trace import AgentInfo, Checkpoint, TimeSpan, Trace, TraceTask
+from verifiers.v1._types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1._utils.aio import run_shielded
+from verifiers.v1._utils.artifacts import collect
+from verifiers.v1._utils.decorators import discover_decorated, invoke
+from verifiers.v1._utils.format import format_time
+from verifiers.v1._utils.logging import clip, get_logger
+
+logger = get_logger(__name__)
+
+
+def _group(name: str, fields: list[tuple[str, object]]) -> str:
+    """`name=(k=v k=v)`, or nothing when there are no fields."""
+    if not fields:
+        return ""
+    return f"{name}=({' '.join(f'{k}={v}' for k, v in fields)})"
+
+
+@dataclass(frozen=True)
+class RolloutTimeouts:
+    """Per-stage rollout timeouts, each bounding one rollout stage."""
+
+    setup: float | None = None
+    """Timeout (in seconds) for task/harness setup through session preparation."""
+    agent: float | None = None
+    """Timeout (in seconds) for the agent's solve attempt."""
+    finalize: float | None = None
+    """Timeout (in seconds) for the task + harness finalize hooks."""
+    scoring: float | None = None
+    """Combined budget (in seconds) for harness metrics and task scoring, including
+    isolated verifier setup and retries. Finalization has its own budget."""
+
+
+HOLD_SECONDS = 120
+"""How long a saved rollout waits for its owner's `release` before it goes on by itself."""
+
+_HOME_PROBE = (
+    "home=$(awk -F: -v u=\"$1\" '$1 == u { print $6 }' /etc/passwd); "
+    'test -n "$home" || exit 1; home=${2:-$home}; echo "$home"; test -d "$home"'
+)
+
+
+async def resolve_agent_runtime(
+    runtime: Runtime, user: str | None, home: str | None = None
+) -> Runtime:
+    """The runtime the harness runs through: `runtime` itself, or a view running as `user`
+    with `HOME` set to `home` or its passwd home. `user` must exist with a home it can write
+    (task authors ship it in the image), and the view must really run as it, so a
+    runtime ignoring the user never runs the agent as root."""
+    if user is None:
+        return runtime
+    lookup = await runtime.run(["sh", "-c", _HOME_PROBE, "sh", user, home or ""], {})
+    home = lookup.stdout.strip()
+    if not home:
+        raise TaskError(f"agent_user {user!r} does not exist in the image")
+    if lookup.exit_code != 0:
+        raise TaskError(f"agent_user {user!r} has no home directory ({home})")
+    view = runtime.with_user(user, home=home)
+    probe = await view.run(["sh", "-c", 'id -un; test -w "$HOME" && echo writable'], {})
+    effective, *rest = probe.stdout.split() or [""]
+    if effective != user:
+        raise SandboxError(
+            f"{type(runtime.backend).__name__} ran as {effective!r} instead of agent_user "
+            f"{user!r}; refusing to run the agent"
+        )
+    if rest != ["writable"]:
+        raise TaskError(f"agent_user {user!r} cannot write its home directory ({home})")
+    return view
+
+
+def kept(checkpoints: list[Checkpoint], keep: Literal["last"] | int) -> set[str]:
+    """The ids of the restorable `checkpoints` (durable, not deleted) that the `keep`
+    policy holds on to (`RolloutCheckpointConfig.keep`): the newest always, plus every
+    k-th (by position among the rollout's own snapshots, the 1st, the 1+k-th, ...) for
+    `k`. An owner's pinned snapshots take no position; deleted and pending ones keep
+    theirs, so a snapshot dropped once stays dropped."""
+    own = [c for c in checkpoints if not c.pinned]
+    live = [(index, c) for index, c in enumerate(own) if c.time.end and not c.deleted]
+    if not live:
+        return set()
+    held = {live[-1][1].id}
+    if keep != "last":
+        held.update(c.id for index, c in live if index % keep == 0)
+    return held
+
+
+class Rollout:
+    """Manages one rollout's lifecycle (open, step, close)."""
+
+    def __init__(
+        self,
+        *,
+        task: Task,
+        agent_config: AgentConfig,
+        harness: Harness,
+        route: ModelRoute,
+        runtime_config: RuntimeConfig,
+        has_user: bool = False,
+        timeouts: RolloutTimeouts,
+        limits: RolloutLimits,
+        shared_tools: dict[str, SharedToolServer] | None = None,
+        interception: Interception | None = None,
+        runtime: Runtime | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        trace_id: str | None = None,
+        attempt: int = 1,
+        restore: tuple[Trace, Checkpoint] | None = None,
+        checkpoint: RolloutCheckpointConfig | None = None,
+    ) -> None:
+        """`attempt` numbers this run among the trace's retries, from 1 (stamped on
+        the trace and the errors it captures). `restore` continues a failed attempt's trace from one of
+        its checkpoints: the trace rewinds to it and this run boots its box from the
+        snapshot instead of setting the task up again. `checkpoint` snapshots the box as
+        model turns go upstream (on a runtime and a harness that support it) for a
+        retry to restore, and deletes the ones its `keep` policy drops as newer ones
+        become restorable; the owner of the retries deletes the rest once the run is
+        final — this rollout deletes them only when it aborts."""
+        self._on_score = on_score
+        self.task = task
+        self.harness = harness
+        self.route = route
+        self.runtime_config = runtime_config
+        self._scoring_policy = resolve_scoring(task.scoring, agent_config.scoring)
+        self._grading_config = None
+        self._scoring_task = task
+        self._grader = None
+        self.deployment = None
+        self._deployment_config = agent_config.deployment
+        self._has_user = has_user
+        self._timeouts = timeouts
+        self._agent_time_remaining = self._timeouts.agent
+        self._agent_time_spent = 0.0
+        """Seconds of the agent's time budget the finished segments spent."""
+        self._segment_start: float | None = None
+        """When the running segment began (loop time), or None between segments."""
+        self._shared_tools = shared_tools or {}
+        self._interception = interception
+        self.runtime = runtime
+        self._borrowed_runtime = runtime
+        self._collect_artifacts = collect_artifacts
+        self._checkpointing = checkpoint
+        self._durable: dict[str, asyncio.Task[None]] = {}
+        """The snapshots still on their way to restorable, by checkpoint id."""
+        self._captures: set[asyncio.Task] = set()
+        """Snapshots being taken (`_checkpoint`), for `_settle_checkpoints` to wait for."""
+        self._attempt = attempt
+        self._restore: Checkpoint | None = None
+        self.restored_turns: int | None = None
+        """The model turns the restored trace held when this run began (None for a run
+        that did not restore). The next turn is the one the snapshot was taken at, which
+        this run does not snapshot again."""
+        self.deleted_snapshots: set[str] = set()
+        """The snapshots this run deleted."""
+        self._pruning = asyncio.Lock()
+        self.rewound_snapshots: list[Snapshot] = []
+        """The snapshots of the checkpoints the restored trace dropped (taken after the
+        one restored)."""
+        self._last_capture = 0.0
+        self._snapshot_request = asyncio.Lock()
+        self._snapshot_timer: asyncio.TimerHandle | None = None
+        if restore is not None:
+            self.trace, self._restore = restore
+            self.trace.attempt = attempt
+            # The agent's time budget is the rollout's, not the attempt's: what ran
+            # before the snapshot is spent.
+            self._agent_time_spent = self._restore.agent_time
+            if self._agent_time_remaining is not None:
+                self._agent_time_remaining = max(
+                    0.0, self._agent_time_remaining - self._agent_time_spent
+                )
+            self.rewound_snapshots = self.trace.rewind(self._restore)
+            self.restored_turns = self.trace.num_turns
+            self._restore.restored = True
+        else:
+            self.trace = Trace(
+                **({"id": trace_id} if trace_id is not None else {}),
+                attempt=attempt,
+                task=TraceTask._from_task(task),
+                state=state_cls(type(task))(),
+                # The seat's resolved config, role overrides included — the agent
+                # this trace can be reproduced with.
+                agent=AgentInfo(config=agent_config),
+            )
+            if on_trace is not None:
+                on_trace(self.trace)
+        # Earlier attempts still own their snapshots and may clean them up on cancellation.
+        self._inherited_checkpoints = len(self.trace.checkpoints)
+        self.trace._replay_view = harness.replay_view
+        interceptors = [
+            (hook_boundary(fn, allow_trace=False), fn)
+            for fn in discover_decorated(task, "intercept")
+        ]
+        stops = [
+            (hook_boundary(fn, allow_trace=True), fn) for fn in task._hooks("stop")
+        ]
+        # Each `skip_scoring` stop, mapped to its fixed reward (None for `True`).
+        self._skip_scoring_stops = {
+            fn.__name__: None if skip is True else float(skip)
+            for _, fn in stops
+            if (skip := getattr(fn, "stop_skip_scoring", False)) is not False
+        }
+        execution_policy = runtime_config
+        self._session = RolloutSession(
+            route=route,
+            trace=self.trace,
+            network_policy=(
+                execution_policy
+                if isinstance(execution_policy, NetworkPolicyConfig)
+                else NetworkPolicyConfig()
+            ),
+            trace_stops=[fn for boundary, fn in stops if boundary is Trace],
+            limits=limits,
+            request_interceptors=[
+                fn for boundary, fn in interceptors if boundary is Request
+            ],
+            response_interceptors=[
+                fn for boundary, fn in interceptors if boundary is Response
+            ],
+            request_stops=[fn for boundary, fn in stops if boundary is Request],
+            response_stops=[fn for boundary, fn in stops if boundary is Response],
+            gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
+        )
+        self._memory = False
+        """Whether this run can take memory snapshots: decided at `open`, once the box,
+        its relay and the task's tool servers are known. Its checkpoints at model turns
+        take them when the config asks for them, and its owner's saves always do."""
+        self.unsaveable: str | None = "it has not booted its box yet"
+        """Why this run takes no memory snapshots, so `save` returns nothing; None when
+        it takes them."""
+        self.save_skipped: str | None = None
+        """Why the last `save` returned nothing."""
+        self._state_unsaved: str | None = None
+        """Why the newest snapshot could not record the task state, if it could not."""
+        self._hold_id: str | None = None
+        """Identifies the pending owner save, then its exported snapshot, until release."""
+        self._release_timer: asyncio.TimerHandle | None = None
+        self._unheld = asyncio.Event()
+        """Cleared while an owner holds the rollout at its checkpoint."""
+        self._unheld.set()
+        self._deadline: asyncio.Timeout | None = None
+        """The running segment's agent deadline, which a hold stops."""
+        self._hold_started: float | None = None
+        self._hold_deadline: float | None = None
+        """When the agent deadline was due as the hold stopped it."""
+        self._held_time = 0.0
+        """Seconds the running segment spent held: the owner's time, not the agent's."""
+        self._capturing = asyncio.Lock()
+        if self._restore is not None:
+            assert self._restore.session is not None
+            self._session.restore(self._restore.session)
+        self._stack = AsyncExitStack()
+        self._failed = False
+        self._failure: Exception | None = None
+        self._opened = False
+        self._deployment_started = False
+        self._closed = False
+        self._harness_cleaned = False
+        self._endpoint: str | None = None
+        self._relay: Relay | None = None
+        """The relay a harness in a remote box reaches the interception server through."""
+        self._urls: dict[str, str] = {}
+        self._harness_session: HarnessSession | None = None
+        self._agent_runtime: Runtime | None = None
+        self.deadline_at: float | None = None
+        """The active harness segment's absolute deadline (event-loop clock), or
+        None between segments / when unbounded. An interaction spends one cumulative
+        `timeouts.agent` budget only while its own segments run, so time awaiting
+        the caller (including another interleaved agent) cannot starve it."""
+
+    @property
+    def ok(self) -> bool:
+        """Whether the exchange can continue: nothing failed, nothing stopped it."""
+        return not self._failed and self.trace.stop_condition is None
+
+    @property
+    def closed(self) -> bool:
+        """Whether `close()` (or `abort()`) already ran — no further segments."""
+        return self._closed
+
+    @property
+    def failure(self) -> Exception | None:
+        """The original exception most recently captured onto the trace."""
+        return self._failure
+
+    def fail(self, error: Exception, stage: str | None = None) -> None:
+        """Record `error` as this rollout's outcome (captured onto the trace, the
+        remaining stages skipped) — the run's owner reporting a failure the run
+        itself couldn't see, e.g. its user raising between segments. `stage` names
+        the rollout stage it broke in, when known."""
+        if (
+            self._borrowed_runtime is not None
+            and self._borrowed_runtime.backend.stopped
+        ):
+            # The owner tore the borrowed box down mid-run — a lifetime bug in the
+            # borrowing program: raise to the caller instead of capturing a
+            # misattributed error onto the trace.
+            raise ValueError(
+                f"borrowed runtime {self._borrowed_runtime.name!r} was torn down by its owner "
+                "mid-run; keep the provisioning context open until every run "
+                "placed into the box has completed"
+            ) from error
+        if not isinstance(error, RolloutError):
+            logger.exception("Failed rollout with an unexpected error")
+        self._failed = True
+        self._failure = error
+        self.trace.record_error(error, attempt=self._attempt, stage=stage)
+
+    def timeout(self, stage: str) -> None:
+        """Record `stage`'s expired deadline as this rollout's outcome: a stop, not
+        a failure — no further segments run, but finalize and scoring still do."""
+        logger.debug("Hit the %s timeout", stage)
+        self.trace._record_timeout(stage)
+
+    async def open(self) -> bool:
+        """Boot the rollout's world up to the point where segments can run: start
+        (or borrow) the runtime, run task + harness setup, bring up the
+        interception slot and tool servers. Returns whether the exchange can
+        proceed; a setup failure is captured onto the trace."""
+        self._opened = True
+        LIVE.add(self)
+        self.trace.timing.boot.start = time.time()
+        self.trace._notify()
+        if self._borrowed_runtime is None:
+            config = self.runtime_config
+            name = self.trace.id
+            if self._restore is not None:
+                # A restored trace keeps its id; its new box must not collide with the
+                # box an earlier attempt or process left behind.
+                name = f"{self.trace.id}-{uuid.uuid4().hex[:8]}"
+                config = backend_cls(config).restore_config(
+                    config, self._restore.snapshot
+                )
+            self.runtime = make_backend(config, name=name).bind()
+        elif (
+            self._borrowed_runtime is not None
+            and self._borrowed_runtime.backend.stopped
+        ):
+            # A lifetime bug in the borrowing program: raise to the caller instead
+            # of capturing onto the trace.
+            raise ValueError(
+                f"borrowed runtime {self.runtime.name!r} was already torn "
+                "down by its owner; keep the provisioning context open for every run "
+                "placed into the box"
+            )
+        runtime = self.runtime
+        assert self.trace.agent is not None  # minted with the trace
+        self.trace.agent.runtime = runtime.info.model_copy()
+        if self._restore is None:
+            logger.debug(
+                "Starting rollout harness=%s runtime=%s",
+                self.harness.config.name,
+                self.runtime_config.type,
+            )
+        else:
+            logger.info(
+                "Restoring rollout from checkpoint %s at turn %d harness=%s runtime=%s",
+                self._restore.id,
+                self.trace.num_turns,
+                self.harness.config.name,
+                self.runtime_config.type,
+            )
+        restored = self._restore is not None
+        loop = asyncio.get_running_loop()
+        setup_timeout: asyncio.Timeout | None = None
+        setup_deadline = (
+            None if self._timeouts.setup is None else loop.time() + self._timeouts.setup
+        )
+        try:
+            # Provisioning, hooks, and service setup share one budget.
+            async with asyncio.timeout_at(setup_deadline) as setup_timeout:
+                runtime_env = dict(self.task.runtime_env())
+                if self._borrowed_runtime is None:
+                    runtime.backend.env = runtime_env
+                    runtime = self.runtime = runtime.with_env(runtime_env)
+                else:
+                    runtime = runtime.with_env({**runtime.env, **runtime_env})
+                    self.runtime = runtime
+                if self.task.data.prompt is None and not self._has_user:
+                    raise TaskError(
+                        "task has no prompt and no user to open the conversation; set "
+                        "task.prompt, or drive the run through agent.interaction() and open "
+                        "it with the first turn(message)"
+                    )
+                async with boundary(ToolsetError, "building tool servers"):
+                    toolsets = self.task.toolsets(self.task.config)
+                spec = self.task.deployment_spec()
+                self.deployment = runtime.backend.deploy(
+                    spec=spec,
+                    # Tool servers on Prime VMs of their own boot with the workspace.
+                    tool_vms=tool_vms(
+                        toolsets,
+                        runtime.backend.config,
+                        composed=spec is not None,
+                        borrowed=self._borrowed_runtime is not None,
+                    ),
+                    env=runtime.env,
+                    config=self._deployment_config,
+                    borrowed_runtime=self._borrowed_runtime,
+                )
+                try:
+                    await self.deployment.start()
+                    self._deployment_started = True
+                    runtime = self.runtime = self.deployment.workspace
+                finally:
+                    # Providers may assign an ID before startup fails; retain it for diagnostics.
+                    self.trace.agent.runtime = runtime.info.model_copy()
+                if not self.task.scoring_deferred:
+                    isolated = self._scoring_policy.mode == "isolated"
+                    self._scoring_task = self.task.grading_task(
+                        runtime, scoring=self._scoring_policy
+                    )
+                    if isolated:
+                        self._grader = self._scoring_task
+                        self._grading_config = verifier_runtime(
+                            self._grader,
+                            runtime,
+                            # Solver task requirements must not override the verifier's.
+                            self.trace.agent.config.runtime,
+                            self._scoring_policy,
+                        )
+                    elif self._scoring_policy.runtime is not None:
+                        raise TaskError(
+                            "verifier runtime overrides require isolated verification"
+                        )
+                await runtime.backend.prepare_setup()
+                now = time.time()
+                self.trace.timing.boot.end = now
+                self.trace.timing.setup.start = now
+                self.trace._notify()
+                # A restored box already holds the task's setup.
+                if self._restore is None:
+                    started = time.perf_counter()
+                    async with boundary(TaskError, "task setup"):
+                        await invoke(
+                            self.task.setup,
+                            {
+                                "trace": self.trace,
+                                "runtime": runtime,
+                                "deployment": self.deployment,
+                            },
+                        )
+                    logger.debug(
+                        "Set up task in %s", format_time(time.perf_counter() - started)
+                    )
+                started = time.perf_counter()
+                async with (
+                    boundary(HarnessError, "harness setup"),
+                ):
+                    self._agent_runtime = await resolve_agent_runtime(
+                        runtime, self.task.data.agent_user, self.task.data.agent_home
+                    )
+                    # A harness in a remote box reaches the interception server through
+                    # a relay in its box, which starts alongside the harness setup.
+                    if not runtime._is_local:
+                        self._relay = Relay(
+                            runtime,
+                            self.trace.id,
+                            running=self._live("relay") if restored else None,
+                        )
+                        self._stack.push_async_callback(self._relay.stop)
+                        await self._relay.installed()
+                    # A restored box still runs the harness.
+                    if not restored:
+                        await self.harness.setup(self._agent_runtime)
+                self.unsaveable = unsaveable(self.trace.agent.config, self.harness) or (
+                    "it runs in a borrowed box"
+                    if self._borrowed_runtime is not None
+                    # Only `Agent.run` continues a rollout from a checkpoint.
+                    else "it is an interaction, which no checkpoint can continue"
+                    if self._has_user
+                    else "its agent takes no checkpoints"
+                    if self._checkpointing is None
+                    # Everything the box reaches the host through must follow it to a
+                    # new box: the relay does, tool servers and services do not.
+                    else "its task has tool servers or services of its own"
+                    if toolsets
+                    or self._shared_tools
+                    or self.deployment._spec is not None
+                    else None
+                )
+                self._memory = self.unsaveable is None and self._relay is not None
+                if restored and not self._memory:
+                    raise SandboxError(
+                        "the rollout cannot continue from its memory snapshot"
+                    )
+                logger.debug(
+                    "Set up %s harness in %s",
+                    self.harness.config.name,
+                    format_time(time.perf_counter() - started),
+                )
+                started = time.perf_counter()
+                # `base_url` is the interception server's reachable URL for this rollout.
+                # The harness reaches the model at `{base_url}/v1`; tool servers reach this
+                # rollout's `/state` + `/task` at `base_url` — it's universally reachable
+                # (the interception is exposed whenever any consumer is remote).
+                # The relay follows the server to a replacement tunnel, unless tool
+                # servers or services reach the server too. Set before the server
+                # registers the session: a tunnel lost while the relay starts waits.
+                if (
+                    self._relay is not None
+                    and not toolsets
+                    and not self._shared_tools
+                    and self.deployment._spec is None
+                ):
+                    self._session.reroute = self._reroute
+                (
+                    base_url,
+                    model_secret,
+                    state_secret,
+                ) = await self._stack.enter_async_context(
+                    serve_interception(
+                        self._interception,
+                        runtime,
+                        self._session,
+                        toolsets,
+                        self._shared_tools,
+                    )
+                )
+                harness_base = runtime.host_url(base_url.rstrip("/")).rstrip("/")
+                # A harness restored from memory still sends the secret it got at its
+                # launch; the relay swaps it for this session's.
+                self._secret = self._live("secret") if restored else model_secret
+                upstream = base_url.rstrip("/")
+                if self._relay is not None:
+                    harness_base = self._relay.url
+                    if not restored:
+                        # The harness holds the model secret anyway; the relay gets
+                        # nothing more, so reading its config grants no capability.
+                        async with boundary(RelayError, "starting the relay"):
+                            harness_base = await self._relay.connect(
+                                upstream, {self._secret: model_secret}
+                            )
+                self._endpoint = f"{harness_base}/v1"
+                services = (
+                    {
+                        name: self.deployment.target(name)
+                        for name in self.deployment.target_names
+                    }
+                    if self.deployment._spec is not None
+                    else {}
+                )
+                self._urls = await self._stack.enter_async_context(
+                    serve_tools(
+                        toolsets,
+                        self._agent_runtime,
+                        shared=self._shared_tools,
+                        state_secret=state_secret,
+                        proxy_mcp=self._session.proxy_mcp,
+                        state_route=self.trace.id,
+                        state_base=base_url,
+                        services=services,
+                        hosts=self.deployment.hosts,
+                        # Tool servers on VMs of their own, by server name; an explicit
+                        # `service` names a task-declared service.
+                        placements={
+                            name: self.deployment.target(name)
+                            for name in self.deployment.tool_vms
+                        },
+                    )
+                )
+                logger.debug(
+                    "Started interception and tool servers in %s",
+                    format_time(time.perf_counter() - started),
+                )
+                # Setup and service provisioning are complete. Apply the runtime's
+                # execution policy while preserving the framework routes the agent uses.
+                # Service hosts resolve inside the deployment (Compose names, LAN
+                # names), not as egress.
+                internal = {*services, *self.deployment.hosts.values()}
+                await self.deployment._prepare_execution(
+                    [
+                        url
+                        for url in [
+                            self._endpoint,
+                            *self._urls.values(),
+                            *([upstream] if self._relay else []),
+                        ]
+                        if urlsplit(url).hostname not in internal
+                    ],
+                    state_route=f"{upstream}/state",
+                )
+                if self._relay is not None and restored:
+                    # A restored relay already runs and resends the harness's open
+                    # call: move it to the new tunnel only once the box may reach it.
+                    async with boundary(RelayError, "starting the relay"):
+                        await self._relay.connect(
+                            upstream, {self._secret: model_secret}
+                        )
+                async with (
+                    boundary(HarnessError, "opening harness session"),
+                ):
+                    harness_data = self.trace.task.data
+                    policy = self._session.network_policy
+                    if (
+                        self.trace.agent.config.network_notice
+                        and policy.network_restricted
+                    ):
+                        if not policy.allow:
+                            network_prompt = "External network access is disabled."
+                        elif policy.block:
+                            network_prompt = (
+                                "External network access is allowed except for these blocked "
+                                f"destinations: {', '.join(policy.block)}. "
+                                "Do not circumvent this selection of domains."
+                            )
+                        else:
+                            network_prompt = (
+                                "External network access is limited to these destinations: "
+                                f"{', '.join(policy.allow)}. "
+                                "Do not circumvent this selection of domains."
+                            )
+                        network_prompt = "\n\n".join(
+                            text
+                            for text in (harness_data.system_prompt, network_prompt)
+                            if text
+                        )
+                        # Keep existing transcript system messages intact on resume;
+                        # user-only lists must stay user-only for ACP harnesses.
+                        if (
+                            harness_data.system_prompt is None
+                            and isinstance(harness_data.prompt, list)
+                            and any(m.role == "system" for m in harness_data.prompt)
+                        ):
+                            harness_data = harness_data.model_copy(
+                                update={
+                                    "prompt": [
+                                        SystemMessage(content=network_prompt),
+                                        *harness_data.prompt,
+                                    ]
+                                }
+                            )
+                        else:
+                            harness_data = harness_data.model_copy(
+                                update={"system_prompt": network_prompt}
+                            )
+                    # A restored trace already carries its prompt's rewrites.
+                    if (
+                        self._session.request_interceptors
+                        and harness_data.prompt is not None
+                        and self._restore is None
+                    ):
+                        prompt = harness_data.prompt
+                        system_prompt = harness_data.system_prompt
+                        if isinstance(prompt, str):
+                            system_prompt, prompt = self.harness.resolve_prompt(
+                                harness_data
+                            )
+                        messages = (
+                            [UserMessage(content=prompt)]
+                            if isinstance(prompt, str)
+                            else list(prompt)
+                        )
+                        has_system = system_prompt is not None
+                        if has_system:
+                            messages.insert(0, SystemMessage(content=system_prompt))
+                        prepared, _ = await self._session.prepare_users(
+                            Request(messages=messages)
+                        )
+                        messages = prepared.messages
+                        if has_system:
+                            messages = messages[1:]
+                        rewritten_prompt = (
+                            messages[0].content
+                            if isinstance(prompt, str)
+                            and len(messages) == 1
+                            and isinstance(messages[0], UserMessage)
+                            and isinstance(messages[0].content, str)
+                            else messages
+                        )
+                        harness_data = harness_data.model_copy(
+                            update={
+                                "prompt": rewritten_prompt,
+                                "system_prompt": system_prompt,
+                            }
+                        )
+                    if not self._session.stopped:
+                        session_kwargs = (
+                            {"tool_interception_url": f"{harness_base}/tool"}
+                            if self.harness.SUPPORTS_TOOL_INTERCEPTION
+                            and (
+                                self._session.request_interceptors
+                                or self._session.request_stops
+                            )
+                            else {}
+                        )
+                        self._harness_session = await self.harness.session(
+                            self.route.ctx,
+                            self.trace,
+                            self._agent_runtime,
+                            self._endpoint,
+                            self._secret,
+                            self._urls,
+                            harness_data,
+                            **session_kwargs,
+                        )
+                        self._harness_session.memory = self._memory
+        except TimeoutError as e:
+            # Only our expired setup budget owns the timeout; a provider can
+            # raise its own TimeoutError before the overall deadline.
+            if setup_timeout is not None and setup_timeout.expired():
+                self.timeout("setup")
+                if not self._deployment_started:
+                    self.fail(
+                        SandboxError("deployment provisioning exceeded setup timeout"),
+                        stage="setup",
+                    )
+            else:
+                self.fail(e, stage="setup")
+            return False
+        except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
+            self.fail(e, stage="setup")
+            return False
+        except BaseException:
+            # A cancellation mid-setup kills the driver's await with it, so no
+            # caller reaches close() — free the started runtime and entered
+            # servers here rather than relying on the driver's own guard.
+            await self.abort()
+            raise
+        now = time.time()
+        self.trace.timing.setup.end = now
+        self.trace.timing.agent.start = now
+        self.trace._notify()
+        logger.debug("Starting agent")
+        return not self._session.stopped
+
+    async def _reroute(self, base_url: str) -> None:
+        """Move the harness's relay to the interception server's new URL
+        (`RolloutSession.reroute`)."""
+        assert self._relay is not None
+        if self._closed:
+            # Closing: the agent is done and the relay unused, and scoring keeps its
+            # own egress policy.
+            return
+        await self._relay.wait_connected()
+        upstream = base_url.rstrip("/")
+        # A restricted box must reach the new tunnel host before the relay uses it.
+        await self.deployment.prepare_execution(
+            [self._endpoint, upstream], state_route=f"{upstream}/state"
+        )
+        await self._relay.reroute(upstream)
+
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        if self._closed or not self.ok:
+            raise RuntimeError("this rollout is closed or stopped")
+        if self._harness_session is None:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        return await self._harness_session.steer(message, message_id=message_id)
+
+    async def step(
+        self,
+        messages: Messages | None = None,
+        *,
+        on_input: Callable[[], None] | None = None,
+    ) -> bool:
+        """Run ONE segment: the harness program to its exit. With `messages`, the
+        segment resumes the exchange with the user's turn(s) (`Harness.resume` —
+        for an exchange the user opens, this is also the first segment, on an
+        empty conversation); without, it launches on the task's own prompt.
+        Returns whether the exchange can continue — a refused turn (limit,
+        @stop), a failure (an expired agent timeout included), or a segment that
+        made no progress all end it."""
+        if not self._opened or self._closed or not self.ok:
+            return False
+        trace = self.trace
+        turns_before = trace.num_turns
+        root_reply_before = trace.root_reply
+        trace.root_reply = None
+        loop = asyncio.get_running_loop()
+        segment_start = self._segment_start = loop.time()
+        if self._memory and self._checkpointing and self._checkpointing.interval:
+            self._last_capture = self._last_capture or segment_start
+            self._schedule_snapshot()
+        self.deadline_at = (
+            None
+            if self._agent_time_remaining is None
+            else segment_start + max(0.0, self._agent_time_remaining)
+        )
+        # Prefer an intercepted model/tool error to the harness exit it caused.
+        deadline = self._deadline = asyncio.timeout_at(self.deadline_at)
+        try:
+            async with deadline:
+                assert self._harness_session is not None
+                if messages is not None and self._session.request_interceptors:
+                    prepared, _ = await self._session.prepare_users(
+                        Request(messages=messages)
+                    )
+                    messages = prepared.messages
+                    if self._session.stopped:
+                        return False
+                self._session.on_turn_input = on_input
+                assert self.deployment is not None
+                if await self._turn(messages):
+                    assert self._session.aborted is not None
+                    self.fail(self._session.aborted, stage="agent")
+                    return False
+        except TimeoutError as e:
+            # An expired rollout deadline is the agent breaking its time budget: a
+            # timeout stop. A TimeoutError from the harness's own I/O with no expired
+            # deadline stays the raw failure.
+            if self.deadline_at is not None and (loop.time() >= self.deadline_at):
+                self.timeout("agent")
+            else:
+                self.fail(e, stage="agent")
+            return False
+        except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
+            if self._session.stopped:
+                return False
+            # A runtime can report the cancellation the deadline caused as its own
+            # error (Prime's SDK raises one for a cancelled request); the expired
+            # deadline is still the outcome.
+            if deadline.expired():
+                self.timeout("agent")
+                return False
+            real = self._session.error
+            if real is None and self._relay is not None:
+                # A harness that dies on its relay's failure records the relay's.
+                real = await self._relay.failure()
+            if real is not None and isinstance(e, RolloutError):
+                real.__cause__ = e
+                self.fail(real, stage="agent")
+            else:
+                self.fail(e, stage="agent")
+            return False
+        finally:
+            self._session.on_turn_input = None
+            if trace.num_turns == turns_before:
+                trace.root_reply = root_reply_before
+            if self._snapshot_timer is not None:
+                self._snapshot_timer.cancel()
+                self._snapshot_timer = None
+            spent = self._segment_agent_time()
+            self._segment_start = None
+            self._deadline = self._hold_deadline = None
+            self._held_time = 0.0
+            if self._hold_started is not None:
+                self._hold_started = loop.time()
+            self._agent_time_spent += spent
+            if self._agent_time_remaining is not None:
+                self._agent_time_remaining = max(
+                    0.0, self._agent_time_remaining - spent
+                )
+            self.deadline_at = None
+        # A harness that completes cleanly after a failed model call handled it (e.g. it
+        # ends its run on context overflow); the failure stays recorded on the call. A
+        # harness that dies on it surfaces the stashed error through the except above.
+        self._session.error = None
+        # A segment that committed nothing can't be waiting on the user; treating
+        # it as continuable would consult the user against a conversation that
+        # never moved, forever.
+        return self.ok and trace.num_turns > turns_before
+
+    async def _turn(self, messages: Messages | None) -> bool:
+        """Run one harness segment. A request hook that fails ends it at once (the
+        session aborts): the harness's turn is cancelled, so the harness never handles
+        the failure. Returns whether the segment was aborted."""
+        assert self._harness_session is not None
+        turn = asyncio.ensure_future(self._harness_session.turn(messages))
+        aborted = asyncio.ensure_future(self._session.abort_event.wait())
+        try:
+            await asyncio.wait({turn, aborted}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            aborted.cancel()
+            if not turn.done():
+                turn.cancel()
+                # Joined even through another cancellation: a turn left running
+                # could still write the trace or use the box during teardown.
+                await run_shielded(asyncio.wait({turn}))
+        if self._session.aborted is not None:
+            if not turn.cancelled():
+                turn.exception()  # the abort decides the outcome, whatever the turn did
+            # An aborted rollout ends too: not before the owner lets it go on.
+            await self._unheld.wait()
+            return True
+        if not turn.cancelled():
+            turn.exception()  # retrieved now, raised after the release
+        # An owner that saved this rollout records it as running: it does not finish,
+        # nor fail, before the owner lets it go on.
+        await self._unheld.wait()
+        turn.result()
+        return False
+
+    def _segment_agent_time(self) -> float:
+        """The agent time the running segment used so far: its time, less the time
+        an owner held it."""
+        if self._segment_start is None:
+            return 0.0
+        now = asyncio.get_running_loop().time()
+        held = self._held_time
+        if self._hold_started is not None:
+            held += now - max(self._hold_started, self._segment_start)
+        return max(0.0, now - self._segment_start - held)
+
+    def _begin_hold(self) -> None:
+        """Hold the rollout for its owner. The hold is the owner's time: the agent
+        deadline stops until `release`."""
+        if self._hold_started is not None:
+            return
+        self._hold_started = asyncio.get_running_loop().time()
+        if self._segment_start is not None and self._deadline is not None:
+            when = self._deadline.when()
+            if when is not None:
+                self._hold_deadline = when
+                self._deadline.reschedule(None)
+
+    def _end_hold(self) -> None:
+        if self._hold_started is None:
+            return
+        held = asyncio.get_running_loop().time() - self._hold_started
+        self._hold_started = None
+        if self._segment_start is None:
+            return
+        self._held_time += held
+        if self._hold_deadline is not None and self._deadline is not None:
+            self._deadline.reschedule(self._hold_deadline + held)
+            if self.deadline_at is not None:
+                self.deadline_at += held
+        self._hold_deadline = None
+
+    async def restore(self) -> bool:
+        """Run the restored attempt's first segment: the box restored from the
+        checkpoint still runs the harness program, so this waits for it
+        (`HarnessSession.reattach`) instead of starting one."""
+        checkpoint = self._restore
+        assert checkpoint is not None and self._harness_session is not None
+        self._harness_session.reattach(self._live("program"))
+        return await self.step()
+
+    def _live(self, key: str) -> Any:
+        """What continues the restored box (`Checkpoint.session`'s `live`)."""
+        assert self._restore is not None and self._restore.session is not None
+        return self._restore.session["live"][key]
+
+    def _schedule_snapshot(self) -> None:
+        assert self._checkpointing and self._checkpointing.interval
+        loop = asyncio.get_running_loop()
+        self._snapshot_timer = loop.call_at(
+            self._last_capture + self._checkpointing.interval,
+            self._start_periodic_snapshot,
+        )
+
+    def _start_periodic_snapshot(self) -> None:
+        self._snapshot_timer = None
+        task = asyncio.create_task(self._periodic_snapshot())
+        self._captures.add(task)
+        task.add_done_callback(self._captures.discard)
+
+    async def _periodic_snapshot(self) -> None:
+        try:
+            await self._checkpoint()
+        except Exception:
+            logger.warning("Failed to take periodic snapshot", exc_info=True)
+        finally:
+            if (
+                self._segment_start is not None
+                and not self._closed
+                and self._snapshot_timer is None
+            ):
+                self._schedule_snapshot()
+
+    async def _checkpoint(self) -> Checkpoint | None:
+        async with self._snapshot_request:
+            if (
+                self._closed
+                or not self._checkpointing
+                or not self._checkpointing.interval
+            ):
+                return None
+            now = asyncio.get_running_loop().time()
+            if now - self._last_capture < self._checkpointing.interval:
+                return None
+            # Pace failed attempts too, including a program that exited before capture.
+            self._last_capture = now
+            return await self._take_snapshot()
+
+    async def _owner_checkpoint(self, *, hold: bool) -> Checkpoint | None:
+        async with self._snapshot_request:
+            if hold and self._checkpointing and self._checkpointing.interval:
+                max_age = self._checkpointing.interval
+                cutoff = time.time() - max_age
+                point = next(
+                    (
+                        c
+                        for c in reversed(
+                            self.trace.checkpoints[self._inherited_checkpoints :]
+                        )
+                        if c.captured >= cutoff
+                        and c.session is not None
+                        and not c.deleted
+                        and not c.pinned
+                    ),
+                    None,
+                )
+                if point is not None:
+                    # Its upload may still run: the owner checks that the snapshot is
+                    # durable before it restores from it.
+                    async with self._pruning:
+                        if (
+                            not point.deleted
+                            and time.time() - point.captured <= max_age
+                        ):
+                            point.pinned = True
+                            return point
+            return await self._take_snapshot(pinned=True)
+
+    def _last_node(self) -> int | None:
+        return len(self.trace.nodes) - 1 if self.trace.nodes else None
+
+    async def save(
+        self, *, hold: bool = False, watchdog: bool = True
+    ) -> dict[str, Any] | None:
+        """Take a memory checkpoint of the running rollout now and return its trace as
+        saved (`restorable`), for an owner that continues the rollout in another
+        process (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`). The
+        save returns once the box runs again; the snapshot becomes durable in the
+        background, and a restore from it waits for that (`PrimeBackend.start`), so
+        a save of thousands of boxes does not wait for their uploads. With `hold`,
+        nothing the box asked for is answered until `release`, so the rollout cannot
+        move past its checkpoint while the owner records it; `watchdog` arms the
+        release that ends a hold no owner ends (`arm_hold_watchdog`), which an owner
+        saving many rollouts arms only once it has them all.
+        None when the rollout takes no memory snapshots (`unsaveable`), runs no
+        segment, or the snapshot failed; `save_skipped` then says which."""
+        self.save_skipped = None
+        if self._closed:
+            self.save_skipped = "it is finishing"
+        elif not self._memory:
+            self.save_skipped = self.unsaveable or "its box has no relay"
+        elif self._harness_session is None or (
+            self._harness_session.memory_state() is None
+        ):
+            self.save_skipped = "its harness program is not running (setup or scoring)"
+        if self.save_skipped is not None:
+            return None
+        task = asyncio.current_task()
+        if task is not None:
+            self._captures.add(task)
+        # A save without a hold does not end the hold of an earlier one.
+        hold_id = uuid.uuid4().hex if hold else None
+        if hold_id is not None:
+            self._hold_id = hold_id
+            self._unheld.clear()
+            self._begin_hold()
+        checkpoint = None
+        try:
+            checkpoint = await self._owner_checkpoint(hold=hold)
+            if checkpoint is None:
+                self._release_hold(hold_id)
+                self.save_skipped = self._state_unsaved or "its memory snapshot failed"
+                return None
+            if self._harness_session.memory_state() is None:
+                # The program left while the box was being stopped: the snapshot may
+                # hold a box with nothing to continue.
+                checkpoint.pinned = False
+                self._release_hold(hold_id)
+                self.save_skipped = "its harness program ended during the save"
+                return None
+            saved = restorable(self.trace, checkpoint)
+        except BaseException:
+            # The owner never gets this save: nobody would release the hold or delete
+            # the snapshot, so both go back to the rollout.
+            if checkpoint is not None:
+                checkpoint.pinned = False
+            self._release_hold(hold_id)
+            raise
+        finally:
+            self._captures.discard(task)
+        if hold_id is not None and self._hold_id == hold_id:
+            self._hold_id = checkpoint.id
+            self._session.hold()
+            if watchdog:
+                self.arm_hold_watchdog()
+        return saved
+
+    def arm_hold_watchdog(self) -> None:
+        """Release the hold by itself after `HOLD_SECONDS`, unless the owner does first:
+        an owner that never releases must not stall the rollout for good."""
+        if self._hold_id is None:
+            return
+        if self._release_timer is not None:
+            self._release_timer.cancel()
+        self._release_timer = asyncio.get_running_loop().call_later(
+            HOLD_SECONDS, self._release_hold, self._hold_id
+        )
+
+    def disown(self, saved: dict[str, Any]) -> None:
+        """Give back a `save` whose owner never got it: the rollout goes on, and its
+        teardown deletes the snapshot."""
+        snapshot_id = restore_entry(saved)["snapshot"]["id"]
+        found = False
+        for checkpoint in self.trace.checkpoints:
+            if checkpoint.snapshot.id == snapshot_id:
+                checkpoint.pinned = False
+                found = True
+        if not found and self.runtime is not None:
+            # Its durable wait failed and dropped it: the box's teardown frees it.
+            self.runtime.backend.stray_snapshots.append(Snapshot(id=snapshot_id))
+        self._release_hold(snapshot_id)
+
+    def _release_hold(self, hold_id: str | None) -> None:
+        if hold_id is not None and self._hold_id == hold_id:
+            self.release()
+
+    def release(self) -> None:
+        """Answer the box again after a `save(hold=True)`."""
+        self._hold_id = None
+        self._unheld.set()
+        self._end_hold()
+        if self._release_timer is not None:
+            self._release_timer.cancel()
+            self._release_timer = None
+        # A snapshot that is being taken holds the box for itself, and lets the
+        # replies flow when it is done.
+        if not self._capturing.locked():
+            self._session.resume()
+
+    async def _take_snapshot(self, *, pinned: bool = False) -> Checkpoint | None:
+        """Hold replies and snapshot the box at a replayable trace boundary."""
+        assert self.runtime is not None and self._relay is not None
+        session = self._session
+        if self._harness_session is None:
+            return None
+        # The pace is waited for before the box is held, not while.
+        async with self.runtime.backend.snapshot_pace(), self._capturing:
+            if self._closed:
+                return None
+            session.hold()
+            try:
+                # Another commit can begin after the previous one wakes this waiter.
+                while not session.settled.is_set():
+                    await session.settled.wait()
+                program = self._harness_session.memory_state()
+                if program is None:
+                    return None
+                node = self._last_node()
+                try:
+                    data = session.checkpoint()
+                    self._state_unsaved = None
+                except Exception as e:  # noqa: BLE001 - the state's values decide it
+                    # The task state lives on the host, not in the box: a restore
+                    # needs it, so a state that does not serialize rules the
+                    # snapshot out. Before the pause, so the box never stops for it.
+                    if self._state_unsaved is None:
+                        logger.warning(
+                            "rollout %s took no memory snapshot: its task state "
+                            "cannot be serialized - %s: %s",
+                            self.trace.id,
+                            type(e).__name__,
+                            e,
+                        )
+                    self._state_unsaved = "its task state cannot be serialized"
+                    return None
+                data["live"] = {
+                    "program": program,
+                    "relay": self._relay.state,
+                    "secret": self._secret,
+                }
+                started = time.time()
+                try:
+                    snapshot = await self.runtime.backend.snapshot()
+                except Exception:
+                    logger.warning(
+                        "memory snapshot failed (rollout %s)",
+                        self.trace.id,
+                        exc_info=True,
+                    )
+                    return None
+                captured = time.time()
+                self._last_capture = asyncio.get_running_loop().time()
+                agent_time = self._agent_time_spent + self._segment_agent_time()
+                # The box's connections to the server did not survive the stop: its
+                # relay opens new ones and repeats the requests that wait.
+                try:
+                    await self._relay.reroute()
+                except Exception:
+                    logger.warning(
+                        "relay did not reconnect after a memory snapshot (rollout %s)",
+                        self.trace.id,
+                        exc_info=True,
+                    )
+            finally:
+                if self._hold_id is None:
+                    session.resume()
+        checkpoint = Checkpoint(
+            id=snapshot.id,
+            node=node,
+            session=data,
+            agent_time=agent_time,
+            snapshot=snapshot,
+            time=TimeSpan(start=started),
+            captured=captured,
+            pinned=pinned,
+            held=captured - started,
+        )
+        self.trace.checkpoints.append(checkpoint)
+        self._durable[checkpoint.id] = asyncio.create_task(
+            self._make_durable(checkpoint)
+        )
+        logger.debug(
+            "memory checkpoint %s taken in %s: id=%s node=%s",
+            checkpoint.id,
+            format_time(captured - started),
+            self.trace.id,
+            node,
+        )
+        return checkpoint
+
+    async def _make_durable(self, checkpoint: Checkpoint) -> None:
+        assert self.runtime is not None
+        try:
+            checkpoint.bytes = await self.runtime.backend.wait_snapshot(
+                checkpoint.snapshot
+            )
+        except Exception:
+            # Not restorable: no retry may pick it. The backend still holds it as
+            # stray and frees it with the box, unless an owner holds it: the owner
+            # has its restore point and deletes it.
+            logger.warning(
+                "checkpoint %s never became durable (rollout %s)",
+                checkpoint.id,
+                self.trace.id,
+                exc_info=True,
+            )
+            if checkpoint.pinned:
+                with contextlib.suppress(ValueError):
+                    self.runtime.backend.stray_snapshots.remove(checkpoint.snapshot)
+            with contextlib.suppress(ValueError):
+                self.trace.checkpoints.remove(checkpoint)
+        else:
+            checkpoint.time.end = time.time()
+            self.trace._notify()
+            await self._prune()
+        finally:
+            self._durable.pop(checkpoint.id, None)
+
+    async def _prune(self) -> None:
+        """Delete the snapshots the `keep` policy drops now that a newer one is
+        restorable, and the ones a restore rewound past."""
+        assert self.runtime is not None and self._checkpointing is not None
+        async with self._pruning:
+            keep = kept(self.trace.checkpoints, self._checkpointing.keep)
+            drop = [
+                *(
+                    c.snapshot
+                    for c in self.trace.checkpoints
+                    if c.time.end
+                    and not c.deleted
+                    and not c.pinned
+                    and c.id not in keep
+                ),
+                *(
+                    s
+                    for s in self.rewound_snapshots
+                    if s.id not in self.deleted_snapshots
+                ),
+            ]
+            if drop:
+                self.record_deleted(await self.runtime.backend.discard_snapshots(drop))
+
+    def record_deleted(self, ids: list[str]) -> None:
+        """Mark the snapshots with these ids deleted."""
+        self.deleted_snapshots.update(ids)
+        for checkpoint in self.trace.checkpoints:
+            if checkpoint.id in self.deleted_snapshots:
+                checkpoint.deleted = True
+
+    async def _settle_checkpoints(self, *, wait: bool) -> None:
+        """Before the box goes: wait for the snapshots still uploading, so a retry
+        can restore them (its teardown would fail them), or, with nothing to retry,
+        stop waiting and leave them to be freed."""
+        # A snapshot still being taken would start its upload after this returned.
+        await asyncio.gather(*self._captures, return_exceptions=True)
+        tasks = list(self._durable.values())
+        if not wait:
+            # An owner waits for its snapshots whatever becomes of this run (`save`).
+            pinned = {c.id for c in self.trace.checkpoints if c.pinned}
+            for checkpoint_id, task in self._durable.items():
+                if checkpoint_id not in pinned:
+                    task.cancel()
+        # Shielded: a cancelled close must not cancel the uploads an owner waits for.
+        await asyncio.gather(
+            *(asyncio.shield(t) for t in tasks), return_exceptions=True
+        )
+        # A task cancelled before it first ran never reached its own cleanup.
+        for checkpoint_id, task in list(self._durable.items()):
+            if task.done():
+                del self._durable[checkpoint_id]
+
+    async def _cleanup_harness(self, runtime: Runtime) -> None:
+        if self._harness_cleaned:
+            return
+        try:
+            await self.harness.cleanup(self.trace, runtime)
+        except Exception as e:
+            logger.warning(
+                "Failed to clean up harness - %s: %s",
+                type(e).__name__,
+                e,
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
+        self._harness_cleaned = True
+
+    async def abort(self) -> None:
+        """Free everything this run holds — the entered servers and an owned
+        runtime — without finalizing or scoring: the escape path when an exception
+        (a cancellation mid-setup, a lifetime bug raised to the caller) means the
+        driver will never reach `close()`. Safe after a partial `close()`."""
+        self._closed = True
+        LIVE.discard(self)
+        await self._settle_checkpoints(wait=False)
+        if self._harness_session is not None:
+            with contextlib.suppress(Exception):
+                await self._harness_session.close()
+        with contextlib.suppress(Exception):
+            await self._stack.aclose()
+        if self.runtime is not None:
+            with contextlib.suppress(Exception):
+                await self._cleanup_harness(self.runtime)
+        if self.deployment is not None:
+            with contextlib.suppress(Exception):
+                await self.deployment.close()
+        elif (
+            self._borrowed_runtime is None
+            and self.runtime is not None
+            and not self.runtime.backend.stopped
+        ):
+            with contextlib.suppress(Exception):
+                await self.runtime.backend.stop()
+        if self.runtime is not None:
+            # Strays were never restorable, so nobody else knows of them.
+            with contextlib.suppress(Exception):
+                self.record_deleted(
+                    await self.runtime.backend.discard_snapshots(
+                        [
+                            *self.rewound_snapshots,
+                            *(
+                                c.snapshot
+                                for c in self.trace.checkpoints
+                                if not c.deleted and not c.pinned
+                            ),
+                            *self.runtime.backend.stray_snapshots,
+                        ]
+                    )
+                )
+
+    async def _score_harness(self, runtime: Runtime, deadline: float | None) -> None:
+        """Collect best-effort metrics without replacing a task failure."""
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self.harness.score(self.trace, self._agent_runtime or runtime)
+        except Exception as error:
+            self.trace.info["harness_scoring_error"] = {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+            logger.warning(
+                "Failed to score harness - %s: %s",
+                type(error).__name__,
+                error,
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
+
+    async def _close_harness(self) -> None:
+        """Close the harness session, then the tool servers and interception. Idempotent.
+
+        Generation has already completed, so a teardown failure is logged rather than
+        raised: it must not discard an otherwise scoreable (or already scored)
+        trajectory."""
+        if self._harness_session is not None:
+            try:
+                await self._harness_session.close()
+            except Exception as e:
+                logger.warning(
+                    "Failed to close harness session - %s: %s",
+                    type(e).__name__,
+                    e,
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
+        try:
+            await self._stack.aclose()
+        except Exception as e:
+            logger.warning(
+                "Failed to stop tool servers or interception - %s: %s",
+                type(e).__name__,
+                e,
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
+
+    def _agent_finished(self) -> bool:
+        """Whether the agent ended its last segment on its own, or waits between the
+        segments of an exchange: nothing it runs is still acting on the box."""
+        return not self._failed and self.trace.stop_condition in (
+            None,
+            "agent_completed",
+        )
+
+    def _scoring_skip(self) -> tuple[str, float | None] | None:
+        """Why the resolved scoring policy, or the `skip_scoring` stop that ended this trace,
+        skips task scoring for it, with the fixed reward that reason sets, if either does."""
+        skip = self._scoring_policy.skip
+        if self.trace.is_format_violation:
+            return "format_violation", skip.get("format_violation")
+        if "truncated" in skip and self.trace.is_truncated:
+            return "truncated", skip["truncated"]
+        if "timeout" in skip and self.trace.is_timeout:
+            return "timeout", skip["timeout"]
+        if (stop := self.trace.stop_condition) in self._skip_scoring_stops:
+            return stop, self._skip_scoring_stops[stop]
+        return None
+
+    def _metrics_deadline(self) -> float:
+        """Best-effort metrics get at most 30 seconds, and a tenth of a finite scoring budget."""
+        budget = (
+            min(30.0, self._timeouts.scoring / 10)
+            if self._timeouts.scoring is not None
+            else 30.0
+        )
+        return asyncio.get_running_loop().time() + budget
+
+    async def close(self) -> Trace:
+        """Finish the rollout: task `finalize` and per-rollout scoring (skipped when the
+        run already failed, but a stopped run is complete and scores its partial
+        trajectory), the harness session, tool servers and interception, then runtime
+        teardown.
+
+        An agent that finished its turn keeps its harness session open while its
+        environment is collected and, when grading runs in the agent's own box, graded:
+        harnesses stop the processes their commands started when the session closes,
+        and a service the task asked the agent to leave running is part of what gets
+        graded. A run stopped mid-turn (a timeout or a stop condition) closes the
+        session first, so an agent that may still be acting cannot change the box while
+        it is graded. Isolated grading runs in its own box after the session closes.
+        Harness metrics run after the close, which hands over the session's final state.
+        Idempotent; always returns the trace."""
+        if self._closed:
+            return self.trace
+        self._closed = True
+        LIVE.discard(self)
+        trace = self.trace
+        skip = self._scoring_skip()
+        runtime = self.runtime
+        try:
+            if trace.timing.agent.start and not trace.timing.agent.end:
+                trace.timing.agent.end = time.time()
+                logger.debug(
+                    "Stopped agent in %s turns=%d stop=%s",
+                    format_time(trace.timing.agent.duration),
+                    trace.num_turns,
+                    trace.stop_condition,
+                )
+            if not self._agent_finished():
+                await self._close_harness()
+            self._session.flush_rewrites()
+            trace._notify()
+            if not self._failed and self._opened:
+                assert runtime is not None
+                assert self.deployment is not None
+                grader = self._grader
+                isolated = self._scoring_policy.mode == "isolated"
+                loop = asyncio.get_running_loop()
+                trace.timing.finalize.start = time.time()
+                finalize_deadline = (
+                    loop.time() + self._timeouts.finalize
+                    if self._timeouts.finalize is not None
+                    else None
+                )
+                scoring_elapsed = 0.0
+                metrics_done = False
+                finalize_phase = "task finalization"
+                try:
+                    async with (
+                        asyncio.timeout_at(finalize_deadline),
+                        boundary(TaskError, "task finalize"),
+                    ):
+                        await invoke(
+                            self.task.finalize,
+                            {
+                                "trace": trace,
+                                "runtime": runtime,
+                                "deployment": self.deployment,
+                            },
+                        )
+                        if (
+                            self._collect_artifacts or grader is not None
+                        ) and not trace.state.artifacts:
+                            finalize_phase = "submission collection"
+                            trace.state.artifacts = await collect(
+                                runtime,
+                                self.task.data.artifacts,
+                                max_bytes=self.task.data.artifact_max_bytes,
+                            )
+                    if grader is not None:
+                        # The submission is collected: close the solver's session, then
+                        # capture its metrics before the workspace stops and the verifier
+                        # starts. Neither counts against finalization; the metrics count
+                        # against scoring.
+                        interlude_started = loop.time()
+                        await self._close_harness()
+                        metrics_started = loop.time()
+                        await self._score_harness(runtime, self._metrics_deadline())
+                        metrics_done = True
+                        scoring_elapsed = loop.time() - metrics_started
+                        if finalize_deadline is not None:
+                            finalize_deadline += loop.time() - interlude_started
+                        finalize_phase = "service finalization"
+                        async with (
+                            asyncio.timeout_at(finalize_deadline),
+                            boundary(TaskError, "task finalize"),
+                        ):
+                            await self._cleanup_harness(runtime)
+                            await self.deployment._stop_execution()
+                            await self.task.finalize_services(
+                                trace,
+                                {
+                                    name: self.deployment.target(name)
+                                    for name in self.deployment.target_names
+                                },
+                            )
+                except TimeoutError:
+                    self.timeout("finalize")
+                    if isolated:
+                        await self._close_harness()
+                        if not metrics_done:
+                            await self._score_harness(runtime, self._metrics_deadline())
+                        raise TaskError(
+                            f"{finalize_phase} exceeded its finalize deadline"
+                        ) from None
+                now = time.time()
+                trace.timing.finalize.end = now
+                trace.timing.scoring.start = now
+                trace._notify()
+                logger.debug(
+                    "Finalized task in %s", format_time(trace.timing.finalize.duration)
+                )
+                scoring_deadline = (
+                    loop.time() + max(0.0, self._timeouts.scoring - scoring_elapsed)
+                    if self._timeouts.scoring is not None
+                    else None
+                )
+                try:
+                    if scoring_deadline is not None and loop.time() >= scoring_deadline:
+                        raise TimeoutError("scoring budget exhausted")
+                    async with (
+                        asyncio.timeout_at(
+                            None if grader is not None else scoring_deadline
+                        ),
+                        boundary(TaskError, "scoring"),
+                    ):
+                        # Cross-trace judgement runs later, after the runtime is gone.
+                        if skip := skip or self._scoring_skip():
+                            reason, reward = skip
+                            logger.debug("Skipped scoring - %s", reason)
+                            trace.info["scoring_skipped"] = reason
+                            if reward is not None:
+                                trace.record_reward(reason, reward)
+                        elif grader is not None:
+                            # Grading in a box of its own stops this one first: an
+                            # owner's snapshot must finish its upload before.
+                            await self._settle_checkpoints(wait=False)
+                            try:
+                                await grade_task(
+                                    grader,
+                                    trace,
+                                    self._grading_config,
+                                    self._timeouts,
+                                    self._scoring_policy,
+                                    self.deployment,
+                                    on_score=self._on_score,
+                                    scoring_elapsed=scoring_elapsed,
+                                    interception=self._interception,
+                                )
+                            except TimeoutError:
+                                self.timeout("scoring")
+                                if self._on_score is not None:
+                                    self.fail(
+                                        TaskError(
+                                            "verification exceeded its scoring deadline"
+                                        )
+                                    )
+                        else:
+                            with (
+                                scoring_transaction(trace)
+                                if self._on_score is not None
+                                else contextlib.nullcontext()
+                            ):
+                                if self._scoring_task.scoring_deferred:
+                                    await self._scoring_task.score(
+                                        trace, runtime, self.deployment
+                                    )
+                                    if self._on_score is not None:
+                                        await self._on_score(trace, runtime)
+                                else:
+                                    await score_shared(
+                                        self._scoring_task,
+                                        trace,
+                                        runtime,
+                                        self.trace.agent.config.runtime,
+                                        self._scoring_policy,
+                                        self.deployment,
+                                        interception=self._interception,
+                                        on_score=self._on_score,
+                                    )
+                except TimeoutError:
+                    self.timeout("scoring")
+                    if self._on_score is not None:
+                        self.fail(
+                            TaskError("verification exceeded its scoring deadline")
+                        )
+                finally:
+                    if grader is None:
+                        # Graded in the agent's own box: now the session can close, and
+                        # the metrics read what it handed over and left behind.
+                        await self._close_harness()
+                        await self._score_harness(runtime, self._metrics_deadline())
+                trace.timing.scoring.end = time.time()
+                trace._notify()
+                logger.debug(
+                    "Scored rollout in %s", format_time(trace.timing.scoring.duration)
+                )
+        except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
+            self.fail(e, stage="scoring" if trace.timing.scoring.start else "finalize")
+        finally:
+            if self._harness_session is not None:
+                with contextlib.suppress(Exception):
+                    await self._harness_session.close()
+            with contextlib.suppress(Exception):
+                await self._stack.aclose()
+            trace.is_completed = True
+            trace.ok = not self._failed
+            now = time.time()
+            for span in (
+                trace.timing.boot,
+                trace.timing.setup,
+                trace.timing.agent,
+                trace.timing.finalize,
+                trace.timing.scoring,
+            ):
+                if span.start and not span.end:
+                    span.end = now
+            trace._split_agent_time()
+            if runtime is not None:
+                await self._cleanup_harness(runtime)
+            # A failed attempt's retry restores the newest snapshot, which must be
+            # durable before the box goes.
+            await self._settle_checkpoints(wait=not trace.ok)
+            # Tear down here — the env's `finalize()` (later) needs only the traces,
+            # not a live runtime. A borrowed runtime is its creator's to tear down,
+            # not this rollout's.
+            started = time.perf_counter()
+            try:
+                if self.deployment is not None:
+                    await self.deployment.close()
+                elif (
+                    self._borrowed_runtime is None
+                    and runtime is not None
+                    and not runtime.backend.stopped
+                ):
+                    # Setup can fail before a deployment takes ownership.
+                    await runtime.backend.stop()
+                if runtime is not None and runtime.backend.stray_snapshots:
+                    await runtime.backend.discard_snapshots(
+                        runtime.backend.stray_snapshots
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to tear down runtime - %s: %s",
+                    type(e).__name__,
+                    e,
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
+            teardown = time.perf_counter() - started
+        timing = trace.timing
+        spans = (
+            ("boot", timing.boot),
+            ("setup", timing.setup),
+            ("agent", timing.agent),
+            ("finalize", timing.finalize),
+            ("score", timing.scoring),
+        )
+        timings = [(k, format_time(v.duration)) for k, v in spans if v.start]
+        timings.append(("teardown", format_time(teardown)))
+        summary = " ".join(
+            filter(
+                None,
+                [
+                    f"stop={trace.stop_condition}" if trace.ok else "",
+                    f"turns={trace.num_turns} branches={trace.num_branches}",
+                    f"dropped={trace.dropped}" if trace.is_dropped else "",
+                    f"reward={trace.reward:.3f}" if trace.ok else "",
+                    _group(
+                        "rewards",
+                        [
+                            (k, "none" if r is None else f"{r.score:.3f}")
+                            for k, r in trace.rewards.items()
+                        ],
+                    ),
+                    _group(
+                        "metrics",
+                        [
+                            (k, "none" if v is None else f"{v:.4g}")
+                            for k, v in trace.metrics.items()
+                        ],
+                    ),
+                    _group(
+                        "tokens",
+                        [
+                            ("input", trace.num_input_tokens),
+                            ("output", trace.num_output_tokens),
+                        ],
+                    ),
+                    _group("timing", timings),
+                ],
+            )
+        )
+        elapsed = format_time(time.time() - timing.start)
+        if trace.ok:
+            logger.info("Finished rollout in %s %s", elapsed, summary)
+        else:
+            error = trace.last_error
+            logger.warning(
+                "Failed rollout in %s %s - %s: %s",
+                elapsed,
+                summary,
+                error.type if error else "Error",
+                clip(error.message) if error else "",
+            )
+        return trace

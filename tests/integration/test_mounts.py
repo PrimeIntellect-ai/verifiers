@@ -9,9 +9,9 @@ import pytest
 from prime_sandboxes import APIError, AsyncSandboxClient
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import provision_runtime
-from verifiers.v1.runtimes.backends.docker import cli
+from verifiers.v1._errors import SandboxError
+from verifiers.v1._runtimes import provision_runtime
+from verifiers.v1._runtimes.backends.docker import cli
 
 
 @pytest.mark.docker

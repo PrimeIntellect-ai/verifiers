@@ -7,14 +7,14 @@ from typing import cast
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1 import grading
-from verifiers.v1.configs.scoring import resolve_scoring
-from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.grading import grade_submission, scoring_network
-from verifiers.v1.runtimes import deployment
-from verifiers.v1.runtimes.base import RuntimeBackend
-from verifiers.v1.runtimes.runtime import Runtime
-from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1 import _grading as grading
+from verifiers.v1._configs.scoring import resolve_scoring
+from verifiers.v1._errors import SandboxError, TaskError
+from verifiers.v1._grading import grade_submission, scoring_network
+from verifiers.v1._runtimes import deployment
+from verifiers.v1._runtimes.base import RuntimeBackend
+from verifiers.v1._runtimes.runtime import Runtime
+from verifiers.v1._utils.compile import resolve_runtime_config
 
 PYPI = vf.NetworkPolicyConfig(allow=["pypi.org"])
 

@@ -6,6 +6,6 @@ and uses `@vf.stop` when the search material contains a chosen phrase.
 Codex's web search is off by default. Turn it on, against a model whose provider
 serves the Responses `web_search` tool:
 
-```
+```bash
 vf-run web_search_interception -m <model> --env.agent.harness.web-search live
 ```

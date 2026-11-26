@@ -2,7 +2,7 @@
 prompt-as-scenario and the assistant is judged by the task's own reward, over the plain
 echo task and the tool task (the tau-bench shape)."""
 
-from verifiers.v1.episode import WireEpisode
+from verifiers.v1._episode import WireEpisode
 
 
 async def test_env_id_user_sim(run):

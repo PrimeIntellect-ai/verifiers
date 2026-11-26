@@ -32,7 +32,7 @@ pinned tag. For each link:
 3. Update the link to the new tag and line.
 
 If the rewrite is gone, remove the override. If the rewrite changed, update the
-view in `verifiers/v1/harnesses/utils/replay.py`. A view may only normalize
+view in `verifiers/v1/harnesses/_utils/replay.py`. A view may only normalize
 cosmetic differences. If the program now changes what the model sees, such as
 dropping a turn, do not hide it with a view. That is a real branch.
 

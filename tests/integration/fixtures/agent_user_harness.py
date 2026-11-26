@@ -7,7 +7,7 @@ the harness can't set up or run without root.
 """
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1._runtimes import Runtime
 
 __all__ = ["AgentUserHarnessTaskset"]
 

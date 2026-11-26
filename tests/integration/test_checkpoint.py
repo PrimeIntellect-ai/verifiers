@@ -22,12 +22,12 @@ from prime_sandboxes import AsyncSandboxClient
 from subagent_restore import sub_agent_turns
 from tick_restore import COMMAND, TURNS
 
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.dialects.chat import ChatDialect
-from verifiers.v1.env import RunSlot
-from verifiers.v1.restore import LIVE, release_all, restore_entry, save_all
-from verifiers.v1.runtimes import PrimeBackend, Snapshot
-from verifiers.v1.utils.loaders import harness_class, load_environment
+from verifiers.v1._clients import ModelContext
+from verifiers.v1._dialects.chat import ChatDialect
+from verifiers.v1._env import RunSlot
+from verifiers.v1._restore import LIVE, release_all, restore_entry, save_all
+from verifiers.v1._runtimes import PrimeBackend, Snapshot
+from verifiers.v1._utils.loaders import harness_class, load_environment
 
 RETRIES = {"max_retries": 0, "rules": [{"type": "ProviderError", "max_retries": 1}]}
 NEEDS = ("memory",)
