@@ -167,6 +167,21 @@ def test_plugged_stops_set_skipped_reward(tmp_path) -> None:
         vf.stop(skipped_reward=-1.0)
 
 
+def test_skipped_rewards_need_their_skip() -> None:
+    scoring = vf.ScoringConfig(
+        skip_on_truncated=True, truncated_reward=-0.5, format_violation_reward=-1.0
+    )
+    assert scoring.skipped_rewards() == {
+        "truncated": -0.5,
+        "timeout": None,
+        "format_violation": -1.0,
+    }
+    with pytest.raises(ValueError, match="truncated_reward requires skip_on_truncated"):
+        vf.ScoringConfig(truncated_reward=-1.0)
+    with pytest.raises(ValueError, match="timeout_reward requires skip_on_timeout"):
+        vf.ScoringConfig(timeout_reward=-1.0)
+
+
 def test_a_nan_reward_is_an_error() -> None:
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),

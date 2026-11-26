@@ -106,8 +106,7 @@ def stop(
     """Stop when a typed `Request`, `Response`, or `Trace` predicate returns true (or
     `(True, metadata)` to populate `trace.stop_info`). With `skip_scoring`, a trace
     this stop ends skips task scoring and keeps no task rewards. `skipped_reward` then
-    records a fixed reward named after the stop; unset falls back to
-    `ScoringConfig.skipped_reward`."""
+    records a fixed reward named after the stop."""
     check_skipped_reward(skip_scoring, skipped_reward)
     decorator = mark(
         "stop",

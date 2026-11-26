@@ -30,8 +30,8 @@ class StopFunctionConfig(DecoratedFunctionConfig):
 
     skipped_reward: FiniteFloat | None = None
     """Fixed reward for a trace this stop ends, recorded under the stop's name; needs
-    `skip_scoring`. Unset keeps the replaced method's value (unset for a fresh
-    function), which falls back to `ScoringConfig.skipped_reward`."""
+    `skip_scoring`. Unset keeps the replaced method's value (none for a fresh
+    function)."""
 
 
 class RewardFunctionConfig(DecoratedFunctionConfig):

@@ -1,8 +1,14 @@
 """Placement and retry policy for task scoring, independent of the agent program."""
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, FiniteFloat, SerializationInfo, field_serializer
+from pydantic import (
+    Field,
+    FiniteFloat,
+    SerializationInfo,
+    field_serializer,
+    model_validator,
+)
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.client import BaseClientConfig
@@ -56,11 +62,32 @@ class ScoringConfig(BaseConfig):
     skip_on_timeout: bool = False
     """Skip task scoring for a trace whose stage deadline expired before scoring
     (`Trace.is_timeout`): it keeps no task rewards."""
-    skipped_reward: FiniteFloat | None = None
-    """Fixed reward for a trace whose task scoring was skipped (truncation, timeout,
-    format violation, or a `skip_scoring` stop without its own `skipped_reward`),
-    recorded under the skip reason. None records no reward, so the trace's reward
-    is 0."""
+    truncated_reward: FiniteFloat | None = None
+    """Fixed reward, recorded as `truncated`, for a trace that `skip_on_truncated`
+    skips. None records no reward, so the trace's reward is 0."""
+    timeout_reward: FiniteFloat | None = None
+    """Fixed reward, recorded as `timeout`, for a trace that `skip_on_timeout` skips.
+    None records no reward, so the trace's reward is 0."""
+    format_violation_reward: FiniteFloat | None = None
+    """Fixed reward, recorded as `format_violation`, for a trace the harness rejected
+    as a format violation (never scored). None records no reward, so the trace's
+    reward is 0."""
+
+    @model_validator(mode="after")
+    def check_skipped_rewards(self) -> Self:
+        if self.truncated_reward is not None and not self.skip_on_truncated:
+            raise ValueError("truncated_reward requires skip_on_truncated")
+        if self.timeout_reward is not None and not self.skip_on_timeout:
+            raise ValueError("timeout_reward requires skip_on_timeout")
+        return self
+
+    def skipped_rewards(self) -> dict[str, float | None]:
+        """Fixed reward per skip reason this policy owns."""
+        return {
+            "truncated": self.truncated_reward,
+            "timeout": self.timeout_reward,
+            "format_violation": self.format_violation_reward,
+        }
 
     @field_serializer("runtime")
     def serialize_runtime(

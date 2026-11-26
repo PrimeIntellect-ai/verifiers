@@ -1599,9 +1599,10 @@ class Rollout:
                         if skip_reason := skip_reason or self._scoring_skip_reason():
                             logger.debug("Skipped scoring - %s", skip_reason)
                             trace.info["scoring_skipped"] = skip_reason
-                            reward = self._skip_scoring_stops.get(skip_reason)
-                            if reward is None:
-                                reward = self._scoring_policy.skipped_reward
+                            reward = {
+                                **self._scoring_policy.skipped_rewards(),
+                                **self._skip_scoring_stops,
+                            }.get(skip_reason)
                             if reward is not None:
                                 trace.record_reward(skip_reason, reward)
                         elif grader is not None:

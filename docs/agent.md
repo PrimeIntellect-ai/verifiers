@@ -73,7 +73,7 @@ When `mode="isolated"`, verifiers restores the task's collected artifacts into a
 
 A truncated or timed-out run is often not worth grading. Set `agent.scoring.skip_on_truncated` to skip task scoring when `Trace.is_truncated` is true (a turn or token cap, or a length-finished response). Set `agent.scoring.skip_on_timeout` to skip it when a stage deadline expired before scoring (`Trace.is_timeout`). A skipped trace keeps no task rewards, metrics, or judge scores, so its reward is 0. `trace.info["scoring_skipped"]` records the reason (`"truncated"` or `"timeout"`). Task finalization and harness metrics still run.
 
-Set `agent.scoring.skipped_reward` to give every skipped trace a fixed reward instead of 0, for example -1 to rank cut-off and format-violating runs below runs that finished and failed. The trace records it as a reward named after the skip reason. A `skip_scoring` stop with its own `skipped_reward` uses that value (see [tasksets](tasksets.md)).
+To give a skipped trace a fixed reward instead of 0, set one per skip reason: `agent.scoring.truncated_reward`, `agent.scoring.timeout_reward`, and `agent.scoring.format_violation_reward`. For example, set -1 to rank cut-off runs below runs that finished and failed. The trace records the value as a reward named after the reason. `truncated_reward` needs `skip_on_truncated`, and `timeout_reward` needs `skip_on_timeout`. A harness never scores a format violation, so `format_violation_reward` needs no flag. A `skip_scoring` stop sets its own reward (see [tasksets](tasksets.md)).
 
 `Trace.is_truncated` only checks the run's last model response. Some harnesses keep going after a response hits its per-turn token cap: they compact, or answer a cut-off tool call. Set `agent.max_turn_tokens` to cap each response and stop the run before the next model call once a response hits that cap. The stop condition is `max_turn_tokens`. The run is then truncated, so `skip_on_truncated` applies.
 
@@ -85,7 +85,8 @@ max_turn_tokens = 4096
 [env.agent.scoring]
 skip_on_truncated = true
 skip_on_timeout = true
-skipped_reward = -1.0
+truncated_reward = -0.5
+timeout_reward = -1.0
 ```
 
 ## Retries and checkpoints
