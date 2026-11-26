@@ -12,7 +12,7 @@ import tempfile
 import time
 import uuid
 import weakref
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -354,7 +354,9 @@ class PrimeBackend(RuntimeBackend):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def snapshot(self) -> Snapshot:
+    async def snapshot(
+        self, taken: Callable[[Snapshot], None] | None = None
+    ) -> Snapshot:
         # A pause is the platform's memory snapshot: it stops the box, and the resume
         # continues it. The platform uploads the snapshot after the pause. Until it is
         # durable the snapshot is stray: the platform refuses to delete it while this
@@ -388,6 +390,8 @@ class PrimeBackend(RuntimeBackend):
                 # Kept whatever comes next: a pause that was not seen to finish can
                 # still have made the snapshot.
                 self.stray_snapshots.append(snapshot)
+                if taken is not None:
+                    taken(snapshot)
                 try:
                     await self._client.wait_for_pause(
                         self.info.id, timeout_seconds=_PAUSE_SETTLE_SECONDS

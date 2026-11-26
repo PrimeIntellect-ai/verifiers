@@ -434,9 +434,11 @@ class Checkpoint(BaseModel):
     """From the snapshot request until it was durable (restorable); `end` stays 0 while
     it is not."""
     captured: float = 0.0
-    """When the request returned: the snapshot's content was fixed from then on."""
+    """When the provider named the snapshot. The box had seen its last reply before
+    then, so the snapshot holds what the trace holds at this point."""
     held: float = 0.0
-    """Wall time spent capturing the sandbox, excluding the background upload."""
+    """Wall time from the snapshot request until the box ran again, excluding the
+    background upload."""
     bytes: int | None = None
     """The snapshot's stored size, which the provider bills, once it is durable."""
     restored: bool = False

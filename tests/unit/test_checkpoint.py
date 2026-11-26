@@ -145,6 +145,8 @@ class SlowBackend:
         self.running = asyncio.Event()
         """A snapshot returns when this is set: the box runs again."""
         self.fail = False
+        self.stop_fails = False
+        """The box never stops: the snapshot fails after it was named."""
         self.taken = 0
         self.deleted: list[str] = []
         self.stray_snapshots: list[vf.Snapshot] = []
@@ -152,13 +154,18 @@ class SlowBackend:
     def snapshot_pace(self):
         return contextlib.nullcontext()
 
-    async def snapshot(self) -> vf.Snapshot:
+    async def snapshot(self, taken=None) -> vf.Snapshot:
         self.taken += 1
+        snapshot = vf.Snapshot(id=f"ck{self.taken}")
+        # Like a Prime box: the snapshot is named before the box stops, and teardown
+        # frees it until it is durable.
+        self.stray_snapshots.append(snapshot)
+        if taken is not None:
+            taken(snapshot)
         self.stopped.set()
         await self.running.wait()
-        snapshot = vf.Snapshot(id=f"ck{self.taken}")
-        # Like a Prime box: teardown frees a snapshot until it is durable.
-        self.stray_snapshots.append(snapshot)
+        if self.stop_fails:
+            raise RuntimeError("pause failed")
         return snapshot
 
     async def wait_snapshot(self, snapshot: vf.Snapshot) -> int | None:
@@ -300,19 +307,54 @@ async def test_a_failed_upload_leaves_the_owners_snapshot_to_the_owner():
 
 
 async def test_released_save_does_not_reapply_its_hold():
-    """A release that arrives while the save still takes its snapshot ends the hold:
-    the save does not hold the box again when it returns."""
-    run, backend, session = make_rollout(stops=True)
-    saving = asyncio.create_task(run.save(hold=True))
-    await asyncio.wait_for(backend.stopped.wait(), 1)
-    assert not saving.done() and not run._unheld.is_set()
-
-    run.release()
-    backend.running.set()
+    """A release that arrives while the save still waits to take its snapshot ends
+    the hold: the save does not hold the box again when it returns."""
+    run, _, session = make_rollout()
+    with session.committing():
+        saving = asyncio.create_task(run.save(hold=True))
+        await asyncio.sleep(0.01)
+        assert not saving.done() and not run._unheld.is_set()
+        run.release()
     saved = await saving
     assert saved is not None
+    await asyncio.gather(*run._captures)
     assert session.flowing.is_set()
     assert run._release_timer is None
+
+
+async def test_a_save_returns_before_the_box_stops():
+    """The owner gets the restore point once the snapshot is named. The box keeps
+    its hold until it runs again, also past the owner's release, and only then does
+    the snapshot's upload wait start."""
+    run, backend, session = make_rollout(stops=True)
+    backend.durable.set()
+    saved = await asyncio.wait_for(run.save(hold=True), 1)
+    assert saved is not None and backend.stopped.is_set()
+    (checkpoint,) = run.trace.checkpoints
+    assert checkpoint.pinned and run._durable == {}
+    run.release()
+    assert not session.flowing.is_set()
+    backend.running.set()
+    await run._settle_checkpoints(wait=True)
+    assert session.flowing.is_set() and checkpoint.time.end
+    assert run._relay.rerouted == [FakeRelay.upstream]
+
+
+async def test_a_snapshot_that_fails_after_it_was_named_is_freed_with_the_box():
+    """A box that never stops leaves the owner a restore point nothing continues:
+    the rollout drops it and the box's teardown frees it, so the owner's restore
+    from it starts over."""
+    run, backend, session = make_rollout(stops=True)
+    backend.stop_fails = True
+    saved = await asyncio.wait_for(run.save(hold=True), 1)
+    assert saved is not None
+    backend.running.set()
+    await asyncio.gather(*run._captures)
+    assert not run.trace.checkpoints and run._durable == {}
+    assert backend.stray_snapshots == [vf.Snapshot(id="ck1")]
+    assert not session.flowing.is_set()
+    run.release()
+    assert session.flowing.is_set()
 
 
 async def test_disowning_a_late_save_preserves_the_next_owners_hold():
@@ -529,7 +571,7 @@ async def test_no_memory_snapshot_without_a_running_segment():
 async def test_a_failed_memory_snapshot_lets_replies_flow_again():
     run, backend, session = make_rollout()
 
-    async def failing():
+    async def failing(taken=None):
         raise vf.SandboxError("pause refused")
 
     backend.snapshot = failing  # type: ignore[method-assign]
@@ -660,6 +702,28 @@ async def test_a_held_save_all_arms_the_watchdog_once_every_save_is_in(monkeypat
     assert set(armed) == {first, second}
 
 
+async def test_a_save_past_the_timeout_goes_back_to_its_rollout(monkeypatch):
+    """`save_all` returns at its timeout without the late saves: each one gives its
+    snapshot and hold back to its rollout when it ends."""
+    from verifiers.v1 import restore
+
+    fast, fast_backend, _ = make_rollout()
+    slow, slow_backend, slow_session = make_rollout()
+    for backend in (fast_backend, slow_backend):
+        backend.running.set()
+        backend.durable.set()
+    monkeypatch.setattr(restore, "LIVE", {fast, slow})
+    skipped: dict[str, int] = {}
+    with slow_session.committing():
+        saves = await restore.save_all(skipped, hold=True, watchdog=False, timeout=0.05)
+    assert len(saves) == 1 and saves[0]["id"] == fast.trace.id
+    assert skipped == {"its save took longer than 0.05s": 1}
+    await asyncio.sleep(0.05)
+    (checkpoint,) = slow.trace.checkpoints
+    assert not checkpoint.pinned
+    assert slow_session.flowing.is_set() and slow._hold_id is None
+
+
 async def test_a_release_does_not_answer_a_box_that_another_snapshot_stops():
     run, backend, session = make_rollout()
     backend.running.set()
@@ -681,13 +745,20 @@ async def test_a_release_does_not_answer_a_box_that_another_snapshot_stops():
 
 
 async def test_a_cancelled_held_save_does_not_hold_the_box():
-    run, backend, session = make_rollout()
-    backend.running.clear()
-    saving = asyncio.create_task(run.save(hold=True))
-    await backend.stopped.wait()
-    saving.cancel()
-    assert (await asyncio.gather(saving, return_exceptions=True))[0] is not None
+    """A save cancelled before its snapshot is named leaves the snapshot to the
+    rollout: unpinned, and the box answered again once it runs."""
+    run, backend, session = make_rollout(stops=True)
+    with session.committing():
+        saving = asyncio.create_task(run.save(hold=True))
+        await asyncio.sleep(0.01)
+        saving.cancel()
+        assert (await asyncio.gather(saving, return_exceptions=True))[0] is not None
     assert saving.cancelled()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    backend.running.set()
+    await asyncio.gather(*run._captures)
+    (checkpoint,) = run.trace.checkpoints
+    assert not checkpoint.pinned
     assert session.flowing.is_set()
     assert run._hold_id is None and run._release_timer is None
 
@@ -752,18 +823,37 @@ async def test_a_finished_segment_waits_for_the_owners_release():
 async def test_a_save_whose_program_ended_is_skipped():
     run, backend, session = make_rollout()
     backend.durable.set()
-    states = iter([{"job": {"job_id": "j1"}}, {"job": {"job_id": "j1"}}, None])
-    run._harness_session = SimpleNamespace(memory_state=lambda: next(states))  # type: ignore[assignment]
+    states = iter([{"job": {"job_id": "j1"}}, {"job": {"job_id": "j1"}}])
+    run._harness_session = SimpleNamespace(memory_state=lambda: next(states, None))  # type: ignore[assignment]
     assert await run.save(hold=True) is None
     assert run.save_skipped == "its harness program ended during the save"
-    (checkpoint,) = run.trace.checkpoints
-    assert not checkpoint.pinned and session.flowing.is_set() and run._hold_id is None
+    await asyncio.gather(*run._captures)
+    assert not run.trace.checkpoints and backend.stray_snapshots == [
+        vf.Snapshot(id="ck1")
+    ]
+    assert session.flowing.is_set() and run._hold_id is None
+
+
+async def test_a_program_that_ends_while_the_box_stops_drops_the_snapshot():
+    """The owner already has the restore point when the program ends: the rollout
+    drops the snapshot and its box's teardown frees it, so a restore from it starts
+    over instead of continuing a box with nothing to run."""
+    run, backend, session = make_rollout(stops=True)
+    saved = await run.save(hold=True)
+    assert saved is not None
+    run._harness_session = SimpleNamespace(memory_state=lambda: None)  # type: ignore[assignment]
+    backend.running.set()
+    await asyncio.gather(*run._captures)
+    assert not run.trace.checkpoints and run._durable == {}
+    assert backend.stray_snapshots == [vf.Snapshot(id="ck1")]
+    run.release()
+    assert session.flowing.is_set()
 
 
 async def test_a_failed_held_save_does_not_hold_the_box():
     run, backend, session = make_rollout()
 
-    async def failing():
+    async def failing(taken=None):
         raise vf.SandboxError("pause refused")
 
     backend.snapshot = failing  # type: ignore[method-assign]
