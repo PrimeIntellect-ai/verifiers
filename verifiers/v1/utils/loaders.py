@@ -27,7 +27,6 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.judge import Judge, judge_config_cls
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
-from verifiers.v1.utils.decorators import check_skipped_reward
 from verifiers.v1.utils.generic import concrete_type, prefix_validation_error
 
 
@@ -285,12 +284,7 @@ def load_plugged_fn(
         skip_scoring = config.skip_scoring
         if skip_scoring is None:
             skip_scoring = getattr(fn, "stop_skip_scoring", False)
-        skipped_reward = config.skipped_reward
-        if skipped_reward is None:
-            skipped_reward = getattr(fn, "stop_skipped_reward", None)
-        check_skipped_reward(skip_scoring, skipped_reward)
         plugged.stop_skip_scoring = skip_scoring
-        plugged.stop_skipped_reward = skipped_reward
     return plugged
 
 

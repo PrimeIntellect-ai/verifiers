@@ -144,42 +144,15 @@ def test_plugged_stops_set_skip_scoring(tmp_path) -> None:
     )
 
 
-def test_plugged_stops_set_skipped_reward(tmp_path) -> None:
+def test_skip_scoring_takes_a_reward(tmp_path) -> None:
     fns = tmp_path / "fns.py"
     fns.write_text(PLUGGED_FNS_PY)
-    data = HookData(idx=0, prompt="abc")
-
-    def rewards(stops: dict) -> dict[str, float | None]:
-        config = vf.TaskConfig(stops=stops)
-        return {
-            fn.__name__: fn.stop_skipped_reward
-            for fn in HookTask(data, config).hooks("stop")
-        }
-
-    assert rewards({})["no_reply"] is None
-    assert (
-        rewards({"no_reply": vf.StopFunctionConfig(skipped_reward=-1.0)})["no_reply"]
-        == -1.0
-    )
-    with pytest.raises(ValueError, match="skipped_reward requires skip_scoring"):
-        rewards({"single_turn": vf.StopFunctionConfig(skipped_reward=-1.0)})
-    with pytest.raises(ValueError, match="skipped_reward requires skip_scoring"):
-        vf.stop(skipped_reward=-1.0)
-
-
-def test_skipped_rewards_need_their_skip() -> None:
-    scoring = vf.ScoringConfig(
-        skip_on_truncated=True, truncated_reward=-0.5, format_violation_reward=-1.0
-    )
-    assert scoring.skipped_rewards() == {
-        "truncated": -0.5,
-        "timeout": None,
-        "format_violation": -1.0,
-    }
-    with pytest.raises(ValueError, match="truncated_reward requires skip_on_truncated"):
-        vf.ScoringConfig(truncated_reward=-1.0)
-    with pytest.raises(ValueError, match="timeout_reward requires skip_on_timeout"):
-        vf.ScoringConfig(timeout_reward=-1.0)
+    config = vf.TaskConfig(stops={"no_reply": vf.StopFunctionConfig(skip_scoring=-1)})
+    stops = HookTask(HookData(idx=0, prompt="abc"), config).hooks("stop")
+    assert {fn.__name__: fn.stop_skip_scoring for fn in stops}["no_reply"] == -1.0
+    assert vf.StopFunctionConfig(skip_scoring=True).skip_scoring is True
+    with pytest.raises(ValueError, match="must be finite"):
+        vf.stop(skip_scoring=float("nan"))
 
 
 def test_a_nan_reward_is_an_error() -> None:

@@ -1,14 +1,8 @@
 """Placement and retry policy for task scoring, independent of the agent program."""
 
-from typing import Literal, Self
+from typing import Literal
 
-from pydantic import (
-    Field,
-    FiniteFloat,
-    SerializationInfo,
-    field_serializer,
-    model_validator,
-)
+from pydantic import Field, FiniteFloat, SerializationInfo, field_serializer
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.client import BaseClientConfig
@@ -56,38 +50,14 @@ class ScoringConfig(BaseConfig):
     combined with the runtime's own rules the same way. None keeps the default: isolated
     scoring runs under `TaskData.network`, shared scoring keeps the agent phase's network,
     and Harbor's shared grading lifts the policy."""
-    skip_on_truncated: bool = False
-    """Skip task scoring for a truncated trace (`Trace.is_truncated`): it keeps no
-    task rewards."""
-    skip_on_timeout: bool = False
-    """Skip task scoring for a trace whose stage deadline expired before scoring
-    (`Trace.is_timeout`): it keeps no task rewards."""
-    truncated_reward: FiniteFloat | None = None
-    """Fixed reward, recorded as `truncated`, for a trace that `skip_on_truncated`
-    skips. None records no reward, so the trace's reward is 0."""
-    timeout_reward: FiniteFloat | None = None
-    """Fixed reward, recorded as `timeout`, for a trace that `skip_on_timeout` skips.
-    None records no reward, so the trace's reward is 0."""
-    format_violation_reward: FiniteFloat | None = None
-    """Fixed reward, recorded as `format_violation`, for a trace the harness rejected
-    as a format violation (never scored). None records no reward, so the trace's
-    reward is 0."""
-
-    @model_validator(mode="after")
-    def check_skipped_rewards(self) -> Self:
-        if self.truncated_reward is not None and not self.skip_on_truncated:
-            raise ValueError("truncated_reward requires skip_on_truncated")
-        if self.timeout_reward is not None and not self.skip_on_timeout:
-            raise ValueError("timeout_reward requires skip_on_timeout")
-        return self
-
-    def skipped_rewards(self) -> dict[str, float | None]:
-        """Fixed reward per skip reason this policy owns."""
-        return {
-            "truncated": self.truncated_reward,
-            "timeout": self.timeout_reward,
-            "format_violation": self.format_violation_reward,
-        }
+    skip: dict[Literal["truncated", "timeout", "format_violation"], FiniteFloat] = (
+        Field(default_factory=dict)
+    )
+    """Skip task scoring for these reasons and record the value as a fixed reward named
+    after the reason. `truncated` matches `Trace.is_truncated`, `timeout` a stage
+    deadline that expired before scoring (`Trace.is_timeout`). A format violation is
+    never scored, so `format_violation` only sets its reward. A reason left out is
+    scored as usual, or, for a format violation, keeps no rewards."""
 
     @field_serializer("runtime")
     def serialize_runtime(

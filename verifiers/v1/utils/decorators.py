@@ -84,46 +84,26 @@ def tool(func: F | None = None, name: str | None = None) -> F | Callable[[F], F]
 
 
 @overload
-def stop(
-    func: F,
-    priority: int = 0,
-    skip_scoring: bool = False,
-    skipped_reward: float | None = None,
-) -> F: ...
+def stop(func: F, priority: int = 0, skip_scoring: bool | float = False) -> F: ...
 @overload
 def stop(
-    func: None = None,
-    priority: int = 0,
-    skip_scoring: bool = False,
-    skipped_reward: float | None = None,
+    func: None = None, priority: int = 0, skip_scoring: bool | float = False
 ) -> Callable[[F], F]: ...
 def stop(
-    func: F | None = None,
-    priority: int = 0,
-    skip_scoring: bool = False,
-    skipped_reward: float | None = None,
+    func: F | None = None, priority: int = 0, skip_scoring: bool | float = False
 ) -> F | Callable[[F], F]:
     """Stop when a typed `Request`, `Response`, or `Trace` predicate returns true (or
     `(True, metadata)` to populate `trace.stop_info`). With `skip_scoring`, a trace
-    this stop ends skips task scoring and keeps no task rewards. `skipped_reward` then
-    records a fixed reward named after the stop."""
-    check_skipped_reward(skip_scoring, skipped_reward)
-    decorator = mark(
-        "stop",
-        stop_priority=priority,
-        stop_skip_scoring=skip_scoring,
-        stop_skipped_reward=skipped_reward,
-    )
+    this stop ends skips task scoring and keeps no task rewards; a number instead of
+    `True` also records it as a fixed reward named after the stop."""
+    check_skip_scoring(skip_scoring)
+    decorator = mark("stop", stop_priority=priority, stop_skip_scoring=skip_scoring)
     return decorator if func is None else decorator(func)
 
 
-def check_skipped_reward(skip_scoring: bool, skipped_reward: float | None) -> None:
-    if skipped_reward is None:
-        return
-    if not skip_scoring:
-        raise ValueError("skipped_reward requires skip_scoring")
-    if not math.isfinite(skipped_reward):
-        raise ValueError(f"skipped_reward must be finite, got {skipped_reward}")
+def check_skip_scoring(skip_scoring: bool | float) -> None:
+    if not isinstance(skip_scoring, bool) and not math.isfinite(skip_scoring):
+        raise ValueError(f"skip_scoring reward must be finite, got {skip_scoring}")
 
 
 @overload

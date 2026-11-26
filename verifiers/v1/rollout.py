@@ -245,10 +245,11 @@ class Rollout:
             for fn in discover_decorated(task, "intercept")
         ]
         stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
+        # Each `skip_scoring` stop, mapped to its fixed reward (None for `True`).
         self._skip_scoring_stops = {
-            fn.__name__: getattr(fn, "stop_skipped_reward", None)
+            fn.__name__: None if skip is True else float(skip)
             for _, fn in stops
-            if getattr(fn, "stop_skip_scoring", False)
+            if (skip := getattr(fn, "stop_skip_scoring", False)) is not False
         }
         execution_policy = runtime_config
         self._session = RolloutSession(
@@ -1449,9 +1450,9 @@ class Rollout:
         skips task scoring for it, if either does."""
         if self.trace.is_format_violation:
             return "format_violation"
-        if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
+        if "truncated" in self._scoring_policy.skip and self.trace.is_truncated:
             return "truncated"
-        if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
+        if "timeout" in self._scoring_policy.skip and self.trace.is_timeout:
             return "timeout"
         if self.trace.stop_condition in self._skip_scoring_stops:
             return self.trace.stop_condition
@@ -1600,7 +1601,7 @@ class Rollout:
                             logger.debug("Skipped scoring - %s", skip_reason)
                             trace.info["scoring_skipped"] = skip_reason
                             reward = {
-                                **self._scoring_policy.skipped_rewards(),
+                                **self._scoring_policy.skip,
                                 **self._skip_scoring_stops,
                             }.get(skip_reason)
                             if reward is not None:
