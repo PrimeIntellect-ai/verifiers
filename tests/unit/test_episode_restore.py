@@ -319,9 +319,15 @@ def test_a_run_in_scoring_continues_from_the_box_its_judge_saved():
     # One box: both calls continue from the same snapshot.
     assert point["snapshots"] == [{"id": f"s-{judge.id}"}]
 
-    # The judge in a box of its own (isolated scoring): the solver's box is not saved.
-    in_box(judge, "box-2")
+    assert checkpoint["session"]["box"] == "own"
+
+    # Isolated scoring: the judge runs in the grading box, which its snapshot restores.
+    in_box(judge, "grading-box")
     point, reason = episode_restore_point(
         SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
     )
-    assert point is None and "inside another run's scoring" in reason
+    assert reason is None
+    (solver_entry,) = [c for c in point["calls"] if c["seat"] == "solver"]
+    (checkpoint,) = solver_entry["trace"]["checkpoints"]
+    assert checkpoint["session"]["box"] == "grading"
+    assert checkpoint["snapshot"] == {"id": f"s-{judge.id}"}

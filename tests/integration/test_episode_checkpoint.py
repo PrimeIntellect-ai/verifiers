@@ -44,11 +44,11 @@ SUPPORTED = 2
 """The highest phase this branch implements:
 1. Agent runs in boxes of their own: fan-out and pipelines (`tick-duet`, `tick-pipeline`),
    and an agentic judge's solver before its scoring starts.
-2. An agent run inside another run's scoring, in that run's box: the agentic judge with
-   shared scoring. The judge's snapshot of the box continues both: the solver scores
-   again in the restored box, and the judge continues in it.
-3. The same with isolated scoring, where the judge runs in a scoring box of its own.
-4. Interactions: the turns of an `interaction()` replay, and the open turn continues
+2. An agent run inside another run's scoring: the agentic judge, in shared and isolated
+   scoring. The judge's snapshot of the box it runs in continues both: the solver
+   scores again from the restored box (its own, or the grading box), and the judge
+   continues in it.
+3. Interactions: the turns of an `interaction()` replay, and the open turn continues
    from its snapshot (user-sim)."""
 
 # Each step is a tool call ("bash", {...}) or a text reply ("say", "...").
@@ -258,7 +258,7 @@ CASES = [
         {**JUDGE_ENV, "solver": {**seat("solver"), "scoring": {"mode": "isolated"}}},
         JUDGE_SCRIPTS,
         [("judge", 2)],
-        phase=3,
+        phase=2,
         restored={"solver": None, "judge": 2},
         skip_reason="it runs inside another run's scoring",
     ),
@@ -309,7 +309,7 @@ CASES = [
         },
         {"user": USER, "assistant": ASSISTANT},
         [("assistant", 1)],
-        phase=4,
+        phase=3,
         restored={"user": 2, "assistant": 1},
         skip_reason="it is an interaction, which no checkpoint can continue",
     ),
@@ -323,7 +323,7 @@ CASES = [
         },
         {"user": USER, "assistant": ASSISTANT},
         [("user", 2)],
-        phase=4,
+        phase=3,
         restored={"user": 2, "assistant": 3},
         skip_reason="it is an interaction, which no checkpoint can continue",
     ),

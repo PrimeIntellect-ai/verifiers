@@ -213,9 +213,12 @@ class Rollout:
         self._snapshot_request = asyncio.Lock()
         self._snapshot_timer: asyncio.TimerHandle | None = None
         self.resumes_scoring = False
-        """Whether this run continues a rollout saved in scoring: its box is restored,
-        its agent's turns are done, and its scoring runs again (`scoring_point`)."""
+        """Whether this run continues a rollout saved in scoring: its agent's turns are
+        done, and its scoring runs again from the box a run of its scoring saved
+        (`scoring_point`)."""
         self._finalized = False
+        self._grading_box: Snapshot | None = None
+        """With isolated scoring, the grading box to restore instead of making one."""
         if restore is not None:
             self.trace, self._restore = restore
             self.trace.attempt = attempt
@@ -234,6 +237,9 @@ class Rollout:
                 self.resumes_scoring = True
                 self._finalized = session["finalized"]
                 self.trace.stop_condition, self.trace.stop_info = session["stop"]
+                self.trace.metrics = dict(session["metrics"])
+                if session["box"] == "grading":
+                    self._grading_box = self._restore.snapshot
         else:
             self.trace = Trace(
                 **({"id": trace_id} if trace_id is not None else {}),
@@ -388,9 +394,12 @@ class Rollout:
                 # A restored trace keeps its id; its new box must not collide with the
                 # box an earlier attempt or process left behind.
                 name = f"{self.trace.id}-{uuid.uuid4().hex[:8]}"
-                config = backend_cls(config).restore_config(
-                    config, self._restore.snapshot
-                )
+                # A rollout graded in a box of its own needs only a workspace: the
+                # snapshot is of the grading box.
+                if self._grading_box is None:
+                    config = backend_cls(config).restore_config(
+                        config, self._restore.snapshot
+                    )
             self.runtime = make_backend(config, name=name).bind()
         elif (
             self._borrowed_runtime is not None
@@ -491,6 +500,12 @@ class Rollout:
                 if self.resumes_scoring:
                     # The agent's turns are done: the restored box only gets scored.
                     self.unsaveable = "it continues its scoring"
+                    if self._grading_box is not None:
+                        # Grading restores this box under the scoring budget, which a
+                        # snapshot still uploading must not use up.
+                        await backend_cls(self._grading_config).wait_restorable(
+                            self._grading_box
+                        )
                     self.trace.timing.setup.end = time.time()
                     return True
                 # A restored box already holds the task's setup.
@@ -1554,7 +1569,7 @@ class Rollout:
                                 self.task.data.artifacts,
                                 max_bytes=self.task.data.artifact_max_bytes,
                             )
-                    if grader is not None:
+                    if grader is not None and not self._finalized:
                         # The submission is collected: close the solver's session, then
                         # capture its metrics before the workspace stops and the verifier
                         # starts. Neither counts against finalization; the metrics count
@@ -1623,10 +1638,15 @@ class Rollout:
                             # owner's snapshot must finish its upload before.
                             await self._settle_checkpoints(wait=False)
                             try:
+                                grading_config = self._grading_config
+                                if self._grading_box is not None:
+                                    grading_config = backend_cls(
+                                        grading_config
+                                    ).restore_config(grading_config, self._grading_box)
                                 await grade_task(
                                     grader,
                                     trace,
-                                    self._grading_config,
+                                    grading_config,
                                     self._timeouts,
                                     self._scoring_policy,
                                     self.deployment,

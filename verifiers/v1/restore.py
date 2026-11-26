@@ -178,14 +178,19 @@ def _finished_trace(saved: dict[str, Any], task: Task | None) -> Trace:
     return trace
 
 
-def scoring_point(trace: Trace, snapshot: dict[str, Any]) -> dict[str, Any]:
+def scoring_point(
+    trace: Trace, snapshot: dict[str, Any], *, own_box: bool
+) -> dict[str, Any]:
     """`trace`, of a rollout whose agent is done and which is in scoring, as a saved
-    trace (`restorable`) that continues its scoring in a box restored from `snapshot`:
-    the box another run of its scoring took while it ran in this rollout's box. The
-    restored rollout scores again, without running its agent (`Rollout.resumes_scoring`)."""
+    trace (`restorable`) that continues its scoring from `snapshot`: the box a run of
+    its scoring took while it ran there. That box is the rollout's own (`own_box`,
+    shared scoring) or the box its grading made (isolated scoring). The restored
+    rollout scores again, without running its agent (`Rollout.resumes_scoring`)."""
     data = trace.model_dump(context={"token_arrays": True})
     session = {
         "stage": "scoring",
+        "box": "own" if own_box else "grading",
+        "metrics": dict(trace.metrics),
         "finalized": bool(trace.timing.finalize.end),
         "stop": [trace.stop_condition, trace.stop_info],
         "state": TypeAdapter(type(trace.state)).dump_python(trace.state, mode="json"),
@@ -233,20 +238,16 @@ def episode_restore_point(
     by_trace = {trace["id"]: trace for trace in saved}
     nested = {call.parent for call in calls.calls.values() if call.parent is not None}
 
-    def scoring_box(key: CallKey, trace: Trace) -> dict[str, Any] | None:
-        """The snapshot of `key`'s box that a running call of its scoring took, which
-        holds that call and `key`'s scored work."""
+    def scoring_box(key: CallKey, trace: Trace) -> tuple[dict[str, Any], bool] | None:
+        """The snapshot of the box that a running call of `key`'s scoring took there,
+        and whether that box is `key`'s own: it holds the call and what `key`'s scoring
+        works on."""
         box = trace.agent.runtime.id if trace.agent.runtime is not None else None
         for child in calls.calls.values():
             saved_child = by_trace.get(child.trace.id) if child.trace else None
             runtime = child.trace.agent.runtime if child.trace else None
-            if (
-                child.parent == key
-                and saved_child is not None
-                and runtime is not None
-                and runtime.id == box
-            ):
-                return restore_entry(saved_child)["snapshot"]
+            if child.parent == key and saved_child is not None and runtime is not None:
+                return restore_entry(saved_child)["snapshot"], runtime.id == box
         return None
 
     entries: list[dict[str, Any]] = []
@@ -287,7 +288,7 @@ def episode_restore_point(
         point = by_trace.get(trace.id)
         if point is None and key in nested and (box := scoring_box(key, trace)):
             try:
-                point = scoring_point(trace, box)
+                point = scoring_point(trace, box[0], own_box=box[1])
             except Exception:  # noqa: BLE001 - the state's values decide it
                 reason = "its task state cannot be serialized"
                 return None, f"{call.seat} call {call.n}: {reason}"
