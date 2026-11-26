@@ -112,7 +112,12 @@ if TYPE_CHECKING:
         ToolsetConfig,
         ToolsetTimeoutConfig,
     )
-    from verifiers.v1._restore import arm_hold_watchdogs, release_all, save_all
+    from verifiers.v1._restore import (
+        arm_hold_watchdogs,
+        release_all,
+        restore_entry,
+        save_all,
+    )
     from verifiers.v1._runtimes import (
         BaseRuntimeInfo,
         CustomRuntimeInfo,
@@ -464,6 +469,7 @@ _NAME_TO_MODULE = {
     "save_all": "verifiers.v1._restore",
     "release_all": "verifiers.v1._restore",
     "arm_hold_watchdogs": "verifiers.v1._restore",
+    "restore_entry": "verifiers.v1._restore",
     "PrimeTunnelConfig": "verifiers.v1._configs.interception",
     "CustomTunnelConfig": "verifiers.v1._configs.interception",
     "RuntimeBackend": "verifiers.v1._runtimes",
@@ -709,6 +715,7 @@ __all__ = [  # noqa: RUF022 - grouped by API area, as in docs/api.md
     "save_all",
     "release_all",
     "arm_hold_watchdogs",
+    "restore_entry",
 ]
 
 

@@ -327,6 +327,7 @@ Import the namespace as `import verifiers.v1 as vf`.
 | `save_all` | Snapshot every running rollout of this process and return their traces to store. |
 | `release_all` | Let every rollout that `save_all(hold=True)` holds go on. |
 | `arm_hold_watchdogs` | Start the timer that releases each held rollout by itself. |
+| `restore_entry` | The checkpoint entry that a saved trace continues from. |
 
 ## `verifiers.v1.harnesses`
 
