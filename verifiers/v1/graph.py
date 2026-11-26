@@ -378,7 +378,7 @@ def _message_hash(message: Message) -> str:
                 ]
                 if unparsed_content:
                     hashed_state["content"] = unparsed_content
-            represented = kind in ("message", "reasoning") or (
+            represented = kind in ("message", "reasoning", "reasoning.text") or (
                 kind in ("function_call", "custom_tool_call")
                 and any(
                     call.id == item.get("call_id") for call in message.tool_calls or []
