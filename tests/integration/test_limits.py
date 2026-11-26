@@ -41,18 +41,26 @@ async def test_rollout_timeout(run):
     assert trace.stop_condition == "agent_timeout"
 
 
-@pytest.mark.parametrize("skip", [False, True], ids=["scored", "skipped"])
-async def test_skip_scoring_on_truncated(run, skip):
+@pytest.mark.parametrize(
+    ("skip", "skipped_reward"),
+    [(False, None), (True, None), (True, -1.0)],
+    ids=["scored", "skipped", "skipped-reward"],
+)
+async def test_skip_scoring_on_truncated(run, skip, skipped_reward):
+    scoring = {"skip_on_truncated": skip, "skipped_reward": skipped_reward}
     (episode,) = await run(
         "counter-tool",
         harness="null",
         runtime={"type": "prime"},
         taskset_overrides={"task": {"constant_reward": True}},
-        env={"agent": {"max_turns": 1, "scoring": {"skip_on_truncated": skip}}},
+        env={"agent": {"max_turns": 1, "scoring": scoring}},
     )
     (trace,) = episode.traces
     assert trace.is_truncated and trace.ok
-    if skip:
+    if skipped_reward is not None:
+        assert trace.reward == -1 and set(trace.rewards) == {"truncated"}
+        assert trace.info["scoring_skipped"] == "truncated"
+    elif skip:
         assert trace.reward == 0 and trace.rewards == {}
         assert trace.info["scoring_skipped"] == "truncated"
     else:
@@ -94,9 +102,17 @@ async def test_max_turns(run, harness, harness_runtime):
     assert trace.num_turns == 1
 
 
-@pytest.mark.parametrize("skip", [False, True], ids=["scored", "skipped"])
-async def test_skip_scoring_on_stop(run, scripted_model, skip):
-    stop = {"fn": "counter_tool:any_response", "skip_scoring": skip}
+@pytest.mark.parametrize(
+    ("skip", "skipped_reward"),
+    [(False, None), (True, None), (True, -1.0)],
+    ids=["scored", "skipped", "skipped-reward"],
+)
+async def test_skip_scoring_on_stop(run, scripted_model, skip, skipped_reward):
+    stop = {
+        "fn": "counter_tool:any_response",
+        "skip_scoring": skip,
+        "skipped_reward": skipped_reward,
+    }
     (episode,) = await run(
         "counter-tool",
         harness="null",
@@ -108,7 +124,10 @@ async def test_skip_scoring_on_stop(run, scripted_model, skip):
     )
     (trace,) = episode.traces
     assert trace.stop_condition == "any_response" and trace.ok
-    if skip:
+    if skipped_reward is not None:
+        assert trace.reward == -1 and set(trace.rewards) == {"any_response"}
+        assert trace.info["scoring_skipped"] == "any_response"
+    elif skip:
         assert trace.reward == 0 and trace.rewards == {}
         assert trace.info["scoring_skipped"] == "any_response"
     else:

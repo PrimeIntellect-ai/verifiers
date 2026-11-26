@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import Field, SerializationInfo, field_serializer
+from pydantic import Field, FiniteFloat, SerializationInfo, field_serializer
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.client import BaseClientConfig
@@ -52,10 +52,15 @@ class ScoringConfig(BaseConfig):
     and Harbor's shared grading lifts the policy."""
     skip_on_truncated: bool = False
     """Skip task scoring for a truncated trace (`Trace.is_truncated`): it keeps no
-    rewards, so its reward is 0."""
+    task rewards."""
     skip_on_timeout: bool = False
     """Skip task scoring for a trace whose stage deadline expired before scoring
-    (`Trace.is_timeout`): it keeps no rewards, so its reward is 0."""
+    (`Trace.is_timeout`): it keeps no task rewards."""
+    skipped_reward: FiniteFloat | None = None
+    """Fixed reward for a trace whose task scoring was skipped (truncation, timeout,
+    format violation, or a `skip_scoring` stop without its own `skipped_reward`),
+    recorded under the skip reason. None records no reward, so the trace's reward
+    is 0."""
 
     @field_serializer("runtime")
     def serialize_runtime(

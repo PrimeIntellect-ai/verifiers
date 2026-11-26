@@ -246,7 +246,9 @@ class Rollout:
         ]
         stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
         self._skip_scoring_stops = {
-            fn.__name__ for _, fn in stops if getattr(fn, "stop_skip_scoring", False)
+            fn.__name__: getattr(fn, "stop_skipped_reward", None)
+            for _, fn in stops
+            if getattr(fn, "stop_skip_scoring", False)
         }
         execution_policy = runtime_config
         self._session = RolloutSession(
@@ -1597,6 +1599,11 @@ class Rollout:
                         if skip_reason := skip_reason or self._scoring_skip_reason():
                             logger.debug("Skipped scoring - %s", skip_reason)
                             trace.info["scoring_skipped"] = skip_reason
+                            reward = self._skip_scoring_stops.get(skip_reason)
+                            if reward is None:
+                                reward = self._scoring_policy.skipped_reward
+                            if reward is not None:
+                                trace.record_reward(skip_reason, reward)
                         elif grader is not None:
                             # Grading in a box of its own stops this one first: an
                             # owner's snapshot must finish its upload before.

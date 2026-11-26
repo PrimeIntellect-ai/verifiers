@@ -25,8 +25,13 @@ class StopFunctionConfig(DecoratedFunctionConfig):
     """A plugged function standing in for a `@vf.stop` task method."""
 
     skip_scoring: bool | None = None
-    """Skip task scoring for a trace this stop ends: it keeps no rewards, so its reward
-    is 0. Unset keeps the replaced method's setting (false for a fresh function)."""
+    """Skip task scoring for a trace this stop ends: it keeps no task rewards. Unset
+    keeps the replaced method's setting (false for a fresh function)."""
+
+    skipped_reward: FiniteFloat | None = None
+    """Fixed reward for a trace this stop ends, recorded under the stop's name; needs
+    `skip_scoring`. Unset keeps the replaced method's value (unset for a fresh
+    function), which falls back to `ScoringConfig.skipped_reward`."""
 
 
 class RewardFunctionConfig(DecoratedFunctionConfig):
