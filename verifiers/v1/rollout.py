@@ -1769,12 +1769,13 @@ class Rollout:
             ):
                 if span.start and not span.end:
                     span.end = now
-            trace.split_agent_time()
             if runtime is not None:
                 await self._cleanup_harness(runtime)
             # A failed attempt's retry restores the newest snapshot, which must be
             # durable before the box goes.
             await self._settle_checkpoints(wait=not trace.ok)
+            # After the settle: a capture that was still running has its hold time now.
+            trace.split_agent_time()
             # Tear down here — the env's `finalize()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
