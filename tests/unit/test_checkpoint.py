@@ -841,9 +841,8 @@ async def test_a_save_whose_program_ended_is_skipped():
     assert await run.save(hold=True) is None
     assert run.save_skipped == "its harness program ended during the save"
     await asyncio.gather(*run._captures)
-    assert not run.trace.checkpoints and backend.stray_snapshots == [
-        vf.Snapshot(id="ck1")
-    ]
+    (checkpoint,) = run.trace.checkpoints
+    assert not checkpoint.pinned
     assert session.flowing.is_set() and run._hold_id is None
 
 
@@ -867,18 +866,32 @@ async def test_a_snapshot_dropped_before_the_save_resumes_is_no_restore_point():
     assert session.flowing.is_set() and run._hold_id is None
 
 
-async def test_a_program_that_ends_while_the_box_stops_drops_the_snapshot():
-    """The owner already has the restore point when the program ends: the rollout
-    drops the snapshot and its box's teardown frees it, so a restore from it starts
-    over instead of continuing a box with nothing to run."""
+async def test_a_timed_snapshot_whose_program_ends_while_the_box_stops_is_dropped():
+    """No owner holds the snapshot: with no program left to continue, the rollout
+    drops it and its box's teardown frees it."""
     run, backend, session = make_rollout(stops=True)
-    saved = await run.save(hold=True)
-    assert saved is not None
+    assert await run._checkpoint() is not None
     run._harness_session = SimpleNamespace(memory_state=lambda: None)  # type: ignore[assignment]
     backend.running.set()
     await asyncio.gather(*run._captures)
     assert not run.trace.checkpoints and run._durable == {}
     assert backend.stray_snapshots == [vf.Snapshot(id="ck1")]
+    assert session.flowing.is_set()
+
+
+async def test_an_owners_snapshot_outlives_the_end_of_its_program():
+    """The owner already has the restore point, and may have ended the rollout
+    itself: the snapshot stays the owner's and becomes durable."""
+    run, backend, session = make_rollout(stops=True)
+    backend.durable.set()
+    saved = await run.save(hold=True)
+    assert saved is not None
+    run._harness_session = SimpleNamespace(memory_state=lambda: None)  # type: ignore[assignment]
+    backend.running.set()
+    await run._settle_checkpoints(wait=False)
+    (checkpoint,) = run.trace.checkpoints
+    assert checkpoint.pinned and checkpoint.time.end
+    assert backend.stray_snapshots == []
     run.release()
     assert session.flowing.is_set()
 

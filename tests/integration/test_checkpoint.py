@@ -42,8 +42,8 @@ def taken(monkeypatch) -> list[str]:
     snapshots: list[str] = []
     snapshot = PrimeBackend.snapshot
 
-    async def recording(self):
-        result = await snapshot(self)
+    async def recording(self, named=None):
+        result = await snapshot(self, named)
         snapshots.append(result.id)
         return result
 

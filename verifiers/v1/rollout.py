@@ -1210,7 +1210,8 @@ class Rollout:
     ) -> Checkpoint | None:
         """Take the snapshot `_take_snapshot` hands out through `taken`, and hold the
         box's replies until it runs again. A snapshot that fails after it was handed
-        out is dropped (`_drop_capture`)."""
+        out, or that no owner holds and whose program ended while the box stopped, is
+        dropped (`_drop_capture`)."""
         assert self.runtime is not None and self._relay is not None
         assert self._harness_session is not None
         session = self._session
@@ -1283,12 +1284,14 @@ class Rollout:
                 if checkpoint is None:
                     on_taken(snapshot)
                 assert checkpoint is not None
-                if (
+                if not checkpoint.pinned and (
                     self._harness_session is None
                     or self._harness_session.memory_state() is None
                 ):
                     # The program left while the box was being stopped: the snapshot
-                    # may hold a box with nothing to continue.
+                    # may hold a box with nothing to continue. An owner's snapshot
+                    # stays the owner's: the owner may have ended the rollout itself,
+                    # and a restore that leads nowhere starts over.
                     self._drop_capture(checkpoint)
                     return None
                 # The box's connections to the server did not survive the stop: its
