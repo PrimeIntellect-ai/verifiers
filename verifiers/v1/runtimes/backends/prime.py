@@ -390,9 +390,9 @@ class PrimeBackend(RuntimeBackend):
                 # Kept whatever comes next: a pause that was not seen to finish can
                 # still have made the snapshot.
                 self.stray_snapshots.append(snapshot)
-                if taken is not None:
-                    taken(snapshot)
                 try:
+                    if taken is not None:
+                        taken(snapshot)
                     await self._client.wait_for_pause(
                         self.info.id, timeout_seconds=_PAUSE_SETTLE_SECONDS
                     )

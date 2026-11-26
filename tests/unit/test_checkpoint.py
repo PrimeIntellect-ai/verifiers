@@ -125,8 +125,21 @@ def test_agent_time_splits_off_the_checkpoint_hold():
     trace.timing.agent.start, trace.timing.agent.end = 100.0, 120.0
     trace.calls.append(ModelCall(time=TimeSpan(start=105.0, end=110.0)))
     trace.checkpoints += [
-        Checkpoint(id="old", snapshot=vf.Snapshot(id="old"), captured=90.0, held=3.0),
-        Checkpoint(id="new", snapshot=vf.Snapshot(id="new"), captured=107.0, held=1.5),
+        Checkpoint(
+            id="old",
+            snapshot=vf.Snapshot(id="old"),
+            time=TimeSpan(start=87.0),
+            captured=88.0,
+            held=3.0,
+        ),
+        # Named at 105.8, while the box was held from 105.5 until it ran again at 107.
+        Checkpoint(
+            id="new",
+            snapshot=vf.Snapshot(id="new"),
+            time=TimeSpan(start=105.5),
+            captured=105.8,
+            held=1.5,
+        ),
     ]
     trace.split_agent_time()
     assert trace.timing.agent.checkpoint.duration == 1.5
@@ -828,6 +841,26 @@ async def test_a_save_whose_program_ended_is_skipped():
     assert await run.save(hold=True) is None
     assert run.save_skipped == "its harness program ended during the save"
     await asyncio.gather(*run._captures)
+    assert not run.trace.checkpoints and backend.stray_snapshots == [
+        vf.Snapshot(id="ck1")
+    ]
+    assert session.flowing.is_set() and run._hold_id is None
+
+
+async def test_a_snapshot_dropped_before_the_save_resumes_is_no_restore_point():
+    """A backend can name a snapshot and fail before the save runs again: the save
+    returns no restore point, and the box's teardown frees the snapshot."""
+    run, backend, session = make_rollout()
+
+    async def named_then_failed(taken=None):
+        snapshot = vf.Snapshot(id="ck1")
+        backend.stray_snapshots.append(snapshot)
+        taken(snapshot)
+        raise vf.SandboxError("pause failed")
+
+    backend.snapshot = named_then_failed  # type: ignore[method-assign]
+    assert await run.save(hold=True) is None
+    assert run.save_skipped == "its memory snapshot failed"
     assert not run.trace.checkpoints and backend.stray_snapshots == [
         vf.Snapshot(id="ck1")
     ]

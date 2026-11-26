@@ -1103,12 +1103,20 @@ class Rollout:
         checkpoint = None
         try:
             checkpoint = await self._owner_checkpoint(hold=hold)
+            ended = (
+                self._harness_session is None
+                or self._harness_session.memory_state() is None
+            )
             if checkpoint is None:
                 self._release_hold(hold_id)
-                self.save_skipped = self._state_unsaved or "its memory snapshot failed"
+                self.save_skipped = (
+                    "its harness program ended during the save"
+                    if ended
+                    else self._state_unsaved or "its memory snapshot failed"
+                )
                 return None
-            if self._harness_session.memory_state() is None:
-                # The program left while the box was being stopped: the snapshot may
+            if ended:
+                # The program left before the snapshot was named: the snapshot may
                 # hold a box with nothing to continue.
                 checkpoint.pinned = False
                 self._release_hold(hold_id)
@@ -1192,9 +1200,10 @@ class Rollout:
             # Nobody gets the checkpoint: it is the rollout's own.
             taken.add_done_callback(_unpin)
             raise
-        if taken.done():
-            return taken.result()
-        return capture.result()
+        # A capture that ended already may have dropped the snapshot it named.
+        if capture.done():
+            return capture.result()
+        return taken.result()
 
     async def _capture(
         self, taken: asyncio.Future[Checkpoint], pinned: bool

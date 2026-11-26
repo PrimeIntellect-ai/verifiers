@@ -1069,8 +1069,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         overlap = sum(
             max(
                 0.0,
-                min(call.time.end, c.captured)
-                - max(call.time.start, c.captured - c.held),
+                min(call.time.end, c.time.start + c.held)
+                - max(call.time.start, c.time.start),
             )
             for c in self.checkpoints
             if c.captured >= span.start and c.held
