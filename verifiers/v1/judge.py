@@ -54,7 +54,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
 from openai.types.chat.completion_create_params import (
-    CompletionCreateParamsNonStreaming,
+    CompletionCreateParamsStreaming,
 )
 from pydantic import BaseModel
 from typing_extensions import TypeVar
@@ -189,7 +189,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         params = SamplingConfig.model_validate(
             merge_defaults(self.config.sampling, sampling)
         ).model_dump(exclude_none=True)
-        sdk_fields = CompletionCreateParamsNonStreaming.__annotations__
+        sdk_fields = CompletionCreateParamsStreaming.__annotations__
         kwargs.update(
             {key: value for key, value in params.items() if key in sdk_fields}
         )
@@ -198,14 +198,17 @@ class Judge(Generic[ParsedT, ConfigT]):
             key: value for key, value in params.items() if key not in sdk_fields
         }
         kwargs.update(request_options)
+        kwargs.pop("stream", None)
+        kwargs.setdefault("stream_options", {"include_usage": True})
 
         response: JudgeResponse[Any] | None = None
         try:
             async with build_async_openai(self.config) as client:
                 if schema is not None:
-                    completion = await client.beta.chat.completions.parse(
+                    async with client.chat.completions.stream(
                         response_format=schema, **kwargs
-                    )
+                    ) as stream:
+                        completion = await stream.get_final_completion()
                     choice = completion.choices[0]
                     response = JudgeResponse(
                         text=choice.message.content or "",
@@ -221,7 +224,8 @@ class Judge(Generic[ParsedT, ConfigT]):
                             f"judge returned no parseable structured output (finish_reason={choice.finish_reason})"
                         )
                 else:
-                    completion = await client.chat.completions.create(**kwargs)
+                    async with client.chat.completions.stream(**kwargs) as stream:
+                        completion = await stream.get_final_completion()
                     response = JudgeResponse(
                         text=completion.choices[0].message.content or "",
                         usage=Usage.from_openai(completion.usage),
