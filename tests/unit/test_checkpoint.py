@@ -1154,3 +1154,38 @@ async def test_a_hold_stops_the_agent_deadline():
         assert deadline.when() > budget_end + 0.1
         assert run.deadline_at == deadline.when()
         assert run._segment_agent_time() < 0.05
+
+
+async def test_the_agent_deadline_stays_stopped_until_the_box_runs_again():
+    """An owner can release a save before its box has stopped and run again: the
+    agent deadline goes on only once the box gets its replies again."""
+    run, backend, _ = make_rollout(stops=True)
+    backend.durable.set()
+    loop = asyncio.get_running_loop()
+    async with asyncio.timeout(0.05) as deadline:
+        run._segment_start, run._deadline = loop.time(), deadline
+        run.deadline_at = budget_end = deadline.when()
+        assert await run.save(hold=True) is not None
+        run.release()
+        assert deadline.when() is None
+        await asyncio.sleep(0.15)
+        backend.running.set()
+        await asyncio.gather(*run._captures)
+        assert deadline.when() > budget_end + 0.1
+        assert run._segment_agent_time() < 0.05
+
+
+async def test_an_owner_does_not_pin_a_snapshot_dropped_while_it_waited():
+    """A timed snapshot that fails after the owner picked it is not the owner's
+    restore point: the save takes a snapshot of its own."""
+    run, backend, _ = make_rollout()
+    backend.durable.set()
+    timed = await run._checkpoint()
+    assert timed is not None
+    async with run._pruning:
+        saving = asyncio.create_task(run.save(hold=True))
+        await asyncio.sleep(0.01)
+        run._drop_capture(timed)
+    saved = await saving
+    assert saved is not None and saved["checkpoints"][-1]["id"] != timed.id
+    assert not timed.pinned

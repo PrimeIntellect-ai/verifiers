@@ -1174,13 +1174,13 @@ class Rollout:
         """Answer the box again after a `save(hold=True)`."""
         self._hold_id = None
         self._unheld.set()
-        self._end_hold()
         if self._release_timer is not None:
             self._release_timer.cancel()
             self._release_timer = None
-        # A snapshot that is being taken holds the box for itself, and lets the
-        # replies flow when it is done.
+        # A snapshot that is being taken holds the box for itself, and ends the hold
+        # and lets the replies flow when the box runs again.
         if not self._capturing.locked():
+            self._end_hold()
             self._session.resume()
 
     async def _take_snapshot(self, *, pinned: bool = False) -> Checkpoint | None:
@@ -1303,6 +1303,7 @@ class Rollout:
                     )
             finally:
                 if self._hold_id is None:
+                    self._end_hold()
                     session.resume()
         checkpoint.held = time.time() - started
         self._durable[checkpoint.id] = asyncio.create_task(
@@ -1324,6 +1325,8 @@ class Rollout:
         if checkpoint is None:
             return
         assert self.runtime is not None
+        # Deleted for an owner that picked it before the drop (`_owner_checkpoint`).
+        checkpoint.deleted = True
         with contextlib.suppress(ValueError):
             self.trace.checkpoints.remove(checkpoint)
         checkpoint.pinned = False
