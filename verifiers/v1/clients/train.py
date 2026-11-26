@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -121,13 +122,15 @@ def response_from_generate(
     )
     tool_calls = [
         ToolCall(
-            id=tc.id or f"call_{i}",
+            # Unique in the rollout: a positional id repeats every turn, and the
+            # history pairs each tool result with its call by id.
+            id=tc.id or f"call_{uuid.uuid4().hex[:24]}",
             name=tc.name,
             arguments=tc.arguments
             if isinstance(tc.arguments, str)
             else json.dumps(tc.arguments or {}),
         )
-        for i, tc in enumerate(result.get("tool_calls") or [])
+        for tc in result.get("tool_calls") or []
         if getattr(tc, "name", None)
         # TODO: we need a better way for renderers to expose this
         and getattr(tc, "status", None) != ToolCallParseStatus.UNKNOWN_TOOL
