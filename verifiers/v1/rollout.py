@@ -1445,17 +1445,18 @@ class Rollout:
             "agent_completed",
         )
 
-    def _scoring_skip_reason(self) -> str | None:
+    def _scoring_skip(self) -> tuple[str, float | None] | None:
         """Why the resolved scoring policy, or the `skip_scoring` stop that ended this trace,
-        skips task scoring for it, if either does."""
+        skips task scoring for it, with the fixed reward that reason sets, if either does."""
+        skip = self._scoring_policy.skip
         if self.trace.is_format_violation:
-            return "format_violation"
-        if "truncated" in self._scoring_policy.skip and self.trace.is_truncated:
-            return "truncated"
-        if "timeout" in self._scoring_policy.skip and self.trace.is_timeout:
-            return "timeout"
-        if self.trace.stop_condition in self._skip_scoring_stops:
-            return self.trace.stop_condition
+            return "format_violation", skip.get("format_violation")
+        if "truncated" in skip and self.trace.is_truncated:
+            return "truncated", skip["truncated"]
+        if "timeout" in skip and self.trace.is_timeout:
+            return "timeout", skip["timeout"]
+        if (stop := self.trace.stop_condition) in self._skip_scoring_stops:
+            return stop, self._skip_scoring_stops[stop]
         return None
 
     def _metrics_deadline(self) -> float:
@@ -1487,7 +1488,7 @@ class Rollout:
         self._closed = True
         LIVE.discard(self)
         trace = self.trace
-        skip_reason = self._scoring_skip_reason()
+        skip = self._scoring_skip()
         runtime = self.runtime
         try:
             if trace.timing.agent.start and not trace.timing.agent.end:
@@ -1597,15 +1598,12 @@ class Rollout:
                         boundary(TaskError, "scoring"),
                     ):
                         # Cross-trace judgement runs later, after the runtime is gone.
-                        if skip_reason := skip_reason or self._scoring_skip_reason():
-                            logger.debug("Skipped scoring - %s", skip_reason)
-                            trace.info["scoring_skipped"] = skip_reason
-                            reward = {
-                                **self._scoring_policy.skip,
-                                **self._skip_scoring_stops,
-                            }.get(skip_reason)
+                        if skip := skip or self._scoring_skip():
+                            reason, reward = skip
+                            logger.debug("Skipped scoring - %s", reason)
+                            trace.info["scoring_skipped"] = reason
                             if reward is not None:
-                                trace.record_reward(skip_reason, reward)
+                                trace.record_reward(reason, reward)
                         elif grader is not None:
                             # Grading in a box of its own stops this one first: an
                             # owner's snapshot must finish its upload before.
