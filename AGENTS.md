@@ -4,6 +4,7 @@
 
 - **Code is the source of truth**: before writing anything, read the v1 code for existing helpers, harnesses, and interfaces instead of reinventing them. Prefer verifiers-native task, trace, server, harness, and runtime interfaces over repeated path/import/discovery plumbing in user packages.
 - **Minimal config surface**: expose as few knobs as possible, but as many as needed.
+- **Prefer the best design over backwards compatibility**: excessive backwards compatibility is a non-goal. If a breaking change to an API surface gets the codebase to the globally optimal design, make the break. Do not keep shims, aliases or legacy code paths to avoid it. List each break and its migration in the PR's `## Breaking` section.
 - **Keep tasksets small**: a basic taskset fits in a few dozen idiomatic lines — typed data/task/config classes, `load()`, and decorated scoring on the task. Don't override `Taskset.__init__` (implement `load()`); don't override `Harness.__init__` (use `setup()`).
 
 ## Public API
