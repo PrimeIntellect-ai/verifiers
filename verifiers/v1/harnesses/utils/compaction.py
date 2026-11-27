@@ -1,5 +1,6 @@
 """Tool-output bounding and context compaction for bundled chat programs."""
 
+import uuid
 from typing import TYPE_CHECKING
 
 from openai import APIError, APIStatusError, AsyncOpenAI
@@ -70,6 +71,17 @@ CONTEXT_WINDOW_FIELDS = (
 
 class CompactionFailed(Exception):
     """Every checkpoint attempt failed - the caller ends the run cleanly instead."""
+
+
+class CompactionFormatViolation(CompactionFailed):
+    """The final checkpoint response was sampled but was not a usable summary."""
+
+
+def compaction_summary_text(message, finish_reason: str | None) -> str:
+    """Only a complete, nonempty text reply without tool calls is a usable summary."""
+    if finish_reason != "stop" or message.tool_calls:
+        return ""
+    return (message.content or "").strip()
 
 
 def is_context_overflow(error: APIStatusError) -> bool:
@@ -161,6 +173,8 @@ class Compactor:
         self.tools = tools
         self.enabled = enabled
         self.threshold = threshold
+        self.last_request_id = None
+        self.compaction_source_request_id = None
         self.compacted = False
         self.last_good = 0
         """Message count of the newest state that passed a threshold check - by
@@ -176,9 +190,34 @@ class Compactor:
     def note_good(self, messages: list[dict]) -> None:
         self.last_good = len(messages)
 
+    async def _request_completion(
+        self,
+        messages,
+        *,
+        tool_choice=None,
+        compaction_attempt=False,
+        final_attempt=False,
+    ):
+        # One ID per logical request, retained by chat across SDK and stream retries.
+        request_id = uuid.uuid4().hex if self.enabled or compaction_attempt else None
+        completion = await chat(
+            self.client,
+            self.model,
+            messages,
+            self.tools,
+            tool_choice=tool_choice,
+            request_id=request_id,
+            compaction_attempt=compaction_attempt,
+            final_attempt=final_attempt,
+            compaction_source_request_id=self.compaction_source_request_id,
+        )
+        self.last_request_id = request_id
+        self.compaction_source_request_id = None
+        return completion
+
     async def complete(self, messages: list[dict]):
         try:
-            completion = await chat(self.client, self.model, messages, self.tools)
+            completion = await self._request_completion(messages)
         except APIStatusError as error:
             if (
                 not self.enabled
@@ -206,7 +245,7 @@ class Compactor:
 
         messages = await self.compact(messages)
         try:
-            completion = await chat(self.client, self.model, messages, self.tools)
+            completion = await self._request_completion(messages)
         except APIStatusError as error:
             # The rebuilt conversation is sized to fit, so this is out of moves.
             if is_context_overflow(error):
@@ -222,35 +261,40 @@ class Compactor:
         # resampled. Reasoning is never part of the summary.
         system = [message for message in messages if message.get("role") == "system"]
         base = messages
-        for _ in range(COMPACTION_ATTEMPTS):
+        for attempt in range(COMPACTION_ATTEMPTS):
+            final_attempt = attempt + 1 == COMPACTION_ATTEMPTS
             checkpoint = [
                 *base,
                 {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
             ]
             try:
-                completion = await chat(
-                    self.client,
-                    self.model,
+                completion = await self._request_completion(
                     checkpoint,
-                    self.tools,
                     tool_choice="none",
+                    compaction_attempt=True,
+                    final_attempt=final_attempt,
                 )
             except APIStatusError as error:
                 if not is_context_overflow(error):
                     raise
                 base = messages[: self.last_good]
                 continue
-            message = completion.choices[0].message
+            choice = completion.choices[0]
             # Reasoning never enters the summary: only the reply's final text
             # counts, so a reply that lives entirely in the reasoning channel
             # is resampled like an empty one.
-            text = (message.content or "").strip()
-            if not message.tool_calls and text:
+            text = compaction_summary_text(choice.message, choice.finish_reason)
+            if text:
                 framed = POST_COMPACTION_FRAMING + "\n\n" + text
                 rebuilt = [*system, {"role": "user", "content": framed}]
                 self.note_good(rebuilt)
                 self.compacted = True
+                self.compaction_source_request_id = self.last_request_id
                 return rebuilt
+            if final_attempt:
+                raise CompactionFormatViolation(
+                    f"no usable summary after {COMPACTION_ATTEMPTS} attempts"
+                )
         raise CompactionFailed(
             f"no usable summary after {COMPACTION_ATTEMPTS} attempts"
         )

@@ -15,8 +15,16 @@ ACP_SEMANTIC_EDGES_METADATA_KEY = "ai.prime.acp/semantic-edges-v1"
 ACP_MODEL_REQUEST_ID_HEADER = "X-ACP-Model-Request-ID"
 ACP_AGENT_SESSION_ID_HEADER = "X-ACP-Agent-Session-ID"
 
+CHAT_COMPACTION_ATTEMPT_HEADER = "X-Verifiers-Compaction-Attempt"
+CHAT_COMPACTION_SOURCE_HEADER = "X-Verifiers-Compaction-Source"
+
 ACP_EXTENSION_HEADERS = frozenset(
-    {ACP_MODEL_REQUEST_ID_HEADER.lower(), ACP_AGENT_SESSION_ID_HEADER.lower()}
+    {
+        ACP_MODEL_REQUEST_ID_HEADER.lower(),
+        ACP_AGENT_SESSION_ID_HEADER.lower(),
+        CHAT_COMPACTION_ATTEMPT_HEADER.lower(),
+        CHAT_COMPACTION_SOURCE_HEADER.lower(),
+    }
 )
 """Private ACP extension headers consumed at interception and never sent upstream."""
 
@@ -131,3 +139,36 @@ def routing_session_id(trace_id: str, agent_session_id: str | None) -> str:
     if agent_session_id is None or agent_session_id == trace_id:
         return trace_id
     return f"{trace_id}:{agent_session_id}"
+
+
+class ChatCompactionInfo(BaseModel):
+    """Bundled chat's per-request compaction role, consumed only at interception."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    attempt: bool = False
+    final_attempt: bool = False
+    source_request_id: str | None = Field(default=None, pattern=ACP_REQUEST_ID_PATTERN)
+
+
+def extract_chat_compaction_info(
+    headers: Mapping[str, str],
+) -> ChatCompactionInfo | None:
+    """Validate bundled request roles without changing ordinary ACP metadata."""
+    normalized = {name.lower(): value for name, value in headers.items()}
+    attempt = normalized.get(CHAT_COMPACTION_ATTEMPT_HEADER.lower())
+    source = normalized.get(CHAT_COMPACTION_SOURCE_HEADER.lower())
+    if attempt is None and source is None:
+        return None
+    if attempt not in (None, "1", "final"):
+        raise ValueError("invalid chat compaction attempt marker")
+    request_id = normalized.get(ACP_MODEL_REQUEST_ID_HEADER.lower())
+    if request_id is None:
+        raise ValueError("chat compaction metadata requires a model request ID")
+    if source == request_id:
+        raise ValueError("chat compaction cannot resume from its own request")
+    return ChatCompactionInfo(
+        attempt=attempt is not None,
+        final_attempt=attempt == "final",
+        source_request_id=source,
+    )

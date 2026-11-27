@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
     from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
         TOOL_OUTPUT_MAX_BYTES,
+        CompactionFormatViolation,
         Compactor,
         bound_tool_message,
         compactable,
@@ -419,6 +420,10 @@ async def chat(
     tools: list[dict],
     *,
     tool_choice: str | None = None,
+    request_id: str | None = None,
+    compaction_attempt: bool = False,
+    final_attempt: bool = False,
+    compaction_source_request_id: str | None = None,
 ):
     kwargs = {"model": model, "messages": messages}
     if tools:
@@ -435,14 +440,22 @@ async def chat(
         ):
             # Reuse the interception server's body-digest replay guard on stream retries.
             retry_count = attempt.retry_state.attempt_number - 1
-            headers = (
-                {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
-            )
+            headers = {}
+            if request_id is not None:
+                headers["X-ACP-Model-Request-ID"] = request_id
+            if compaction_attempt:
+                headers["X-Verifiers-Compaction-Attempt"] = (
+                    "final" if final_attempt else "1"
+                )
+            if compaction_source_request_id is not None:
+                headers["X-Verifiers-Compaction-Source"] = compaction_source_request_id
+            if retry_count:
+                headers["x-stainless-retry-count"] = str(retry_count)
             raw_stream = await client.chat.completions.create(
                 **kwargs,
                 stream=True,
                 stream_options={"include_usage": True},
-                extra_headers=headers,
+                extra_headers=headers or omit,
             )
             # The SDK retries request setup; only stream consumption is retried here.
             with attempt:
@@ -679,7 +692,13 @@ async def main() -> None:
         # The initial conversation is the floor for checkpoint fallbacks: a first-turn
         # checkpoint must never retry from an empty base.
         compactor.note_good(messages)
-        await run_chat_loop(args, compactor, messages, dispatch, servers, tool_client)
+        try:
+            await run_chat_loop(
+                args, compactor, messages, dispatch, servers, tool_client
+            )
+        except CompactionFormatViolation:
+            # Interception records the terminal invalid response and its stop condition.
+            pass
     if tool_client is not None:
         await tool_client.aclose()
 
