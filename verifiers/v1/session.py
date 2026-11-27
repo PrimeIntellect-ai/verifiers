@@ -39,6 +39,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import CAPABILITY_NOTICE
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
+from verifiers.v1.pause import Pause
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -423,6 +424,10 @@ class RolloutSession:
     """Cleared while a memory snapshot of the box is taken (`hold`): nothing the box
     asked for is answered or written until it is set again, so the box the snapshot
     stops has seen exactly what the trace held when the hold began."""
+
+    running: asyncio.Event = field(default_factory=lambda: Pause().running, repr=False)
+    """Cleared while the episode is paused (`Pause.running`): no new model call goes
+    upstream until it is set again."""
 
     settled: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     """Cleared while a turn is between its commit and its reply being ready to send

@@ -31,6 +31,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
+from verifiers.v1.pause import Pause, pausing
 from verifiers.v1.restore import restoring
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
@@ -72,6 +73,8 @@ class RunSlot:
     restore: dict[str, Any] | None = None
     """A rollout another process saved (`save_all`): the episode's first attempt
     continues it instead of starting one."""
+    pause: Pause = field(default_factory=Pause)
+    """Holds back the episode's model calls while paused (`Pause`)."""
 
 
 ConfigT = TypeVar("ConfigT", bound=EnvConfig)
@@ -371,7 +374,11 @@ class Env(ABC, Generic[ConfigT]):
 
         started: float | None = None
         with scope(episode=short_id(slot.id)):
-            episode = await run_episode_with_retry(attempt, self.config.retries)
+            token = pausing.set(slot.pause)
+            try:
+                episode = await run_episode_with_retry(attempt, self.config.retries)
+            finally:
+                pausing.reset(token)
             elapsed = format_time(
                 time.perf_counter() - (started or time.perf_counter())
             )

@@ -1166,6 +1166,10 @@ class InterceptionServer(Interception):
             error: Exception | None = None
             started = time.time()
             try:
+                if not session.running.is_set():
+                    # A paused episode sends nothing upstream until it resumes.
+                    await session.running.wait()
+                    started = time.time()
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.

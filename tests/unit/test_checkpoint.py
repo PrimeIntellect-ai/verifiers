@@ -253,6 +253,7 @@ def make_rollout(
     run._segment_start = None
     run._deadline = None
     run._hold_started = None
+    run._holds = set()
     run._hold_deadline = None
     run._held_time = 0.0
     run._capturing = asyncio.Lock()

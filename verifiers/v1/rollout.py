@@ -34,6 +34,7 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.interception.relay import Relay
 from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.pause import pausing
 from verifiers.v1.restore import LIVE, restorable, restore_entry, unsaveable
 from verifiers.v1.runtimes import (
     Runtime,
@@ -85,6 +86,8 @@ class RolloutTimeouts:
 
 HOLD_SECONDS = 120
 """How long a saved rollout waits for its owner's `release` before it goes on by itself."""
+OWNER_HOLD = "owner"
+PAUSE_HOLD = "pause"
 
 
 def _unpin(taken: asyncio.Future[Checkpoint]) -> None:
@@ -278,6 +281,9 @@ class Rollout:
             response_stops=[fn for boundary, fn in stops if boundary is Response],
             gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
         )
+        self._pause = pausing.get()
+        if self._pause is not None:
+            self._session.running = self._pause.running
         self._memory = False
         """Whether this run can take memory snapshots: decided at `open`, once the box,
         its relay and the task's tool servers are known. Its checkpoints at model turns
@@ -298,6 +304,9 @@ class Rollout:
         self._deadline: asyncio.Timeout | None = None
         """The running segment's agent deadline, which a hold stops."""
         self._hold_started: float | None = None
+        self._holds: set[str] = set()
+        """Why the agent deadline is stopped: an owner's save (`OWNER_HOLD`), a pause
+        (`PAUSE_HOLD`), or both."""
         self._hold_deadline: float | None = None
         """When the agent deadline was due as the hold stopped it."""
         self._held_time = 0.0
@@ -376,6 +385,8 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         LIVE.add(self)
+        if self._pause is not None:
+            self._pause.attach(self)
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
@@ -833,8 +844,14 @@ class Rollout:
             if self._agent_time_remaining is None
             else segment_start + max(0.0, self._agent_time_remaining)
         )
+        # A hold under way (a pause) stops the deadline from the segment's start.
+        self._hold_deadline = (
+            self.deadline_at if self._hold_started is not None else None
+        )
         # Prefer an intercepted model/tool error to the harness exit it caused.
-        deadline = self._deadline = asyncio.timeout_at(self.deadline_at)
+        deadline = self._deadline = asyncio.timeout_at(
+            None if self._hold_deadline is not None else self.deadline_at
+        )
         try:
             async with deadline:
                 assert self._harness_session is not None
@@ -939,7 +956,7 @@ class Rollout:
 
     def _segment_agent_time(self) -> float:
         """The agent time the running segment used so far: its time, less the time
-        an owner held it."""
+        it was held (`_begin_hold`)."""
         if self._segment_start is None:
             return 0.0
         now = asyncio.get_running_loop().time()
@@ -948,9 +965,10 @@ class Rollout:
             held += now - max(self._hold_started, self._segment_start)
         return max(0.0, now - self._segment_start - held)
 
-    def _begin_hold(self) -> None:
-        """Hold the rollout for its owner. The hold is the owner's time: the agent
-        deadline stops until `release`."""
+    def _begin_hold(self, reason: str = OWNER_HOLD) -> None:
+        """Stop the agent deadline for `reason`: an owner's hold or a pause is not the
+        agent's time. It runs again once every reason ended (`_end_hold`)."""
+        self._holds.add(reason)
         if self._hold_started is not None:
             return
         self._hold_started = asyncio.get_running_loop().time()
@@ -960,13 +978,16 @@ class Rollout:
                 self._hold_deadline = when
                 self._deadline.reschedule(None)
 
-    def _end_hold(self) -> None:
-        if self._hold_started is None:
+    def _end_hold(self, reason: str = OWNER_HOLD) -> None:
+        self._holds.discard(reason)
+        if self._hold_started is None or self._holds:
             return
-        held = asyncio.get_running_loop().time() - self._hold_started
-        self._hold_started = None
+        hold_started, self._hold_started = self._hold_started, None
         if self._segment_start is None:
             return
+        held = asyncio.get_running_loop().time() - max(
+            hold_started, self._segment_start
+        )
         self._held_time += held
         if self._hold_deadline is not None and self._deadline is not None:
             self._deadline.reschedule(self._hold_deadline + held)
@@ -1138,6 +1159,14 @@ class Rollout:
             if watchdog:
                 self.arm_hold_watchdog()
         return saved
+
+    def set_paused(self, paused: bool) -> None:
+        """The episode paused or resumed (`Pause`): the agent deadline stops while it
+        is paused."""
+        if paused:
+            self._begin_hold(PAUSE_HOLD)
+        else:
+            self._end_hold(PAUSE_HOLD)
 
     def arm_hold_watchdog(self) -> None:
         """Release the hold by itself after `HOLD_SECONDS`, unless the owner does first:
