@@ -392,6 +392,14 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
                 artifact.source,
                 dropped[:3],
             )
+        archive, dropped_links = _drop_unsafe_symlinks(artifact.source, archive)
+        if dropped_links:
+            logger.warning(
+                "Dropped %d unsafe symlink(s) from artifact %s, e.g. %s",
+                len(dropped_links),
+                artifact.source,
+                dropped_links[:3],
+            )
         return archive
     finally:
         # Best-effort: the box is about to be destroyed and the name is unique per call.
@@ -423,6 +431,83 @@ def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
         with tarfile.open(fileobj=out, mode="w:", format=source.format) as target:
             for member in members:
                 if member.name in dropped:
+                    continue
+                content = source.extractfile(member) if member.isfile() else None
+                target.addfile(member, content)
+    return out.getvalue(), dropped
+
+
+def _symlink_target_is_safe(
+    relative_root: PurePosixPath,
+    member_path: PurePosixPath,
+    linkname: str,
+    symlinks: dict[PurePosixPath, str],
+) -> bool:
+    target = PurePosixPath(linkname)
+    if not linkname or target.is_absolute():
+        return False
+    resolved = member_path.parent
+    if not resolved.is_relative_to(relative_root):
+        return False
+    # Walk before normalizing '..': a/../b is unsafe if a is itself
+    # a symlink. Missing internal targets are safe (e.g. build outputs).
+    for part in target.parts:
+        resolved = resolved.parent if part == ".." else resolved / part
+        if not resolved.is_relative_to(relative_root) or any(
+            path in symlinks for path in (resolved, *resolved.parents)
+        ):
+            return False
+    return True
+
+
+def _drop_unsafe_symlinks(root: str, archive: bytes) -> tuple[bytes, list[str]]:
+    """Remove symlinks that `_validate_restore` would reject from a collected archive.
+
+    Agents routinely create virtualenvs (`.venv/bin/python -> /usr/bin/python3`) or run
+    unit tests that leave chained symlink fixtures in build directories. Dropping those
+    unrestorable symlinks at collection time preserves `_validate_restore`'s strict
+    boundary without failing grading of the agent's actual workspace changes.
+    """
+    root_path = PurePosixPath(root)
+    if (
+        root_path.anchor != "/"
+        or ".." in root_path.parts
+        or root_path == PurePosixPath("/")
+    ):
+        return archive, []
+    relative_root = root_path.relative_to("/")
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
+        members = source.getmembers()
+        symlinks = {PurePosixPath(m.name): m.linkname for m in members if m.issym()}
+        if not symlinks:
+            return archive, []
+        member_paths = [PurePosixPath(m.name) for m in members]
+        traversed = {
+            parent for mp in member_paths for parent in mp.parents if parent in symlinks
+        }
+        unsafe = {
+            m.name
+            for m in members
+            if m.issym()
+            and PurePosixPath(m.name) not in traversed
+            and not _symlink_target_is_safe(
+                relative_root, PurePosixPath(m.name), m.linkname, symlinks
+            )
+        }
+        if not unsafe:
+            return archive, []
+        if any(m.issparse() for m in members):
+            raise RuntimeError("cannot filter unsafe symlinks from sparse artifacts")
+        dropped = [
+            m.name
+            for m in members
+            if m.name in unsafe or (m.islnk() and m.linkname in unsafe)
+        ]
+        dropped_set = set(dropped)
+        out = io.BytesIO()
+        with tarfile.open(fileobj=out, mode="w:", format=source.format) as target:
+            for member in members:
+                if member.name in dropped_set:
                     continue
                 content = source.extractfile(member) if member.isfile() else None
                 target.addfile(member, content)
@@ -545,29 +630,13 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
                     )
             relative_root = root_path.relative_to("/")
             for member_path, linkname in symlinks.items():
-                target = PurePosixPath(linkname)
-                if not linkname or target.is_absolute():
+                if not _symlink_target_is_safe(
+                    relative_root, member_path, linkname, symlinks
+                ):
                     raise RuntimeError(
                         f"artifact symlink {str(member_path)!r} has unsafe target "
                         f"{linkname!r}"
                     )
-                resolved = member_path.parent
-                if not resolved.is_relative_to(relative_root):
-                    raise RuntimeError(
-                        f"artifact symlink {str(member_path)!r} has unsafe target "
-                        f"{linkname!r}"
-                    )
-                # Walk before normalizing '..': a/../b is unsafe if a is itself
-                # a symlink. Missing internal targets are safe (e.g. build outputs).
-                for part in target.parts:
-                    resolved = resolved.parent if part == ".." else resolved / part
-                    if not resolved.is_relative_to(relative_root) or any(
-                        path in symlinks for path in (resolved, *resolved.parents)
-                    ):
-                        raise RuntimeError(
-                            f"artifact symlink {str(member_path)!r} has unsafe target "
-                            f"{linkname!r}"
-                        )
     except tarfile.TarError as exc:
         raise RuntimeError(f"unreadable artifact archive for {root!r}: {exc}") from exc
 

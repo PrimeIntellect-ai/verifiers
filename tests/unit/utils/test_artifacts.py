@@ -112,3 +112,60 @@ def test_restore_refuses_sparse_members() -> None:
     with pytest.raises(RuntimeError, match="sparse"):
         asyncio.run(restore(runtime, {"/app/results": archive}))
     assert runtime.written == []
+
+
+def test_drop_unsafe_symlinks_filters_venv_and_chained_fixtures() -> None:
+    from verifiers.v1.utils.artifacts import _drop_unsafe_symlinks, _validate_restore
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as tar:
+        # Regular source file that must be preserved
+        src = tarfile.TarInfo("app/main.py")
+        payload = b"print('fixed')\n"
+        src.size = len(payload)
+        tar.addfile(src, io.BytesIO(payload))
+
+        # Safe internal relative symlink that must be preserved
+        safe_link = tarfile.TarInfo("app/latest.py")
+        safe_link.type = tarfile.SYMTYPE
+        safe_link.linkname = "main.py"
+        tar.addfile(safe_link)
+
+        # Python .venv absolute + chained symlinks (must be dropped)
+        venv_py = tarfile.TarInfo("app/.venv/bin/python")
+        venv_py.type = tarfile.SYMTYPE
+        venv_py.linkname = "/usr/bin/python3"
+        tar.addfile(venv_py)
+
+        venv_py3 = tarfile.TarInfo("app/.venv/bin/python3.12")
+        venv_py3.type = tarfile.SYMTYPE
+        venv_py3.linkname = "python"
+        tar.addfile(venv_py3)
+
+        # Chained test fixture symlink (e.g. Jetty docroot/other -> ../transit -> target)
+        transit = tarfile.TarInfo("app/tests/transit")
+        transit.type = tarfile.SYMTYPE
+        transit.linkname = "realdir"
+        tar.addfile(transit)
+
+        chained = tarfile.TarInfo("app/tests/docroot/other")
+        chained.type = tarfile.SYMTYPE
+        chained.linkname = "../transit"
+        tar.addfile(chained)
+
+    raw = buf.getvalue()
+    # Strict _validate_restore still rejects the unfiltered archive
+    with pytest.raises(RuntimeError, match="has unsafe target"):
+        _validate_restore("/app", raw)
+
+    cleaned, dropped = _drop_unsafe_symlinks("/app", raw)
+    assert set(dropped) == {
+        "app/.venv/bin/python",
+        "app/.venv/bin/python3.12",
+        "app/tests/docroot/other",
+    }
+    # Cleaned archive passes strict validation and preserves regular files + safe symlinks
+    _validate_restore("/app", cleaned)
+    with tarfile.open(fileobj=io.BytesIO(cleaned), mode="r:") as tar:
+        names = set(tar.getnames())
+    assert names == {"app/main.py", "app/latest.py", "app/tests/transit"}
