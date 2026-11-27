@@ -15,6 +15,7 @@ import os
 import signal
 import sys
 from contextlib import redirect_stdout, suppress
+from contextvars import ContextVar
 from pathlib import Path
 from uuid import uuid4
 
@@ -38,6 +39,7 @@ from acp.schema import (
 )
 from openai import APIError
 from stirrup import Agent
+from stirrup.clients import chat_completions_client as _stirrup_cc
 from stirrup.clients.chat_completions_client import ChatCompletionsClient
 from stirrup.core.agent import SessionAgent
 from stirrup.core.exceptions import OutputTokenLimitError
@@ -128,6 +130,72 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
                         await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
 
 
+_RAW_REASONING_KEY = "_vf_raw_reasoning"
+_raw_reasoning: ContextVar[list[dict] | None] = ContextVar(
+    "_vf_raw_reasoning", default=None
+)
+_orig_to_openai_messages = _stirrup_cc.to_openai_messages
+
+
+def _to_openai_messages_with_raw_reasoning(msgs, *args, **kwargs):
+    wire_messages = _orig_to_openai_messages(msgs, *args, **kwargs)
+    for msg, wire in zip(msgs, wire_messages, strict=True):
+        metadata = getattr(msg, "metadata", None)
+        raw = metadata.get(_RAW_REASONING_KEY) if isinstance(metadata, dict) else None
+        if not raw:
+            continue
+        if raw.get("reasoning"):
+            wire.pop("reasoning_content", None)  # Stirrup's copy of `reasoning`
+        wire.update(raw)
+    return wire_messages
+
+
+_stirrup_cc.to_openai_messages = _to_openai_messages_with_raw_reasoning
+
+
+class _ReasoningChatClient(ChatCompletionsClient):
+    """Replay the provider's `reasoning` and `reasoning_details` fields verbatim."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        orig_create = self._client.chat.completions.create
+
+        async def _create(**req_kwargs):
+            resp = await orig_create(**req_kwargs)
+            msg = resp.choices[0].message if resp.choices else None
+            raw = {}
+            if msg is not None:
+                details = getattr(msg, "reasoning_details", None)
+                if isinstance(details, list) and details:
+                    raw["reasoning_details"] = details
+                reasoning = getattr(msg, "reasoning", None)
+                if isinstance(reasoning, str) and reasoning:
+                    raw["reasoning"] = reasoning
+            slot = _raw_reasoning.get()
+            if raw and slot is not None:
+                slot.append(raw)
+            if (
+                msg is not None
+                and not getattr(msg, "reasoning_content", None)
+                and "reasoning" in raw
+            ):
+                msg.reasoning_content = raw["reasoning"]
+            return resp
+
+        self._client.chat.completions.create = _create
+
+    async def generate(self, messages, tools):
+        slot: list[dict] = []
+        token = _raw_reasoning.set(slot)
+        try:
+            result = await super().generate(messages, tools)
+        finally:
+            _raw_reasoning.reset(token)
+        if slot:
+            result.metadata[_RAW_REASONING_KEY] = slot[-1]
+        return result
+
+
 class RuntimeSessionAgent(SessionAgent):
     """Retain accepted history when a model or summarizer hits its output limit."""
 
@@ -167,7 +235,7 @@ class Session:
         client = None
         try:
             args = self.args
-            client = ChatCompletionsClient(
+            client = _ReasoningChatClient(
                 model=args.model,
                 base_url=args.base_url,
                 api_key=args.api_key,
