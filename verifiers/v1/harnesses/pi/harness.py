@@ -142,6 +142,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             model_config["compat"] = {
                 "supportsDeveloperRole": self.config.supports_developer_role
             }
+        elif (
+            self.config.dialect == "anthropic_messages"
+            and "claude" not in ctx.model.lower()
+        ):
+            model_config["compat"] = {"allowEmptySignature": True}
         models = {
             "providers": {
                 provider: {
