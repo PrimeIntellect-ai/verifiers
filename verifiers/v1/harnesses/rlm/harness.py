@@ -84,6 +84,9 @@ class RLMHarnessConfig(HarnessConfig):
     builtin_tools: list[BuiltinTool] | None = None
     """Native tool selection; None uses nano-rlm's default and is omitted from the
     runtime contract. Explicit selection requires a nano-rlm ref supporting it."""
+    vision: bool = False
+    """Send images from IPython and MCP tools to a vision-capable model. Requires a
+    nano-rlm version with the vision execution policy."""
     compaction: CompactionConfig | bool | None = None
     """Context compaction: a `[compaction]` section (or `true`) enables it with the
     given settings, `false` disables it (an overflowing session then fails), and
@@ -216,6 +219,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "max_total_tokens": self.config.max_total_tokens or None,
             "max_tool_output_bytes": self.config.max_tool_output_bytes,
         }
+        if self.config.vision:
+            policy_knobs["vision"] = True
         if isinstance(compaction, bool):
             policy_knobs["compaction"] = compaction
         elif compaction is not None:
