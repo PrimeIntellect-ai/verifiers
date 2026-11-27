@@ -11,6 +11,13 @@ def test_compare_stdout_results_keeps_numeric_tolerance() -> None:
     assert vf.compare_stdout_results("1.0001 2.0\n", "1.0002 2.0009\n")
 
 
+def test_compare_stdout_results_keeps_tolerance_next_to_text_tokens() -> None:
+    assert vf.compare_stdout_results("YES\n0.3333334\n", "YES\n0.3333333\n")
+    assert vf.compare_stdout_results("Case #1: 2.0001\n", "Case #1: 2.0\n")
+    assert not vf.compare_stdout_results("NO\n0.3333334\n", "YES\n0.3333333\n")
+    assert not vf.compare_stdout_results("Case #1: 2.1\n", "Case #1: 2.0\n")
+
+
 def test_parse_pytest_outcomes_strips_xfail_xpass_reasons() -> None:
     output = (
         "XFAIL tests/test_mod.py::test_xfail - known bug - still tracked\n"

@@ -134,20 +134,23 @@ def compare_stdout_results(
     if len(actual_tokens) != len(expected_tokens) or not actual_tokens:
         return False
 
-    # Code datasets often allow tiny floating-point drift in stdout.
-    try:
-        actual_numbers = [Decimal(token) for token in actual_tokens]
-        expected_numbers = [Decimal(token) for token in expected_tokens]
-    except (InvalidOperation, ValueError):
-        return False
-    if not all(number.is_finite() for number in actual_numbers + expected_numbers):
-        return False
-
+    # Code datasets often allow tiny floating-point drift in stdout. Compare token
+    # by token, so labels around the numbers (`Case #1:`, `YES`) must match exactly
+    # while numeric tokens keep the tolerance.
     limit = Decimal(str(tolerance))
-    return all(
-        abs(actual - expected) <= limit
-        for actual, expected in zip(actual_numbers, expected_numbers)
-    )
+    for actual_token, expected_token in zip(actual_tokens, expected_tokens):
+        if actual_token == expected_token:
+            continue
+        try:
+            actual_number = Decimal(actual_token)
+            expected_number = Decimal(expected_token)
+        except (InvalidOperation, ValueError):
+            return False
+        if not (actual_number.is_finite() and expected_number.is_finite()):
+            return False
+        if abs(actual_number - expected_number) > limit:
+            return False
+    return True
 
 
 def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
