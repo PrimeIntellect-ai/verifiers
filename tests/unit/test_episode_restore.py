@@ -14,7 +14,12 @@ from pydantic import TypeAdapter
 import verifiers.v1 as vf
 from verifiers.v1.agent import Agent, _EpisodeAgent
 from verifiers.v1.env import Env, RunSlot
-from verifiers.v1.restore import EpisodeCalls, ReplayDiverged, episode_restore_point
+from verifiers.v1.restore import (
+    EpisodeCalls,
+    ReplayDiverged,
+    episode_restore_point,
+    fingerprint,
+)
 
 
 def task(prompt: str) -> vf.Task:
@@ -628,6 +633,25 @@ def test_a_call_that_runs_fresh_keeps_its_key_for_later_calls_of_its_seat():
     calls = EpisodeCalls.continuing(point)
     with pytest.raises(ReplayDiverged):
         calls.start("a", task("y"), None)
+
+
+def test_a_scoring_retry_offers_a_fresh_nested_call_its_key_again():
+    """Judge 0 had not started its trace at the save, judge 1 had. After a retry from
+    the saved snapshot, judge 0 still runs fresh under its own key."""
+    point = scoring_episode()
+    judge = next(c for c in point["calls"] if c["seat"] == "judge")
+    fresh = {**judge, "fingerprint": fingerprint(task("first")), "state": "fresh"}
+    point = {**point, "calls": [*point["calls"], fresh]}
+    judge["n"] = 1
+    calls = EpisodeCalls.continuing(point)
+    calls.start("solver", task("solve"), None)
+    for _ in range(2):
+        assert calls.start("judge", task("first"), ("solver", 0)) == (
+            ("judge", 0),
+            None,
+        )
+        assert calls.start("judge", task("judge"), ("solver", 0))[0] == ("judge", 1)
+        calls.retry_nested(("solver", 0), from_saved=True)
 
 
 def test_a_new_call_skips_keys_a_replayed_call_took():

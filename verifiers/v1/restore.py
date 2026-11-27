@@ -174,10 +174,10 @@ class EpisodeCalls:
                 f"{seat} call {key[1]} was asked for another task than at the save"
             )
             raise ReplayDiverged(self.diverged)
+        self.consumed[key] = saved
         if saved["state"] == "fresh":
             return key, None
         call.pending = saved
-        self.consumed[key] = saved
         return key, saved
 
     def retry_nested(self, key: CallKey, from_saved: bool) -> None:
