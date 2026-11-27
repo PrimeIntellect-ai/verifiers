@@ -8,12 +8,15 @@ import time
 from types import SimpleNamespace
 from typing import Literal
 
+import pytest
+
 import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
 from verifiers.v1.clients import ModelContext, ModelRoute
 from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.pause import Pause
 from verifiers.v1.restore import open_restore, restorable, restore_entry, unsaveable
 from verifiers.v1.rollout import Rollout, kept
 from verifiers.v1.runtimes.backends.prime import PrimeBackend
@@ -161,13 +164,15 @@ class SlowBackend:
         self.stop_fails = False
         """The box never stops: the snapshot fails after it was named."""
         self.taken = 0
+        self.woken = 0
+        """Boxes a snapshot left stopped that ran again (`wake`)."""
         self.deleted: list[str] = []
         self.stray_snapshots: list[vf.Snapshot] = []
 
     def snapshot_pace(self):
         return contextlib.nullcontext()
 
-    async def snapshot(self, taken=None) -> vf.Snapshot:
+    async def snapshot(self, taken=None, *, stay_stopped=False) -> vf.Snapshot:
         self.taken += 1
         snapshot = vf.Snapshot(id=f"ck{self.taken}")
         # Like a Prime box: the snapshot is named before the box stops, and teardown
@@ -176,10 +181,14 @@ class SlowBackend:
         if taken is not None:
             taken(snapshot)
         self.stopped.set()
-        await self.running.wait()
+        if not stay_stopped:
+            await self.running.wait()
         if self.stop_fails:
             raise RuntimeError("pause failed")
         return snapshot
+
+    async def wake(self) -> None:
+        self.woken += 1
 
     async def wait_snapshot(self, snapshot: vf.Snapshot) -> int | None:
         await self.durable.wait()
@@ -253,15 +262,168 @@ def make_rollout(
     run._segment_start = None
     run._deadline = None
     run._hold_started = None
+    run._holds = set()
     run._hold_deadline = None
     run._held_time = 0.0
     run._capturing = asyncio.Lock()
     run._state_unsaved = None
+    run._unpaused = asyncio.Event()
+    run._unpaused.set()
+    run._suspension = None
+    run._suspension_named = None
+    run._suspension_until = None
+    run._suspended = None
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
     run.rewound_snapshots = []
     run.restored_turns = None
     return run, backend, session
+
+
+async def test_a_pause_stops_the_box_until_the_episode_resumes():
+    """A paused episode's box stays stopped at a memory checkpoint, so a long pause
+    holds no compute. It runs again, with its replies, once the episode resumes."""
+    run, backend, session = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    await asyncio.sleep(0)
+    assert run._suspended is not None and backend.woken == 0
+    assert not session.flowing.is_set()
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    assert backend.taken == 1 and backend.woken == 1
+    assert run._suspended is None and session.flowing.is_set()
+    assert run._relay.rerouted and [c.id for c in run.trace.checkpoints] == ["ck1"]
+    backend.durable.set()
+    await run._settle_checkpoints(wait=True)
+
+
+async def test_a_pause_that_ends_before_its_snapshot_stops_nothing():
+    run, backend, session = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    assert backend.taken == 0 and session.flowing.is_set()
+
+
+async def test_a_save_of_a_paused_rollout_returns_its_stopped_box():
+    """An owner saving a paused rollout gets the checkpoint its box stopped at,
+    without stopping the box again, and the box answers nothing until release."""
+    run, backend, session = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    await asyncio.sleep(0)
+    saved = await asyncio.wait_for(run.save(hold=True), 1)
+    assert saved is not None and restore_entry(saved)["id"] == "ck1"
+    assert backend.taken == 1 and run._suspended.pinned
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    assert backend.woken == 1 and not session.flowing.is_set()
+    run.release()
+    assert session.flowing.is_set()
+    backend.durable.set()
+    await run._settle_checkpoints(wait=False)
+
+
+async def test_a_save_that_races_a_suspension_joins_it():
+    """A save that arrives before the suspension named its snapshot waits for that
+    snapshot instead of taking its own, which would wait for the pause to end."""
+    run, backend, _ = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    saved = await asyncio.wait_for(run.save(hold=True), 1)
+    assert saved is not None and restore_entry(saved)["id"] == "ck1"
+    assert backend.taken == 1
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    run.release()
+    backend.durable.set()
+    await run._settle_checkpoints(wait=False)
+
+
+async def test_a_paused_rollout_whose_snapshot_never_uploads_saves_nothing():
+    run, backend, session = make_rollout()
+    backend.fail = True
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    backend.durable.set()
+    await asyncio.gather(*run._durable.values(), return_exceptions=True)
+    assert await run.save(hold=True) is None
+    assert run.save_skipped == "its memory snapshot failed" and run._hold_id is None
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    assert session.flowing.is_set()
+
+
+async def test_a_paused_rollout_puts_off_its_periodic_snapshot():
+    """A due periodic snapshot of a paused rollout is put off by an interval, so its
+    timer does not fire again at once."""
+    run, backend, _ = make_rollout()
+    run._unpaused.clear()
+    assert await run._checkpoint() is None
+    assert backend.taken == 0
+    assert run._last_capture == pytest.approx(asyncio.get_running_loop().time(), abs=1)
+
+
+async def test_a_second_save_of_a_paused_rollout_takes_no_owned_checkpoint():
+    """The checkpoint a box stopped at goes to one owner: a later save while the box
+    is still stopped saves nothing instead of sharing it."""
+    run, backend, _ = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    assert await run.save() is not None
+    assert await run.save() is None
+    assert run.save_skipped == "it is paused at a checkpoint an earlier save holds"
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    backend.durable.set()
+    await run._settle_checkpoints(wait=False)
+
+
+async def test_a_pause_right_after_a_resume_stops_the_box_again():
+    """A new pause while the last suspension still wakes the box gets a suspension of
+    its own, which stops the box once the earlier one is done."""
+    run, backend, _ = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    first = run._suspension
+    pause.resume()
+    pause.pause()
+    assert run._suspension is not first
+    await asyncio.wait_for(first, 1)
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert backend.taken == 2 and backend.woken == 1 and run._suspended is not None
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    assert backend.woken == 2
+    backend.durable.set()
+    await run._settle_checkpoints(wait=False)
+
+
+async def test_a_closing_rollout_wakes_its_paused_box():
+    """Teardown reaches into the box, so a rollout that closes while paused runs its
+    box again instead of waiting for the pause to end."""
+    run, backend, _ = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    await asyncio.wait_for(run._settle_checkpoints(wait=False), 1)
+    assert backend.woken == 1 and pause.paused
 
 
 async def test_timer_captures_without_a_model_call_and_owner_reuses_it():
@@ -584,7 +746,7 @@ async def test_no_memory_snapshot_without_a_running_segment():
 async def test_a_failed_memory_snapshot_lets_replies_flow_again():
     run, backend, session = make_rollout()
 
-    async def failing(taken=None):
+    async def failing(taken=None, *, stay_stopped=False):
         raise vf.SandboxError("pause refused")
 
     backend.snapshot = failing  # type: ignore[method-assign]
@@ -851,7 +1013,7 @@ async def test_a_snapshot_dropped_before_the_save_resumes_is_no_restore_point():
     then returns no restore point, and the box's teardown frees the snapshot."""
     run, backend, session = make_rollout()
 
-    async def named_then_failed(taken=None):
+    async def named_then_failed(taken=None, *, stay_stopped=False):
         snapshot = vf.Snapshot(id="ck1")
         backend.stray_snapshots.append(snapshot)
         taken(snapshot)
@@ -899,7 +1061,7 @@ async def test_an_owners_snapshot_outlives_the_end_of_its_program():
 async def test_a_failed_held_save_does_not_hold_the_box():
     run, backend, session = make_rollout()
 
-    async def failing(taken=None):
+    async def failing(taken=None, *, stay_stopped=False):
         raise vf.SandboxError("pause refused")
 
     backend.snapshot = failing  # type: ignore[method-assign]

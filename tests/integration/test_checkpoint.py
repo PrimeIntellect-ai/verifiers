@@ -43,13 +43,13 @@ def taken(monkeypatch) -> list[str]:
     snapshots: list[str] = []
     snapshot = PrimeBackend.snapshot
 
-    async def recording(self, named=None):
+    async def recording(self, named=None, **kwargs):
         def record(result):
             snapshots.append(result.id)
             if named is not None:
                 named(result)
 
-        return await snapshot(self, record)
+        return await snapshot(self, record, **kwargs)
 
     monkeypatch.setattr(PrimeBackend, "snapshot", recording)
     return snapshots
