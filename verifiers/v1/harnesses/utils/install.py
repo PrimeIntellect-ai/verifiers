@@ -1,8 +1,16 @@
 """Host-side helpers for installing a harness's program into a runtime."""
 
 import shlex
+import time
 
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+INSTALLED_MARKER = "vf-install-ran-8f3c1d"
+"""Printed after a successful install, so the host can tell it from a `ready` skip."""
 
 
 async def ensure_installed(
@@ -15,18 +23,30 @@ async def ensure_installed(
     ready: str | None = None,
     lock: str | None = None,
     shell: tuple[str, ...] = ("sh", "-c"),
-) -> None:
+) -> bool:
     """Run `install` in `runtime` under a lock, so concurrent rollouts sharing the runtime
     install once and the rest wait. `ready` is a shell test that skips the install when it
     already holds. The lock is `directory/install.lock` unless the install replaces
     `directory` itself, in which case pass a `lock` path beside it. `shell` runs the script
     (e.g. `bash -o pipefail -c` for pipelines).
 
+    Returns whether `install` ran (False when `ready` held). With a `ready` check, an
+    install is logged at INFO with its duration, and at WARNING when this runtime had
+    already completed it: something deleted or broke a working install, so it was
+    reinstalled. Without one, `install` runs every time and checks for itself, so it
+    returns True and logs nothing.
+
     The lock is `flock` (Linux, busybox) or `lockf` (macOS/BSD), both released when the holder
     dies; an image with neither falls back to a symlink spinlock whose owner is recorded as
     `pid:starttime` so a dead holder is reaped even if its pid was reused."""
     lock = shlex.quote(lock or f"{directory}/install.lock")
-    script = f"{ready} || ({install})" if ready else install
+    ran = f"echo {INSTALLED_MARKER}"
+    # Its own shell process: in a `( ... )` subshell left of `&&`, the shell ignores the
+    # installer's `set -e`, so a failed step could still print the marker
+    installer = f"{shlex.join(shell)} {shlex.quote(install)}"
+    script = (
+        f"{ready} || {{ {installer} && {ran}; }}" if ready else f"{installer} && {ran}"
+    )
     run = f"{shlex.join(shell)} {shlex.quote(script)}"
     # The owner token is pid:starttime (starttime from /proc where readable), so a reused pid
     # does not pass as the live holder. A lock that is not a symlink (left behind by
@@ -51,6 +71,7 @@ async def ensure_installed(
         f'mkdir -p "$(dirname {lock})" && '
         f'if l=$(command -v flock || command -v lockf); then "$l" {lock} {run}; else {spinlock}; fi'
     )
+    start = time.monotonic()
     if runtime.user is None:
         result = await runtime.run(["sh", "-c", guarded], env)
     else:
@@ -67,6 +88,27 @@ async def ensure_installed(
     if result.exit_code != 0:
         detail = (result.stderr.strip() or result.stdout.strip())[-500:]
         raise RuntimeError(f"{label} install failed: {detail}")
+    installed = INSTALLED_MARKER in result.stdout
+    if ready is None:
+        return installed
+    completed = runtime.backend.cache.installed
+    if installed and directory in completed:
+        logger.warning(
+            "Reinstalled %s after its install in this runtime stopped passing its check "
+            "in %s directory=%s",
+            label,
+            format_time(time.monotonic() - start),
+            directory,
+        )
+    elif installed:
+        logger.info(
+            "Installed %s in %s directory=%s",
+            label,
+            format_time(time.monotonic() - start),
+            directory,
+        )
+    completed.add(directory)
+    return installed
 
 
 async def remove_dir(runtime: Runtime, path: str, label: str) -> None:

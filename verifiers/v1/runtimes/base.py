@@ -181,7 +181,8 @@ launch that runs the segment's main program."""
 @dataclass
 class RuntimeCache:
     """Framework state for one provisioned resource, kept off the backend contract:
-    prepared uv scripts and the tool-server sources installed into it."""
+    prepared uv scripts, the tool-server sources installed into it, and the harness
+    install directories it has completed."""
 
     uv_interpreters: dict[str, str] = field(default_factory=dict)
     uv_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
@@ -193,6 +194,7 @@ class RuntimeCache:
     curl_ready: bool = False
     mcp_sources: set[str] = field(default_factory=set)
     mcp_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    installed: set[str] = field(default_factory=set)
 
 
 class RuntimeBackend(ABC):
