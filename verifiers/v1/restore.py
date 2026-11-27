@@ -8,6 +8,12 @@ needs. A later process hands that trace back (`RunSlot.restore`, `Agent.run(rest
 and the rollout continues in a new box from the checkpoint: its trace up to there, and
 the harness program the box still runs.
 
+An episode of several agent runs continues the same way (`episode_restore_point`). The
+env's program runs again from the start, and each agent call, keyed by its seat and its
+number within the episode, replays: a call that had finished returns its saved trace, a
+call that was running continues from its checkpoint, and a call that had not started
+runs fresh (`EpisodeCalls`).
+
 The owner holds the snapshot of a saved rollout (`Checkpoint.pinned`): no rollout
 deletes it, and the owner deletes it once nothing will restore it
 (`RuntimeBackend.discard`).
@@ -16,11 +22,17 @@ deletes it, and the owner deletes it once nothing will restore it
 from __future__ import annotations
 
 import asyncio
+import copy
 import functools
+import hashlib
+import importlib
 import time
 import weakref
-from contextvars import ContextVar
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+from pydantic import TypeAdapter
 
 from verifiers.v1.state import state_cls
 from verifiers.v1.trace import Checkpoint, Trace
@@ -28,6 +40,7 @@ from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.configs.agent import AgentConfig
+    from verifiers.v1.env import RunSlot
     from verifiers.v1.harness import Harness
     from verifiers.v1.rollout import Rollout
     from verifiers.v1.task import Task
@@ -37,11 +50,452 @@ logger = get_logger(__name__)
 LIVE: weakref.WeakSet[Rollout] = weakref.WeakSet()
 """The rollouts of this process that run a box (between `open` and `close`)."""
 
-restoring: ContextVar[list[dict[str, Any]] | None] = ContextVar(
-    "vf_restoring", default=None
-)
-"""The saved trace the episode this task runs continues from (`Env.run_episode`), in a
-list its first agent run takes it out of."""
+EPISODE_POINT_VERSION = 1
+
+CallKey = tuple[str, int]
+"""An agent call within an episode: its seat, and how many calls that seat made before."""
+
+
+class ReplayDiverged(Exception):
+    """A continued episode asked for a call the restore point does not hold: the env's
+    program took another path than in the saved episode."""
+
+
+def fingerprint(task: Task) -> str:
+    """What an agent call was asked to do, to tell that a replayed call is the saved one."""
+    data = task.data.model_dump_json(exclude_none=True)
+    return hashlib.sha256(f"{type(task).__qualname__}:{data}".encode()).hexdigest()
+
+
+@dataclass
+class _Call:
+    seat: str
+    n: int
+    fingerprint: str
+    parent: CallKey | None
+    """The call whose scoring made this one (an agentic judge's), if any."""
+    trace: Trace | None = None
+    finished: bool = False
+    interaction: bool = False
+    borrowed: bool = False
+    """Whether it runs in a box it borrowed (a scoring workspace), not one of its own."""
+    state_class: str = ""
+    """Its task's `State` class, which a replay rebuilds its trace's state with."""
+    finish_order: int | None = None
+    pending: dict[str, Any] | None = None
+    """What the restore point held for it, until its continued trace is minted: a
+    save before then keeps it."""
+
+
+@dataclass
+class EpisodeCalls:
+    """The agent calls of one episode attempt, in the order they started, and the saved
+    calls a continued episode replays (`memo`, from `episode_restore_point`)."""
+
+    memo: dict[CallKey, dict[str, Any]] = field(default_factory=dict)
+    calls: dict[CallKey, _Call] = field(default_factory=dict)
+    counts: Counter[str] = field(default_factory=Counter)
+    diverged: str | None = None
+    """Why the replay stopped, once a call did not match the saved one."""
+    finishes: int = 0
+    consumed: dict[CallKey, dict[str, Any]] = field(default_factory=dict)
+    """The saved calls this attempt took out of `memo`, to offer again to a call whose
+    run retries from its saved snapshot (`retry_nested`)."""
+    tasks: weakref.WeakSet[asyncio.Task] = field(default_factory=weakref.WeakSet)
+    """The tasks the attempt's calls run in, to stop the attempt's calls that still run
+    (`cancel_running`)."""
+
+    @classmethod
+    def continuing(cls, point: dict[str, Any] | None) -> EpisodeCalls:
+        """The calls of an attempt that continues `point`: an episode restore point, or
+        the saved trace of a single rollout (`restorable`), which continues the first
+        call of its seat."""
+        if point is None:
+            return cls()
+        if "episode_point" not in point:
+            seat = (point.get("agent") or {}).get("name") or "agent"
+            point = {
+                "calls": [
+                    {
+                        "seat": seat,
+                        "n": 0,
+                        "fingerprint": None,
+                        "parent": None,
+                        "state": "running",
+                        "trace": point,
+                    }
+                ]
+            }
+        return cls(memo={(c["seat"], c["n"]): c for c in point["calls"]})
+
+    def start(
+        self,
+        seat: str,
+        task: Task,
+        parent: CallKey | None,
+        *,
+        interaction: bool = False,
+        borrowed: bool = False,
+        replay: bool = True,
+    ) -> tuple[CallKey, dict[str, Any] | None]:
+        """Key a new call of `seat` and return what the restore point holds for it.
+        Raises `ReplayDiverged` when the saved call was asked to do something else. An
+        `interaction` is keyed and recorded, but never saved, so it replays nothing;
+        nor does a call that continues a trace its caller gave it (`replay=False`)."""
+        key = self._next_key(seat, parent, replay=not interaction)
+        state = state_cls(type(task))
+        call = _Call(
+            seat,
+            key[1],
+            fingerprint(task),
+            parent,
+            interaction=interaction,
+            borrowed=borrowed,
+            state_class=f"{state.__module__}:{state.__qualname__}",
+        )
+        self.calls[key] = call
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:  # no running loop: nothing to stop later
+            current = None
+        if current is not None:
+            self.tasks.add(current)
+        saved = None if interaction else self.memo.pop(key, None)
+        if not replay:
+            # The caller continues this call from a trace of its own.
+            saved = None
+        if saved is None:
+            return key, None
+        if (
+            saved["fingerprint"] is not None
+            and saved["fingerprint"] != call.fingerprint
+        ):
+            self.diverged = (
+                f"{seat} call {key[1]} was asked for another task than at the save"
+            )
+            raise ReplayDiverged(self.diverged)
+        self.consumed[key] = saved
+        if saved["state"] == "fresh":
+            return key, None
+        call.pending = saved
+        return key, saved
+
+    def retry_nested(self, key: CallKey, from_saved: bool) -> None:
+        """`key`'s run starts another attempt. From its saved snapshot (`from_saved`),
+        the calls of its scoring run again from theirs: what they took out of `memo`
+        goes back, under the same keys. Otherwise the run starts over in a new box, and
+        they run fresh."""
+        nested = self._nested(key)
+        for child in nested:
+            # A saved call no attempt reached yet is still in `memo`.
+            saved = self.consumed.pop(child, None) or self.memo.get(child)
+            self.memo.pop(child, None)
+            self.calls.pop(child, None)
+            if from_saved and saved is not None:
+                self.memo[child] = saved
+        if from_saved:
+            # Number the seats' calls again from the first offered one; `start` skips
+            # the keys other calls hold.
+            for seat in {child[0] for child in nested}:
+                first = min(n for s, n in nested if s == seat)
+                self.counts[seat] = min(self.counts[seat], first)
+
+    def _nested(self, key: CallKey) -> list[CallKey]:
+        """The calls made inside `key`'s scoring, at any depth, saved or started."""
+        parents = {
+            k: tuple(c["parent"]) if c["parent"] else None
+            for k, c in [*self.memo.items(), *self.consumed.items()]
+        }
+        parents.update((k, c.parent) for k, c in self.calls.items())
+        found: list[CallKey] = []
+        frontier = [key]
+        while frontier:
+            parent = frontier.pop()
+            for child, of in parents.items():
+                if of == parent and child not in found:
+                    found.append(child)
+                    frontier.append(child)
+        return found
+
+    def _next_key(self, seat: str, parent: CallKey | None, *, replay: bool) -> CallKey:
+        """The key of a new call of `seat` made inside `parent`'s scoring (or at the top
+        level). It takes the first saved key of that scoring that no call holds, so the
+        saved calls of a scoring go to the calls made there, whatever ran in between.
+        Otherwise the next key that no call holds and no other scoring's saved call
+        needs."""
+        owner = None if parent is None else [*parent]
+        saved = sorted(
+            n
+            for (s, n), c in self.memo.items()
+            if s == seat and c["parent"] == owner and (s, n) not in self.calls
+        )
+        if replay and saved:
+            n = saved[0]
+        else:
+            n = self.counts[seat]
+            while (seat, n) in self.calls or (seat, n) in self.memo:
+                n += 1
+        self.counts[seat] = max(self.counts[seat], n + 1)
+        return seat, n
+
+    def minted(self, key: CallKey, trace: Trace) -> None:
+        call = self.calls[key]
+        call.trace, call.pending = trace, None
+
+    def finished(self, key: CallKey, trace: Trace) -> None:
+        call = self.calls[key]
+        call.trace, call.finished, call.pending = trace, True, None
+        call.finish_order, self.finishes = self.finishes, self.finishes + 1
+
+    async def cancel_running(self) -> None:
+        """Stop the calls of this attempt that still run, besides the caller's own."""
+        current = asyncio.current_task()
+        running = [t for t in self.tasks if t is not current and not t.done()]
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
+
+    def replay(
+        self, key: CallKey, saved: dict[str, Any], task: Task
+    ) -> tuple[Trace, list[Trace]]:
+        """The finished call `saved`, and the calls its scoring made, at any depth, in
+        the order they finished, as traces for the episode. They keep their keys, so a
+        later save of this episode holds them again."""
+        subtree: list[dict[str, Any]] = []
+        parents = [[*key]]
+        while parents:
+            parent = parents.pop()
+            for child in [c for c in self.memo.values() if c["parent"] == parent]:
+                del self.memo[(child["seat"], child["n"])]
+                self.consumed[(child["seat"], child["n"])] = child
+                subtree.append(child)
+                parents.append([child["seat"], child["n"]])
+        nested: list[Trace] = []
+        for child in sorted(subtree, key=lambda c: c["order"]):
+            child_key = (child["seat"], child["n"])
+            # An earlier saved call of the seat that has not started keeps its key.
+            if not any(
+                seat == child["seat"] and n < child["n"] for seat, n in self.memo
+            ):
+                self.counts[child["seat"]] = max(
+                    self.counts[child["seat"]], child["n"] + 1
+                )
+            trace = _finished_trace(child, _state_class(child))
+            self.calls[child_key] = _Call(
+                child["seat"],
+                child["n"],
+                child["fingerprint"],
+                tuple(child["parent"]),
+                trace,
+                state_class=child.get("state_class", ""),
+            )
+            self.finished(child_key, trace)
+            nested.append(trace)
+        trace = _finished_trace(saved, state_cls(type(task)))
+        self.finished(key, trace)
+        return trace, nested
+
+
+def _state_class(saved: dict[str, Any]) -> type:
+    from verifiers.v1.state import State
+
+    module, _, name = (saved.get("state_class") or "").partition(":")
+    try:
+        found = importlib.import_module(module)
+        for part in name.split("."):
+            found = getattr(found, part)
+        return found
+    except (ImportError, AttributeError, ValueError):
+        return State
+
+
+def _finished_trace(saved: dict[str, Any], state: type) -> Trace:
+    trace = Trace.model_validate(saved["trace"])
+    if saved.get("task_state") is not None:
+        trace.state = state.model_validate(saved["task_state"])
+    return trace
+
+
+def scoring_point(
+    trace: Trace, snapshot: dict[str, Any], *, own_box: bool
+) -> dict[str, Any]:
+    """`trace`, of a rollout whose agent is done and which is in scoring, as a saved
+    trace (`restorable`) that continues its scoring from `snapshot`: the box a run of
+    its scoring took while it ran there. That box is the rollout's own (`own_box`,
+    shared scoring) or the box its grading made (isolated scoring). The restored
+    rollout scores again, without running its agent (`Rollout.resumes_scoring`)."""
+    data = trace.model_dump(context={"token_arrays": True})
+    session = {
+        "stage": "scoring",
+        "box": "own" if own_box else "grading",
+        "metrics": dict(trace.metrics),
+        "timeout": trace.is_timeout,
+        "root_reply": trace.root_reply,
+        "grading_state": None,
+        "grading_task": {},
+        "finalized": bool(trace.timing.finalize.end),
+        "stop": [trace.stop_condition, trace.stop_info],
+        "state": TypeAdapter(type(trace.state)).dump_python(trace.state, mode="json"),
+        "info": copy.deepcopy(trace.info),
+        "rewrites": (len(trace.request_rewrites), len(trace.response_rewrites)),
+        "pins": [],
+        "decisions": [],
+        "gated": [],
+        "prepared": {},
+        "replays": {},
+    }
+    from verifiers.v1.grading import grading_copy, staged_task_state
+
+    if not own_box and (copy_ := grading_copy(trace)) is not None:
+        session["grading_state"] = TypeAdapter(type(copy_.state)).dump_python(
+            copy_.state, mode="json"
+        )
+        session["grading_task"] = staged_task_state(trace)
+    data["checkpoints"] = [
+        {
+            "id": snapshot["id"],
+            "snapshot": snapshot,
+            "node": len(trace.nodes) - 1 if trace.nodes else None,
+            "session": session,
+            "captured": time.time(),
+            "pinned": True,
+        }
+    ]
+    return data
+
+
+def _skip_reason(trace_id: str) -> str:
+    for rollout in list(LIVE):
+        if rollout.trace.id == trace_id and rollout.save_skipped:
+            return rollout.save_skipped
+    return "it took no memory snapshot"
+
+
+def episode_restore_point(
+    slot: RunSlot, saved: list[dict[str, Any]]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The restore point of `slot`'s running episode, built from the rollouts `save_all`
+    just saved, or None and why the episode has none. The point holds every call that
+    finished with its trace, and every running call with its saved trace; a call that
+    made no turn yet runs fresh on replay. It is all or nothing: a running call that
+    made turns but has no saved trace leaves the episode without a restore point.
+    `point["snapshots"]` are the snapshots it continues from, which the caller owns;
+    the caller also owns every saved rollout the point does not use."""
+    calls = slot.calls
+    if calls is None:
+        return None, "it has not started"
+    by_trace = {trace["id"]: trace for trace in saved}
+    nested = {call.parent for call in calls.calls.values() if call.parent is not None}
+
+    def scoring_box(key: CallKey, trace: Trace) -> tuple[dict[str, Any], bool] | None:
+        """The snapshot of the box that a running call of `key`'s scoring took there,
+        and whether that box is `key`'s own: it holds the call and what `key`'s scoring
+        works on."""
+        box = trace.agent.runtime.id if trace.agent.runtime is not None else None
+        for child in calls.calls.values():
+            saved_child = by_trace.get(child.trace.id) if child.trace else None
+            runtime = child.trace.agent.runtime if child.trace else None
+            # Only a call that runs in a box it borrowed holds what `key`'s scoring
+            # works on; one in a box of its own does not.
+            if (
+                child.parent == key
+                and child.borrowed
+                and saved_child is not None
+                and runtime is not None
+            ):
+                return restore_entry(saved_child)["snapshot"], runtime.id == box
+        return None
+
+    entries: list[dict[str, Any]] = []
+    snapshots: list[dict[str, Any]] = []
+    for order, (key, call) in enumerate(calls.calls.items()):
+        trace = call.trace
+        if call.interaction:
+            reason = "it is an interaction, which no checkpoint can continue"
+            return None, f"{call.seat} call {call.n}: {reason}"
+        entry: dict[str, Any] = {
+            "seat": call.seat,
+            "n": call.n,
+            "fingerprint": call.fingerprint,
+            "parent": None if call.parent is None else [*call.parent],
+            "order": order if call.finish_order is None else call.finish_order,
+            "state_class": call.state_class,
+        }
+        if trace is None:
+            if call.pending is not None:
+                # A continued call that waits for its turn still continues its saved trace.
+                entries.append(call.pending)
+                snapshot = restore_entry(call.pending["trace"])["snapshot"]
+                if all(s["id"] != snapshot["id"] for s in snapshots):
+                    snapshots.append(snapshot)
+            else:
+                # Its key stays taken, so later calls of its seat keep theirs.
+                entries.append({**entry, "state": "fresh"})
+            continue
+        if call.finished:
+            try:
+                state = TypeAdapter(type(trace.state)).dump_python(
+                    trace.state, mode="json"
+                )
+            except Exception:  # noqa: BLE001 - the state's values decide it
+                return (
+                    None,
+                    f"{call.seat} call {call.n}: its task state cannot be serialized",
+                )
+            entries.append(
+                {
+                    **entry,
+                    "state": "finished",
+                    "trace": trace.model_dump(context={"token_arrays": True}),
+                    "task_state": state,
+                }
+            )
+            continue
+        point = by_trace.get(trace.id)
+        # A call of its scoring that waits for its agent permit has left `memo` but
+        # holds its saved point until its trace is minted.
+        waiting = any(c["parent"] == [*key] for c in calls.memo.values()) or any(
+            c.parent == key and c.pending is not None for c in calls.calls.values()
+        )
+        if point is None and waiting and (continued := calls.consumed.get(key)):
+            # It continues its scoring from its saved point, and the calls of its
+            # scoring have not taken theirs yet: the point still holds.
+            point = continued["trace"]
+        if point is None and key in nested and (box := scoring_box(key, trace)):
+            try:
+                point = scoring_point(trace, box[0], own_box=box[1])
+            except Exception:  # noqa: BLE001 - the state's values decide it
+                reason = "its task state cannot be serialized"
+                return None, f"{call.seat} call {call.n}: {reason}"
+        if point is None:
+            if call.parent is not None or key in nested:
+                return (
+                    None,
+                    f"{call.seat} call {call.n}: it runs inside another run's scoring",
+                )
+            if trace.num_turns == 0:
+                entries.append({**entry, "state": "fresh"})
+                continue
+            return None, f"{call.seat} call {call.n}: {_skip_reason(trace.id)}"
+        entries.append({**entry, "state": "running", "trace": point})
+        snapshot = restore_entry(point)["snapshot"]
+        # A call in scoring continues from the snapshot its scoring's call took.
+        if all(s["id"] != snapshot["id"] for s in snapshots):
+            snapshots.append(snapshot)
+    # Saved calls the replay has not reached yet still continue later.
+    for unreached in calls.memo.values():
+        entries.append(unreached)
+        if unreached["state"] == "running":
+            snapshot = restore_entry(unreached["trace"])["snapshot"]
+            if all(s["id"] != snapshot["id"] for s in snapshots):
+                snapshots.append(snapshot)
+    point = {
+        "episode_point": EPISODE_POINT_VERSION,
+        "episode_id": slot.id,
+        "calls": entries,
+        "snapshots": snapshots,
+    }
+    return point, None
 
 
 def restorable(trace: Trace, checkpoint: Checkpoint) -> dict[str, Any]:

@@ -37,7 +37,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.restore import open_restore, restoring, unsaveable
+from verifiers.v1.restore import CallKey, EpisodeCalls, open_restore, unsaveable
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
@@ -82,6 +82,8 @@ _checkpointing_warned: set[tuple[str, str]] = set()
 _scoring_runs: ContextVar[list[tuple["_EpisodeAgent", Trace]] | None] = ContextVar(
     "scoring_runs", default=None
 )
+# The episode call whose scoring runs now, for the calls it makes.
+_scoring_call: ContextVar[CallKey | None] = ContextVar("scoring_call", default=None)
 
 
 def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
@@ -843,22 +845,20 @@ class Agent:
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         route: ModelRoute | None = None,
         restore: dict[str, Any] | None = None,
+        on_retry: Callable[[bool], None] | None = None,
     ) -> Trace:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         route = route or ModelRoute(self.ctx)
         retry = self.config.retries
         retry_state = RetryState(retry)
-        checkpointing = self._checkpointing() if runtime is None else None
+        checkpointing = self._checkpointing()
         trace_id = uuid.uuid4().hex  # one id for the run across its attempts
         history: list[Error] = []  # errors of the attempts started over from
         trace: Trace | None = None
         target: Checkpoint | None = None  # the checkpoint the next attempt restores
         first_attempt = 0  # the attempts the trace made before this run
         offered: str | None = None  # the checkpoint of the owner's saved trace
-        pending = restoring.get()
-        if restore is None and pending:
-            restore = pending.pop()
         if restore is not None:
             if checkpointing is None:
                 logger.warning(
@@ -866,6 +866,8 @@ class Agent:
                     "cannot continue from its saved trace",
                     restore.get("id"),
                 )
+                if on_retry is not None:
+                    on_retry(False)
             else:
                 trace, target = open_restore(restore, task)
                 offered = target.id
@@ -924,10 +926,13 @@ class Agent:
                         if c.pinned:
                             snapshots.pop(c.id, None)
                     deleted.update(run.deleted_snapshots)
+                    # A run that continues its scoring makes no turns: only a box that
+                    # never came back means its restore led nowhere.
                     if target is not None and (
                         any(error.stage == "setup" for error in trace.errors[seen:])
                         or (
                             not trace.ok
+                            and not run.resumes_scoring
                             and run.restored_turns is not None
                             and trace.num_turns <= run.restored_turns
                         )
@@ -955,6 +960,8 @@ class Agent:
                         target = None
                         attempt += 1
                         budget += 1
+                        if on_retry is not None:
+                            on_retry(False)
                         continue
                     if attempt >= budget:
                         break
@@ -982,6 +989,8 @@ class Agent:
                     )
                     if target is None:
                         history.extend(trace.errors)
+                    if on_retry is not None:
+                        on_retry(target is not None and target.id == offered)
                     delay = backoff(attempt)
                     logger.warning(
                         "Retrying rollout in %s (attempt %d/%d) from %s - %s: %s",
@@ -1054,7 +1063,8 @@ class Agent:
             **params,
         )
         try:
-            if await run.open():
+            # A run that continues its scoring goes straight to it.
+            if await run.open() and not run.resumes_scoring:
                 if handle is not None:
                     handle._active = run
                 try:
@@ -1234,6 +1244,7 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
+        calls: EpisodeCalls | None = None,
     ) -> None:
         super().__init__(config, interception=interception)
         # Resource warnings dedupe env-wide, not per episode.
@@ -1246,6 +1257,8 @@ class _EpisodeAgent(Agent):
         self._on_trace = on_trace
         self._on_discard = on_discard
         self._log_name = name
+        # Shared by every copy of this agent, as an env's per-call view of a seat.
+        self._calls = calls
 
     def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
         return self._shared_tools if isinstance(task, self._task_cls) else {}
@@ -1274,7 +1287,7 @@ class _EpisodeAgent(Agent):
 
         return watch
 
-    def _scoring_callback(self, callback):
+    def _scoring_callback(self, callback, key: CallKey | None = None):
         if callback is None:
             return None
 
@@ -1282,6 +1295,7 @@ class _EpisodeAgent(Agent):
             parent_runs = _scoring_runs.get()
             runs = []
             token = _scoring_runs.set(runs)
+            call_token = _scoring_call.set(key)
             # The solver is idle while an Env runs a judge. Release its permit
             # so a one-agent episode can enter the nested judge rollout.
             if self._gate is not None:
@@ -1290,6 +1304,7 @@ class _EpisodeAgent(Agent):
                 try:
                     await callback(trace, runtime)
                 finally:
+                    _scoring_call.reset(call_token)
                     _scoring_runs.reset(token)
                     if self._gate is not None:
                         await run_shielded(self._gate.acquire())
@@ -1308,6 +1323,9 @@ class _EpisodeAgent(Agent):
                 if parent_runs is not None:
                     parent_runs.extend(runs)
 
+        if self._calls is not None and key is not None:
+            calls = self._calls
+            score.retry_saved = lambda: calls.retry_nested(key, from_saved=True)
         return score
 
     async def _run(
@@ -1323,18 +1341,63 @@ class _EpisodeAgent(Agent):
         route: ModelRoute | None = None,
         restore: dict[str, Any] | None = None,
     ) -> Trace:
+        # Keyed before the first await: calls started together keep their order.
+        # A trace the caller hands over is continued as given, not replayed.
+        key, saved = (
+            self._calls.start(
+                self._name,
+                task,
+                _scoring_call.get(),
+                borrowed=runtime is not None,
+                replay=restore is None,
+            )
+            if self._calls is not None
+            else (None, None)
+        )
+        watch = self._watch(on_trace)
+        if saved is not None and saved["state"] == "finished":
+            assert self._calls is not None and key is not None
+            trace, nested = self._calls.replay(key, saved, task)
+            # The calls its scoring made join the episode before it, as they did.
+            for child in nested:
+                # A scoring that runs this call rolls its calls back if it fails.
+                if (runs := _scoring_runs.get()) is not None:
+                    runs.append((self, child))
+                self._completed.append(child)
+                if self._on_trace is not None:
+                    self._on_trace(child)
+            watch(trace)
+            self._completed.append(trace)
+            return trace
+
+        def record(trace: Trace) -> None:
+            if key is not None:
+                assert self._calls is not None
+                self._calls.minted(key, trace)
+            watch(trace)
+
         async with self._gate or nullcontext():
             trace = await super()._run(
                 handle,
                 task,
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
-                on_trace=self._watch(on_trace),
+                on_trace=record,
                 collect_artifacts=collect_artifacts,
-                on_score=self._scoring_callback(on_score),
+                on_score=self._scoring_callback(on_score, key),
                 route=route,
-                restore=restore,
+                restore=saved["trace"] if saved is not None else restore,
+                # The calls of its scoring continue with its saved snapshot, or
+                # run fresh when it starts over.
+                on_retry=(
+                    (lambda from_saved: self._calls.retry_nested(key, from_saved))
+                    if self._calls is not None and key is not None
+                    else None
+                ),
             )
+        if key is not None:
+            assert self._calls is not None
+            self._calls.finished(key, trace)
         self._completed.append(trace)
         return trace
 
@@ -1356,10 +1419,20 @@ class _EpisodeAgent(Agent):
         its caller, so peer interactions still interleave where an episode plays one
         agent at a time."""
         trace: Trace | None = None
+        key = (
+            self._calls.start(self._name, task, _scoring_call.get(), interaction=True)[
+                0
+            ]
+            if self._calls is not None
+            else None
+        )
 
         def remember(current: Trace) -> None:
             nonlocal trace
             trace = current
+            if key is not None:
+                assert self._calls is not None
+                self._calls.minted(key, current)
             if on_trace is not None:
                 on_trace(current)
 

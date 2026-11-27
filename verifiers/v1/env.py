@@ -31,7 +31,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.restore import restoring
+from verifiers.v1.restore import EpisodeCalls
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
@@ -70,8 +70,12 @@ class RunSlot:
     done: bool = False
     started: float | None = None
     restore: dict[str, Any] | None = None
-    """A rollout another process saved (`save_all`): the episode's first attempt
-    continues it instead of starting one."""
+    """What another process saved of this episode (`episode_restore_point`, or a single
+    rollout's saved trace): the episode's first attempt continues it instead of starting
+    over."""
+    calls: EpisodeCalls | None = None
+    """The agent calls of the attempt in flight, for an owner that saves the episode
+    (`episode_restore_point`)."""
 
 
 ConfigT = TypeVar("ConfigT", bound=EnvConfig)
@@ -199,11 +203,12 @@ class Env(ABC, Generic[ConfigT]):
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
+        calls: EpisodeCalls | None = None,
     ) -> Agents:
         """One episode's `Agents` — fresh value objects riding the live serving
         resources (nothing shared across concurrent episodes), sharing one semaphore
-        so the episode plays `--env.max-concurrent-agents` of them at a time;
-        `setup()` sees them first."""
+        so the episode plays `--env.max-concurrent-agents` of them at a time, and one
+        call log (`calls`); `setup()` sees them first."""
         limit = self.config.max_concurrent_agents
         gate = asyncio.Semaphore(limit) if limit else None
 
@@ -227,6 +232,7 @@ class Env(ABC, Generic[ConfigT]):
                 on_trace=on_trace,
                 on_discard=on_discard,
                 warned_resources=self._warned_resources,
+                calls=calls,
             )
 
         agents = Agents(self.config, make)
@@ -242,6 +248,7 @@ class Env(ABC, Generic[ConfigT]):
         episode_id: str | None = None,
         attempt: int = 1,
         restore: dict[str, Any] | None = None,
+        calls: EpisodeCalls | None = None,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`. Its agents run one at a time
@@ -251,24 +258,22 @@ class Env(ABC, Generic[ConfigT]):
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
         retry replaces it). `episode_id` and `attempt` place a retry under the
-        episode it repeats."""
+        episode it repeats. `restore` continues a saved episode (`RunSlot.restore`);
+        `calls` is the attempt's call log, made from `restore` when not given."""
         episode = Episode(
             **({"id": episode_id} if episode_id is not None else {}),
             attempt=attempt,
             env=EnvInfo(id=self.config.env_id),
             task=TraceTask.from_task(task),
         )
-        agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
+        calls = EpisodeCalls.continuing(restore) if calls is None else calls
+        agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard, calls)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
                     await self.setup(agents)
                 async with boundary(EnvError, f"{type(self).__name__}.run()"):
-                    token = restoring.set([restore] if restore is not None else None)
-                    try:
-                        await self.run(task, agents)
-                    finally:
-                        restoring.reset(token)
+                    await self.run(task, agents)
                     if not episode.traces:
                         raise ValueError(
                             f"{type(self).__name__}.run() ran no agent — every "
@@ -358,16 +363,28 @@ class Env(ABC, Generic[ConfigT]):
                         data.idx,
                         "".join(f" {k}={v}" for k, v in optional if v is not None),
                     )
-                return await self.run_episode(
-                    slot.task,
-                    ctx,
-                    on_trace=minted,
-                    on_discard=discard,
-                    episode_id=slot.id,
-                    attempt=attempts,
-                    # A retry of the episode starts over.
-                    restore=slot.restore if attempts == 1 else None,
-                )
+                # A retry of the episode starts over.
+                restore = slot.restore if attempts == 1 else None
+                while True:
+                    slot.calls = EpisodeCalls.continuing(restore)
+                    episode = await self.run_episode(
+                        slot.task,
+                        ctx,
+                        on_trace=minted,
+                        on_discard=discard,
+                        episode_id=slot.id,
+                        attempt=attempts,
+                        calls=slot.calls,
+                    )
+                    if restore is None or slot.calls.diverged is None:
+                        return episode
+                    # The env's program took another path than in the saved
+                    # episode: it starts over, and keeps its retries. Calls the
+                    # program started beside the diverged one may still run.
+                    logger.warning("Starting episode over: %s", slot.calls.diverged)
+                    await slot.calls.cancel_running()
+                    restore = None
+                    live.clear()
 
         started: float | None = None
         with scope(episode=short_id(slot.id)):

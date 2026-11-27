@@ -2,9 +2,11 @@
 
 import asyncio
 import copy
+import json
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import PurePosixPath
+from typing import Any
 
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import TaskError, boundary
@@ -26,6 +28,37 @@ from verifiers.v1.utils.retries import RetryState, backoff
 
 logger = get_logger(__name__)
 _SCORING_INFO_KEYS = ("judge_calls", "scoring_diagnostics")
+_grading: dict[int, tuple[Trace, Task, Task]] = {}
+"""What a running `grade_task` grades, by the id of the trace it grades: the staged
+copy of the trace, the grader task staging prepared, and the task it was copied from."""
+
+
+def grading_copy(trace: Trace) -> Trace | None:
+    """The staged copy of `trace` that its isolated grading works on now, if any: what
+    a save of its scoring must keep, since a restored grading box is not staged again."""
+    grading = _grading.get(id(trace))
+    return grading[0] if grading is not None else None
+
+
+def staged_task_state(trace: Trace) -> dict[str, Any]:
+    """What staging set on the grader task of `trace`'s running grading, besides the
+    task it copied (for example Harbor's `verifier_staged`), as JSON values."""
+    grading = _grading.get(id(trace))
+    if grading is None:
+        return {}
+    _, grader, task = grading
+    changed = {}
+    for name, value in vars(grader).items():
+        if name in vars(task) and vars(task)[name] == value:
+            continue
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            continue
+        changed[name] = value
+    return changed
+
+
 """Accounting and diagnostics survive failed scoring attempts, unlike partial scores."""
 
 
@@ -218,7 +251,15 @@ async def grade_task(
     scoring_elapsed: float = 0.0,
     on_score=None,
     interception=None,
+    staged: bool = False,
+    staged_state: dict | None = None,
+    staged_task: dict | None = None,
+    on_retry=None,
 ) -> None:
+    """`staged`: `config` restores a verifier box that was already staged (a rollout
+    that continues its scoring), which staging again would undo. `staged_state` is the
+    state staging gave the graded copy then (`grading_copy`), and `staged_task` what it
+    set on the grader task (`staged_task_state`). `on_retry` runs before each retry."""
     await deployment.prepare_verifier()
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
     # Setup may have an additional, stricter limit; retries do not reset scoring.
@@ -230,6 +271,8 @@ async def grade_task(
     retry = RetryState(policy.retries)
     for attempt in range(retry.max_retries + 1):
         if attempt:
+            if on_retry is not None:
+                on_retry()
             async with asyncio.timeout_at(deadline):
                 await asyncio.sleep(backoff(attempt - 1))
         try:
@@ -250,7 +293,16 @@ async def grade_task(
                     )
                     runtime = bind_scoring_env(runtime, policy)
                     await runtime.backend.prepare_setup()
-                    await stage_verifier(grader, result, runtime)
+                    if not staged:
+                        await stage_verifier(grader, result, runtime)
+                    else:
+                        if staged_state is not None:
+                            result.state = type(result.state).model_validate(
+                                staged_state
+                            )
+                        for name, value in (staged_task or {}).items():
+                            setattr(grader, name, value)
+                _grading[id(trace)] = (result, grader, task)
                 try:
                     async with (
                         asyncio.timeout_at(deadline),
@@ -269,6 +321,7 @@ async def grade_task(
                         if on_score is not None:
                             await on_score(result, scoring_runtime)
                 finally:
+                    _grading.pop(id(trace), None)
                     # Preserve failed attempts' evidence and accounting without
                     # committing partial rewards/state.
                     trace.extra_usage = result.extra_usage

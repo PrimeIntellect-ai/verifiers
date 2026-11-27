@@ -329,6 +329,11 @@ class RuntimeBackend(ABC):
         return []
 
     @classmethod
+    async def wait_restorable(cls, snapshot: Snapshot) -> None:
+        """Wait until a new box can continue `snapshot`, without a box of this kind:
+        for a restore whose box is made later, under a stricter budget."""
+
+    @classmethod
     def restore_config(cls, config: Any, snapshot: Snapshot) -> Any:
         """The runtime config for a new box that continues `snapshot` instead of
         booting the task's image."""

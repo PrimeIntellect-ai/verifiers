@@ -35,6 +35,7 @@ async def test_agent_retries_keep_the_trace_id(monkeypatch):
 
     class FakeRollout:
         runtime = None
+        resumes_scoring = False
 
         def __init__(self, *, on_trace, trace_id, attempt, **_):
             self.rewound_snapshots: list[str] = []
@@ -75,6 +76,7 @@ async def test_a_restore_that_leads_nowhere_is_not_picked_again(monkeypatch):
 
     class FakeRollout:
         runtime = None
+        resumes_scoring = False
 
         def __init__(self, *, on_trace, trace_id, attempt, restore=None, **_):
             restores.append(None if restore is None else restore[1].id)

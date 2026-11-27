@@ -110,6 +110,23 @@ async def _release_client(client: Any) -> None:
             await client.aclose()
 
 
+async def _wait_durable(client: Any, checkpoint_id: str) -> Any:
+    deadline = time.monotonic() + _CHECKPOINT_DURABLE_SECONDS
+    while True:
+        try:
+            return await client.wait_for_checkpoint(
+                checkpoint_id,
+                timeout_seconds=max(1.0, deadline - time.monotonic()),
+            )
+        except Exception as e:
+            # The SDK gives up on a rate-limited lookup while the upload goes on.
+            # Spread the next waits out: thousands of boxes wait at once.
+            if "HTTP 429" in str(e) and time.monotonic() < deadline:
+                await asyncio.sleep(random.uniform(5, 15))
+                continue
+            raise SandboxError(f"prime checkpoint {checkpoint_id}: {e}") from e
+
+
 @asynccontextmanager
 async def leased_client() -> AsyncIterator[Any]:
     """This event loop's shared client, for calls that belong to no one sandbox, such as
@@ -463,20 +480,12 @@ class PrimeBackend(RuntimeBackend):
     async def _wait_durable(self, checkpoint_id: str) -> Any:
         """The checkpoint once it is DURABLE, the only state a box on another node can
         restore from."""
-        deadline = time.monotonic() + _CHECKPOINT_DURABLE_SECONDS
-        while True:
-            try:
-                return await self._client.wait_for_checkpoint(
-                    checkpoint_id,
-                    timeout_seconds=max(1.0, deadline - time.monotonic()),
-                )
-            except Exception as e:
-                # The SDK gives up on a rate-limited lookup while the upload goes on.
-                # Spread the next waits out: thousands of boxes wait at once.
-                if "HTTP 429" in str(e) and time.monotonic() < deadline:
-                    await asyncio.sleep(random.uniform(5, 15))
-                    continue
-                raise SandboxError(f"prime checkpoint {checkpoint_id}: {e}") from e
+        return await _wait_durable(self._client, checkpoint_id)
+
+    @classmethod
+    async def wait_restorable(cls, snapshot: Snapshot) -> None:
+        async with leased_client() as client:
+            await _wait_durable(client, snapshot.id)
 
     async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
         started = time.monotonic()
