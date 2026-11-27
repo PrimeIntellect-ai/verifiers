@@ -124,8 +124,11 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         raise SystemExit(130)
     traces = [trace for episode in episodes for trace in episode.traces]
+    kept = [trace for trace in traces if not trace.is_dropped]
     ok = sum(episode.ok for episode in episodes)
-    reward = sum(trace.reward for trace in traces) / len(traces) if traces else 0.0
-    print(f"{ok}/{len(episodes)} episodes ok, mean reward {reward:.3f}: {out}")
+    reward = f"{sum(trace.reward for trace in kept) / len(kept):.3f}" if kept else "n/a"
+    if dropped := len(traces) - len(kept):
+        reward += f" ({dropped}/{len(traces)} traces dropped)"
+    print(f"{ok}/{len(episodes)} episodes ok, mean reward {reward}: {out}")
     if ok < len(episodes):
         raise SystemExit(1)
