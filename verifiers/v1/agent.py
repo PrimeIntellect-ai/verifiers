@@ -845,6 +845,7 @@ class Agent:
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         route: ModelRoute | None = None,
         restore: dict[str, Any] | None = None,
+        on_start_over: Callable[[], None] | None = None,
     ) -> Trace:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
@@ -954,6 +955,8 @@ class Agent:
                         target = None
                         attempt += 1
                         budget += 1
+                        if on_start_over is not None:
+                            on_start_over()
                         continue
                     if attempt >= budget:
                         break
@@ -1364,6 +1367,12 @@ class _EpisodeAgent(Agent):
                 on_score=self._scoring_callback(on_score, key),
                 route=route,
                 restore=saved["trace"] if saved is not None else restore,
+                # The calls its scoring made belong to the run it no longer continues.
+                on_start_over=(
+                    (lambda: self._calls.forget_nested(key))
+                    if self._calls is not None and key is not None
+                    else None
+                ),
             )
         if key is not None:
             assert self._calls is not None

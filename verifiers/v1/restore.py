@@ -140,6 +140,14 @@ class EpisodeCalls:
             raise ReplayDiverged(self.diverged)
         return key, saved
 
+    def forget_nested(self, key: CallKey) -> None:
+        """Drop the saved calls made inside `key`'s scoring, and theirs: `key` starts
+        over instead of continuing, so they run fresh."""
+        nested = [k for k, c in self.memo.items() if c["parent"] == [*key]]
+        for child in nested:
+            del self.memo[child]
+            self.forget_nested(child)
+
     def minted(self, key: CallKey, trace: Trace) -> None:
         self.calls[key].trace = trace
 

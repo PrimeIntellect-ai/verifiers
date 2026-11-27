@@ -331,3 +331,47 @@ def test_a_run_in_scoring_continues_from_the_box_its_judge_saved():
     (checkpoint,) = solver_entry["trace"]["checkpoints"]
     assert checkpoint["session"]["box"] == "grading"
     assert checkpoint["snapshot"] == {"id": f"s-{judge.id}"}
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_starts_over_runs_the_calls_of_its_scoring_fresh(monkeypatch):
+    """The solver's restore led nowhere and it starts over in a new box: its judge's
+    saved call belongs to the box it no longer continues, so the judge runs fresh."""
+    calls = EpisodeCalls()
+    calls.start("solver", task("solve"), None)
+    calls.start("judge", task("judge solve"), ("solver", 0))
+    calls.start("helper", task("help"), ("judge", 0))
+    for key in [("solver", 0), ("judge", 0), ("helper", 0)]:
+        calls.minted(key, in_box(new_trace(key[0]), "box-1"))
+    saved = [saved_trace(calls.calls[k].trace) for k in [("judge", 0), ("helper", 0)]]
+    point, reason = episode_restore_point(SimpleNamespace(id="e1", calls=calls), saved)
+    assert reason is None
+
+    started: list[tuple[str, bool]] = []
+
+    async def run(
+        self,
+        handle,
+        task,
+        *,
+        on_trace=None,
+        on_score=None,
+        restore=None,
+        on_start_over=None,
+        **_,
+    ):
+        started.append((self._name, restore is not None))
+        if restore is not None and self._name == "solver":
+            on_start_over()  # its snapshot is gone: the solver starts over
+        trace = new_trace(task.data.prompt_text)
+        on_trace(trace)
+        if on_score is not None:
+            await on_score(trace, None)
+        trace.ok = True
+        return trace
+
+    monkeypatch.setattr(Agent, "_run", run)
+    calls = EpisodeCalls.continuing(pickle.loads(pickle.dumps(point)))
+    await judged(agents(calls, [], "solver", "judge"))
+    assert started == [("solver", True), ("judge", False)]
+    assert calls.memo == {}
