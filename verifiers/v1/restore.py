@@ -142,6 +142,8 @@ class EpisodeCalls:
         Raises `ReplayDiverged` when the saved call was asked to do something else. An
         `interaction` is keyed and recorded, but never saved, so it replays nothing;
         nor does a call that continues a trace its caller gave it (`replay=False`)."""
+        while (seat, self.counts[seat]) in self.calls:
+            self.counts[seat] += 1
         key = (seat, self.counts[seat])
         self.counts[seat] += 1
         state = state_cls(type(task))
@@ -250,7 +252,13 @@ class EpisodeCalls:
         nested: list[Trace] = []
         for child in sorted(subtree, key=lambda c: c["order"]):
             child_key = (child["seat"], child["n"])
-            self.counts[child["seat"]] = max(self.counts[child["seat"]], child["n"] + 1)
+            # An earlier saved call of the seat that has not started keeps its key.
+            if not any(
+                seat == child["seat"] and n < child["n"] for seat, n in self.memo
+            ):
+                self.counts[child["seat"]] = max(
+                    self.counts[child["seat"]], child["n"] + 1
+                )
             trace = _finished_trace(child, _state_class(child))
             self.calls[child_key] = _Call(
                 child["seat"],
@@ -420,6 +428,11 @@ def episode_restore_point(
             )
             continue
         point = by_trace.get(trace.id)
+        waiting = any(c["parent"] == [*key] for c in calls.memo.values())
+        if point is None and waiting and (continued := calls.consumed.get(key)):
+            # It continues its scoring from its saved point, and the calls of its
+            # scoring have not taken theirs yet: the point still holds.
+            point = continued["trace"]
         if point is None and key in nested and (box := scoring_box(key, trace)):
             try:
                 point = scoring_point(trace, box[0], own_box=box[1])

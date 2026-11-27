@@ -1323,6 +1323,9 @@ class _EpisodeAgent(Agent):
                 if parent_runs is not None:
                     parent_runs.extend(runs)
 
+        if self._calls is not None and key is not None:
+            calls = self._calls
+            score.retry_saved = lambda: calls.retry_nested(key, from_saved=True)
         return score
 
     async def _run(

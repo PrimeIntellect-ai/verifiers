@@ -1743,6 +1743,14 @@ class Rollout:
                                     staged=self._grading_box is not None,
                                     staged_state=self._grading_state,
                                     staged_task=self._grading_task,
+                                    # Each attempt restores the same grading box: the
+                                    # calls of its scoring continue from their saved
+                                    # points again.
+                                    on_retry=getattr(
+                                        self._on_score, "retry_saved", None
+                                    )
+                                    if self._grading_box is not None
+                                    else None,
                                 )
                             except TimeoutError:
                                 self.timeout("scoring")

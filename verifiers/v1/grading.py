@@ -254,11 +254,12 @@ async def grade_task(
     staged: bool = False,
     staged_state: dict | None = None,
     staged_task: dict | None = None,
+    on_retry=None,
 ) -> None:
     """`staged`: `config` restores a verifier box that was already staged (a rollout
     that continues its scoring), which staging again would undo. `staged_state` is the
     state staging gave the graded copy then (`grading_copy`), and `staged_task` what it
-    set on the grader task (`staged_task_state`)."""
+    set on the grader task (`staged_task_state`). `on_retry` runs before each retry."""
     await deployment.prepare_verifier()
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
     # Setup may have an additional, stricter limit; retries do not reset scoring.
@@ -270,6 +271,8 @@ async def grade_task(
     retry = RetryState(policy.retries)
     for attempt in range(retry.max_retries + 1):
         if attempt:
+            if on_retry is not None:
+                on_retry()
             async with asyncio.timeout_at(deadline):
                 await asyncio.sleep(backoff(attempt - 1))
         try:

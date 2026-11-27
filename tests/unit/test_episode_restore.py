@@ -573,3 +573,40 @@ def test_a_scoring_retry_keeps_the_keys_other_calls_hold():
     calls.start("judge", task("other"), ("solver", 1))
     calls.retry_nested(("solver", 0), from_saved=True)
     assert calls.counts["judge"] == 2 and ("judge", 1) in calls.calls
+
+
+def test_a_save_while_a_continued_run_restores_its_scoring_box_keeps_the_point():
+    """The solver's scoring-stage trace is minted while its box restores, before its
+    judge took its saved point: a save then still holds both."""
+    point = scoring_episode()
+    calls = EpisodeCalls.continuing(point)
+    key, saved = calls.start("solver", task("solve"), None)
+    calls.minted(key, vf.Trace.model_validate(saved["trace"]))
+    again, reason = episode_restore_point(SimpleNamespace(id="e1", calls=calls), [])
+    assert reason is None
+    assert sorted((c["seat"], c["n"]) for c in again["calls"]) == [
+        ("judge", 0),
+        ("solver", 0),
+    ]
+    assert again["snapshots"] == point["snapshots"]
+
+
+def test_a_grading_retry_offers_the_nested_saved_calls_again():
+    calls = EpisodeCalls.continuing(scoring_episode())
+    seats = agents(calls, [], "solver", "judge")
+    calls.start("solver", task("solve"), None)
+
+    async def judge(solution, runtime):
+        pass
+
+    score = seats["solver"]._scoring_callback(judge, ("solver", 0))
+    key, saved = calls.start("judge", task("judge"), ("solver", 0))
+    assert saved is not None and key not in calls.memo
+    score.retry_saved()
+    assert calls.memo[key] == saved
+
+
+def test_a_new_call_skips_keys_a_replayed_call_took():
+    calls = EpisodeCalls()
+    calls.calls[("judge", 0)] = SimpleNamespace(parent=None)
+    assert calls.start("judge", task("x"), None)[0] == ("judge", 1)
