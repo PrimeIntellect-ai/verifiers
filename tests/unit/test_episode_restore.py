@@ -357,12 +357,12 @@ async def test_a_call_that_starts_over_runs_the_calls_of_its_scoring_fresh(monke
         on_trace=None,
         on_score=None,
         restore=None,
-        on_start_over=None,
+        on_retry=None,
         **_,
     ):
         started.append((self._name, restore is not None))
         if restore is not None and self._name == "solver":
-            on_start_over()  # its snapshot is gone: the solver starts over
+            on_retry(False)  # its snapshot is gone: the solver starts over
         trace = new_trace(task.data.prompt_text)
         on_trace(trace)
         if on_score is not None:
@@ -466,3 +466,73 @@ def test_a_scoring_point_keeps_the_outcome_a_rewind_clears_and_needs_a_borrowed_
         SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
     )
     assert point is None and "inside another run's scoring" in reason
+
+
+def scoring_episode():
+    """A solver in scoring whose judge runs in the solver's box, saved."""
+    calls = EpisodeCalls()
+    calls.start("solver", task("solve"), None)
+    calls.start("judge", task("judge"), ("solver", 0), borrowed=True)
+    solver = in_box(new_trace("solve"), "box-1")
+    judge = in_box(new_trace("judge"), "box-1")
+    calls.minted(("solver", 0), solver)
+    calls.minted(("judge", 0), judge)
+    point, _ = episode_restore_point(
+        SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
+    )
+    return point
+
+
+def test_a_scoring_retry_from_the_saved_snapshot_offers_its_nested_calls_again():
+    calls = EpisodeCalls.continuing(scoring_episode())
+    calls.start("solver", task("solve"), None)
+    key, first = calls.start("judge", task("judge"), ("solver", 0))
+    assert first is not None
+    # The solver's scoring failed and retries from the same snapshot: so does the judge.
+    calls.retry_nested(("solver", 0), from_saved=True)
+    assert calls.start("judge", task("judge"), ("solver", 0)) == (key, first)
+    # The solver starts over in a new box: the judge runs fresh.
+    calls.retry_nested(("solver", 0), from_saved=False)
+    assert calls.start("judge", task("judge"), ("solver", 0))[1] is None
+
+
+def test_saved_calls_the_replay_has_not_reached_stay_in_a_later_save():
+    point = scoring_episode()
+    calls = EpisodeCalls.continuing(point)
+    again, reason = episode_restore_point(SimpleNamespace(id="e1", calls=calls), [])
+    assert reason is None
+    assert sorted((c["seat"], c["n"]) for c in again["calls"]) == [
+        ("judge", 0),
+        ("solver", 0),
+    ]
+    assert again["snapshots"] == point["snapshots"]
+
+
+def test_a_trace_the_caller_hands_over_is_logged_but_not_replayed():
+    calls = EpisodeCalls.continuing(scoring_episode())
+    key, saved = calls.start("solver", task("solve"), None, replay=False)
+    assert key == ("solver", 0) and saved is None and ("solver", 0) in calls.memo
+
+
+def test_an_isolated_scoring_point_keeps_the_state_grading_staged():
+    from verifiers.v1 import grading
+
+    calls = EpisodeCalls()
+    calls.start("solver", task("solve"), None)
+    calls.start("judge", task("judge"), ("solver", 0), borrowed=True)
+    solver = in_box(new_trace("solve"), "box-1")
+    judge = in_box(new_trace("judge"), "grading-box")
+    calls.minted(("solver", 0), solver)
+    calls.minted(("judge", 0), judge)
+    staged = solver.model_copy(deep=True)
+    staged.state.artifacts = {"/app/answer.txt": b"42"}
+    grading._grading[id(solver)] = staged
+    try:
+        point, _ = episode_restore_point(
+            SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
+        )
+    finally:
+        grading._grading.pop(id(solver))
+    (entry,) = [c for c in point["calls"] if c["seat"] == "solver"]
+    session = entry["trace"]["checkpoints"][0]["session"]
+    assert session["box"] == "grading" and session["grading_state"]["artifacts"]

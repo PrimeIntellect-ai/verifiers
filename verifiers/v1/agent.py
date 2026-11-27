@@ -845,7 +845,7 @@ class Agent:
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         route: ModelRoute | None = None,
         restore: dict[str, Any] | None = None,
-        on_start_over: Callable[[], None] | None = None,
+        on_retry: Callable[[bool], None] | None = None,
     ) -> Trace:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
@@ -866,8 +866,8 @@ class Agent:
                     "cannot continue from its saved trace",
                     restore.get("id"),
                 )
-                if on_start_over is not None:
-                    on_start_over()
+                if on_retry is not None:
+                    on_retry(False)
             else:
                 trace, target = open_restore(restore, task)
                 offered = target.id
@@ -960,8 +960,8 @@ class Agent:
                         target = None
                         attempt += 1
                         budget += 1
-                        if on_start_over is not None:
-                            on_start_over()
+                        if on_retry is not None:
+                            on_retry(False)
                         continue
                     if attempt >= budget:
                         break
@@ -989,6 +989,8 @@ class Agent:
                     )
                     if target is None:
                         history.extend(trace.errors)
+                    if on_retry is not None:
+                        on_retry(target is not None and target.id == offered)
                     delay = backoff(attempt)
                     logger.warning(
                         "Retrying rollout in %s (attempt %d/%d) from %s - %s: %s",
@@ -1337,11 +1339,16 @@ class _EpisodeAgent(Agent):
         restore: dict[str, Any] | None = None,
     ) -> Trace:
         # Keyed before the first await: calls started together keep their order.
+        # A trace the caller hands over is continued as given, not replayed.
         key, saved = (
             self._calls.start(
-                self._name, task, _scoring_call.get(), borrowed=runtime is not None
+                self._name,
+                task,
+                _scoring_call.get(),
+                borrowed=runtime is not None,
+                replay=restore is None,
             )
-            if self._calls is not None and restore is None
+            if self._calls is not None
             else (None, None)
         )
         watch = self._watch(on_trace)
@@ -1377,9 +1384,10 @@ class _EpisodeAgent(Agent):
                 on_score=self._scoring_callback(on_score, key),
                 route=route,
                 restore=saved["trace"] if saved is not None else restore,
-                # The calls its scoring made belong to the run it no longer continues.
-                on_start_over=(
-                    (lambda: self._calls.forget_nested(key))
+                # The calls of its scoring continue with its saved snapshot, or
+                # run fresh when it starts over.
+                on_retry=(
+                    (lambda from_saved: self._calls.retry_nested(key, from_saved))
                     if self._calls is not None and key is not None
                     else None
                 ),

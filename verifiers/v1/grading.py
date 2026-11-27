@@ -26,6 +26,16 @@ from verifiers.v1.utils.retries import RetryState, backoff
 
 logger = get_logger(__name__)
 _SCORING_INFO_KEYS = ("judge_calls", "scoring_diagnostics")
+_grading: dict[int, Trace] = {}
+"""The copy a running `grade_task` grades, by the id of the trace it grades."""
+
+
+def grading_copy(trace: Trace) -> Trace | None:
+    """The staged copy of `trace` that its isolated grading works on now, if any: what
+    a save of its scoring must keep, since a restored grading box is not staged again."""
+    return _grading.get(id(trace))
+
+
 """Accounting and diagnostics survive failed scoring attempts, unlike partial scores."""
 
 
@@ -219,9 +229,11 @@ async def grade_task(
     on_score=None,
     interception=None,
     staged: bool = False,
+    staged_state: dict | None = None,
 ) -> None:
     """`staged`: `config` restores a verifier box that was already staged (a rollout
-    that continues its scoring), which staging again would undo."""
+    that continues its scoring), which staging again would undo. `staged_state` is the
+    state staging gave the graded copy then (`grading_copy`)."""
     await deployment.prepare_verifier()
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
     # Setup may have an additional, stricter limit; retries do not reset scoring.
@@ -255,6 +267,9 @@ async def grade_task(
                     await runtime.backend.prepare_setup()
                     if not staged:
                         await stage_verifier(grader, result, runtime)
+                    elif staged_state is not None:
+                        result.state = type(result.state).model_validate(staged_state)
+                _grading[id(trace)] = result
                 try:
                     async with (
                         asyncio.timeout_at(deadline),
@@ -273,6 +288,7 @@ async def grade_task(
                         if on_score is not None:
                             await on_score(result, scoring_runtime)
                 finally:
+                    _grading.pop(id(trace), None)
                     # Preserve failed attempts' evidence and accounting without
                     # committing partial rewards/state.
                     trace.extra_usage = result.extra_usage
