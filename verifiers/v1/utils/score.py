@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, Overflow, localcontext
 from typing import TYPE_CHECKING
 
 from math_verify import parse, verify
@@ -144,10 +144,15 @@ def compare_stdout_results(
         return False
 
     limit = Decimal(str(tolerance))
-    return all(
-        abs(actual - expected) <= limit
-        for actual, expected in zip(actual_numbers, expected_numbers)
-    )
+    try:
+        with localcontext():
+            return all(
+                abs(actual - expected) <= limit
+                for actual, expected in zip(actual_numbers, expected_numbers)
+            )
+    except Overflow:
+        # Finite tokens can still exceed the context's range when subtracted.
+        return False
 
 
 def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
