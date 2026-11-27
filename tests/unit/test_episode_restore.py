@@ -201,7 +201,10 @@ def test_a_running_call_without_a_saved_trace_runs_fresh_only_before_its_first_t
     calls.start("a", task("x"), None)
     calls.minted(("a", 0), SimpleNamespace(id="t-a", num_turns=0))
     point, reason = episode_restore_point(SimpleNamespace(id="e1", calls=calls), [])
-    assert reason is None and point["calls"] == []
+    assert reason is None
+    assert [(c["seat"], c["n"], c["state"]) for c in point["calls"]] == [
+        ("a", 0, "fresh")
+    ]
 
     calls.calls[("a", 0)].trace = SimpleNamespace(id="t-a", num_turns=2)
     point, reason = episode_restore_point(SimpleNamespace(id="e1", calls=calls), [])
@@ -607,6 +610,24 @@ def test_a_grading_retry_offers_the_nested_saved_calls_again():
     assert saved is not None and key not in calls.memo
     score.retry_saved()
     assert calls.memo[key] == saved
+
+
+def test_a_call_that_runs_fresh_keeps_its_key_for_later_calls_of_its_seat():
+    """Call 0 had not started its trace at the save, call 1 had. On replay, call 0
+    runs fresh under its own key and call 1 still finds its saved point."""
+    calls = EpisodeCalls()
+    calls.start("a", task("x"), None)
+    calls.start("a", task("y"), None)
+    point, reason = episode_restore_point(SimpleNamespace(id="e1", calls=calls), [])
+    assert reason is None
+    later = {**point["calls"][1], "state": "running", "trace": {}}
+    calls = EpisodeCalls.continuing({**point, "calls": [point["calls"][0], later]})
+    assert calls.start("a", task("x"), None) == (("a", 0), None)
+    assert calls.start("a", task("y"), None) == (("a", 1), later)
+
+    calls = EpisodeCalls.continuing(point)
+    with pytest.raises(ReplayDiverged):
+        calls.start("a", task("y"), None)
 
 
 def test_a_new_call_skips_keys_a_replayed_call_took():

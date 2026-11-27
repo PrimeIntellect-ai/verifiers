@@ -174,6 +174,8 @@ class EpisodeCalls:
                 f"{seat} call {key[1]} was asked for another task than at the save"
             )
             raise ReplayDiverged(self.diverged)
+        if saved["state"] == "fresh":
+            return key, None
         call.pending = saved
         self.consumed[key] = saved
         return key, saved
@@ -411,14 +413,6 @@ def episode_restore_point(
         if call.interaction:
             reason = "it is an interaction, which no checkpoint can continue"
             return None, f"{call.seat} call {call.n}: {reason}"
-        if trace is None:
-            if call.pending is not None:
-                # A continued call that waits for its turn still continues its saved trace.
-                entries.append(call.pending)
-                snapshot = restore_entry(call.pending["trace"])["snapshot"]
-                if all(s["id"] != snapshot["id"] for s in snapshots):
-                    snapshots.append(snapshot)
-            continue
         entry: dict[str, Any] = {
             "seat": call.seat,
             "n": call.n,
@@ -427,6 +421,17 @@ def episode_restore_point(
             "order": order if call.finish_order is None else call.finish_order,
             "state_class": call.state_class,
         }
+        if trace is None:
+            if call.pending is not None:
+                # A continued call that waits for its turn still continues its saved trace.
+                entries.append(call.pending)
+                snapshot = restore_entry(call.pending["trace"])["snapshot"]
+                if all(s["id"] != snapshot["id"] for s in snapshots):
+                    snapshots.append(snapshot)
+            else:
+                # Its key stays taken, so later calls of its seat keep theirs.
+                entries.append({**entry, "state": "fresh"})
+            continue
         if call.finished:
             try:
                 state = TypeAdapter(type(trace.state)).dump_python(
@@ -469,6 +474,7 @@ def episode_restore_point(
                     f"{call.seat} call {call.n}: it runs inside another run's scoring",
                 )
             if trace.num_turns == 0:
+                entries.append({**entry, "state": "fresh"})
                 continue
             return None, f"{call.seat} call {call.n}: {_skip_reason(trace.id)}"
         entries.append({**entry, "state": "running", "trace": point})
