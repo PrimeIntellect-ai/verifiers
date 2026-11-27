@@ -526,7 +526,9 @@ def test_an_isolated_scoring_point_keeps_the_state_grading_staged():
     calls.minted(("judge", 0), judge)
     staged = solver.model_copy(deep=True)
     staged.state.artifacts = {"/app/answer.txt": b"42"}
-    grading._grading[id(solver)] = staged
+    grader, original = task("solve"), task("solve")
+    grader.verifier_staged = True
+    grading._grading[id(solver)] = (staged, grader, original)
     try:
         point, _ = episode_restore_point(
             SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
@@ -536,3 +538,38 @@ def test_an_isolated_scoring_point_keeps_the_state_grading_staged():
     (entry,) = [c for c in point["calls"] if c["seat"] == "solver"]
     session = entry["trace"]["checkpoints"][0]["session"]
     assert session["box"] == "grading" and session["grading_state"]["artifacts"]
+    # What staging set on the grader task, which a restored grading box gets back.
+    assert session["grading_task"] == {"verifier_staged": True}
+
+
+def test_a_scoring_retry_offers_again_the_nested_calls_not_reached_or_replayed():
+    calls = EpisodeCalls()
+    calls.start("solver", task("solve"), None)
+    finished_call(calls, "helper", "help", ("solver", 0))
+    calls.start("judge", task("judge"), ("solver", 0), borrowed=True)
+    solver = in_box(new_trace("solve"), "box-1")
+    judge = in_box(new_trace("judge"), "box-1")
+    calls.minted(("solver", 0), solver)
+    calls.minted(("judge", 0), judge)
+    point, _ = episode_restore_point(
+        SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
+    )
+
+    calls = EpisodeCalls.continuing(point)
+    calls.start("solver", task("solve"), None)
+    # The scoring replays the finished helper, fails before the judge starts, and
+    # retries from the saved snapshot: both are offered again.
+    key, saved = calls.start("helper", task("help"), ("solver", 0))
+    calls.replay(key, saved, task("help"))
+    calls.retry_nested(("solver", 0), from_saved=True)
+    assert sorted(calls.memo) == [("helper", 0), ("judge", 0)]
+
+
+def test_a_scoring_retry_keeps_the_keys_other_calls_hold():
+    calls = EpisodeCalls.continuing(scoring_episode())
+    calls.start("solver", task("solve"), None)
+    calls.start("judge", task("judge"), ("solver", 0))
+    # Another solver's judge took the next judge key meanwhile.
+    calls.start("judge", task("other"), ("solver", 1))
+    calls.retry_nested(("solver", 0), from_saved=True)
+    assert calls.counts["judge"] == 2 and ("judge", 1) in calls.calls

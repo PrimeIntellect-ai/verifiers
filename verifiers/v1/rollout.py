@@ -226,6 +226,7 @@ class Rollout:
         self._grading_box: Snapshot | None = None
         """With isolated scoring, the grading box to restore instead of making one."""
         self._grading_state: dict | None = None
+        self._grading_task: dict | None = None
         if restore is not None:
             self.trace, self._restore = restore
             self.trace.attempt = attempt
@@ -250,6 +251,7 @@ class Rollout:
                 if session["box"] == "grading":
                     self._grading_box = self._restore.snapshot
                     self._grading_state = session["grading_state"]
+                    self._grading_task = session["grading_task"]
         else:
             self.trace = Trace(
                 **({"id": trace_id} if trace_id is not None else {}),
@@ -1740,6 +1742,7 @@ class Rollout:
                                     interception=self._interception,
                                     staged=self._grading_box is not None,
                                     staged_state=self._grading_state,
+                                    staged_task=self._grading_task,
                                 )
                             except TimeoutError:
                                 self.timeout("scoring")

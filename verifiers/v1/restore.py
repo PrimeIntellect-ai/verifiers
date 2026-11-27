@@ -183,12 +183,20 @@ class EpisodeCalls:
         they run fresh."""
         nested = self._nested(key)
         for child in nested:
+            # A saved call no attempt reached yet is still in `memo`.
+            saved = self.consumed.pop(child, None) or self.memo.get(child)
             self.memo.pop(child, None)
-            saved = self.consumed.pop(child, None)
             self.calls.pop(child, None)
             if from_saved and saved is not None:
                 self.memo[child] = saved
-                self.counts[child[0]] = min(self.counts[child[0]], child[1])
+        if from_saved:
+            # Number the seats' calls again from the first offered one, unless a call
+            # outside `key`'s scoring holds a later key.
+            for seat in {child[0] for child in nested}:
+                first = min(n for s, n in nested if s == seat)
+                taken = any(s == seat and n >= first for s, n in self.calls)
+                if not taken:
+                    self.counts[seat] = min(self.counts[seat], first)
 
     def _nested(self, key: CallKey) -> list[CallKey]:
         """The calls made inside `key`'s scoring, at any depth, saved or started."""
@@ -236,6 +244,7 @@ class EpisodeCalls:
             parent = parents.pop()
             for child in [c for c in self.memo.values() if c["parent"] == parent]:
                 del self.memo[(child["seat"], child["n"])]
+                self.consumed[(child["seat"], child["n"])] = child
                 subtree.append(child)
                 parents.append([child["seat"], child["n"]])
         nested: list[Trace] = []
@@ -294,6 +303,7 @@ def scoring_point(
         "timeout": trace.is_timeout,
         "root_reply": trace.root_reply,
         "grading_state": None,
+        "grading_task": {},
         "finalized": bool(trace.timing.finalize.end),
         "stop": [trace.stop_condition, trace.stop_info],
         "state": TypeAdapter(type(trace.state)).dump_python(trace.state, mode="json"),
@@ -305,12 +315,13 @@ def scoring_point(
         "prepared": {},
         "replays": {},
     }
-    from verifiers.v1.grading import grading_copy
+    from verifiers.v1.grading import grading_copy, staged_task_state
 
     if not own_box and (copy_ := grading_copy(trace)) is not None:
         session["grading_state"] = TypeAdapter(type(copy_.state)).dump_python(
             copy_.state, mode="json"
         )
+        session["grading_task"] = staged_task_state(trace)
     data["checkpoints"] = [
         {
             "id": snapshot["id"],
