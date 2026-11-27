@@ -1,5 +1,6 @@
 """Run Hermes Agent against interception through its native ACP server."""
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Literal
@@ -16,20 +17,35 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
-HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}"
+HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}-{digest}"
 INSTALL = f"""
 set -e
 {_ENSURE_UV}
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
 curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$AGENT_HERMES_VERSION.tar.gz" \\
     | tar -xz --strip-components=1 -C "$AGENT_HERMES_DIR"
-# Replay one reasoning key: strict providers reject Hermes' duplicated aliases on custom routes.
+# Replay reasoning_content and reasoning_details (not the duplicated `reasoning` alias) on custom routes.
 # Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/message_sanitization.py#L733
 sed -i '/^_REASONING_CARRIER_ROUTES: tuple = (/a\\
-    (_DEFAULT_CARRIERS, frozenset({{"custom"}}), ()),' "$AGENT_HERMES_DIR/agent/message_sanitization.py"
+    (frozenset({{RC, RD}}), frozenset({{"custom"}}), ()),' "$AGENT_HERMES_DIR/agent/message_sanitization.py"
+grep -qF '(frozenset({{RC, RD}}), frozenset({{"custom"}}), ())' "$AGENT_HERMES_DIR/agent/message_sanitization.py"
+# Interception relays to the configured upstream; keep Claude on native and other unmatched models on minimax (signed + invalidation).
+# Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/anthropic_thinking_policy.py#L80-L91
+sed -i 's/_is_claude_platform_endpoint(url)),/_is_claude_platform_endpoint(url) or (isinstance(model, str) and "claude" in model.lower())),/' "$AGENT_HERMES_DIR/agent/anthropic_thinking_policy.py"
+sed -i 's/), "third_party")/), "minimax")/' "$AGENT_HERMES_DIR/agent/anthropic_thinking_policy.py"
+grep -qF '"claude" in model.lower()' "$AGENT_HERMES_DIR/agent/anthropic_thinking_policy.py"
+grep -qF '), "minimax")' "$AGENT_HERMES_DIR/agent/anthropic_thinking_policy.py"
+# Preserve empty-string signatures (e.g. `signature: ""`) verbatim on Anthropic thinking replay without bypassing invalidation.
+# Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/anthropic_message_convert.py#L301
+# Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/anthropic_message_convert.py#L571
+sed -i 's/if b.get("signature") else out/if isinstance(b.get("signature"), str) else out/' "$AGENT_HERMES_DIR/agent/anthropic_message_convert.py"
+sed -i 's/signed = b.get("data") if is_redacted else b.get("signature")/signed = bool(b.get("data")) if is_redacted else isinstance(b.get("signature"), str)/' "$AGENT_HERMES_DIR/agent/anthropic_message_convert.py"
+grep -qF 'if isinstance(b.get("signature"), str) else out' "$AGENT_HERMES_DIR/agent/anthropic_message_convert.py"
+grep -qF 'signed = bool(b.get("data")) if is_redacted else isinstance(b.get("signature"), str)' "$AGENT_HERMES_DIR/agent/anthropic_message_convert.py"
 uv sync --project "$AGENT_HERMES_DIR" --python 3.14 --locked --no-dev --extra acp --extra mcp --extra anthropic
 touch "$AGENT_HERMES_DIR/.ready"
 """
+INSTALL_DIGEST = hashlib.sha256(INSTALL.encode()).hexdigest()[:12]
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
@@ -57,7 +73,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         # Hermes needs its source-tree assets and supports editable installs only.
-        directory = HERMES_DIR.format(version=self.config.version)
+        directory = HERMES_DIR.format(
+            version=self.config.version, digest=INSTALL_DIGEST
+        )
         await ensure_installed(
             runtime,
             directory=directory,
@@ -141,7 +159,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         return ACPConfig(
             env=env,
             command=[
-                f"{HERMES_DIR.format(version=self.config.version)}/.venv/bin/python",
+                f"{HERMES_DIR.format(version=self.config.version, digest=INSTALL_DIGEST)}/.venv/bin/python",
                 "-P",  # Keep task files from shadowing installed Hermes modules.
                 "-c",
                 PROGRAM_SOURCE,
