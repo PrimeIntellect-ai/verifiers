@@ -62,6 +62,7 @@ async def test_network_policy(run, harness, harness_runtime, notice):
         if harness_class(harness.id).EXECUTES_CODE:
             assert trace.reward == 1.0, (
                 name,
-                trace.info["network_report"],
+                trace.stop_condition,
+                trace.info.get("network_report"),
                 trace.last_reply,
             )
