@@ -142,10 +142,7 @@ class EpisodeCalls:
         Raises `ReplayDiverged` when the saved call was asked to do something else. An
         `interaction` is keyed and recorded, but never saved, so it replays nothing;
         nor does a call that continues a trace its caller gave it (`replay=False`)."""
-        while (seat, self.counts[seat]) in self.calls:
-            self.counts[seat] += 1
-        key = (seat, self.counts[seat])
-        self.counts[seat] += 1
+        key = self._next_key(seat, parent, replay=not interaction)
         state = state_cls(type(task))
         call = _Call(
             seat,
@@ -163,7 +160,10 @@ class EpisodeCalls:
             current = None
         if current is not None:
             self.tasks.add(current)
-        saved = None if interaction or not replay else self.memo.pop(key, None)
+        saved = None if interaction else self.memo.pop(key, None)
+        if not replay:
+            # The caller continues this call from a trace of its own.
+            saved = None
         if saved is None:
             return key, None
         if (
@@ -214,6 +214,27 @@ class EpisodeCalls:
                     found.append(child)
                     frontier.append(child)
         return found
+
+    def _next_key(self, seat: str, parent: CallKey | None, *, replay: bool) -> CallKey:
+        """The key of a new call of `seat` made inside `parent`'s scoring (or at the top
+        level). It takes the first saved key of that scoring that no call holds, so the
+        saved calls of a scoring go to the calls made there, whatever ran in between.
+        Otherwise the next key that no call holds and no other scoring's saved call
+        needs."""
+        owner = None if parent is None else [*parent]
+        saved = sorted(
+            n
+            for (s, n), c in self.memo.items()
+            if s == seat and c["parent"] == owner and (s, n) not in self.calls
+        )
+        if replay and saved:
+            n = saved[0]
+        else:
+            n = self.counts[seat]
+            while (seat, n) in self.calls or (seat, n) in self.memo:
+                n += 1
+        self.counts[seat] = max(self.counts[seat], n + 1)
+        return seat, n
 
     def minted(self, key: CallKey, trace: Trace) -> None:
         call = self.calls[key]

@@ -511,7 +511,7 @@ def test_saved_calls_the_replay_has_not_reached_stay_in_a_later_save():
 def test_a_trace_the_caller_hands_over_is_logged_but_not_replayed():
     calls = EpisodeCalls.continuing(scoring_episode())
     key, saved = calls.start("solver", task("solve"), None, replay=False)
-    assert key == ("solver", 0) and saved is None and ("solver", 0) in calls.memo
+    assert key == ("solver", 0) and saved is None and ("solver", 0) not in calls.memo
 
 
 def test_an_isolated_scoring_point_keeps_the_state_grading_staged():
@@ -628,3 +628,16 @@ def test_a_save_while_a_nested_call_waits_for_its_permit_keeps_the_point():
         ("judge", 0),
         ("solver", 0),
     ]
+
+
+def test_a_saved_call_of_another_calls_scoring_keeps_its_key():
+    """Solver 0's scoring retries and rewinds the judge counter. Meanwhile solver 1's
+    judge starts: it skips the key of solver 0's saved judge, which still takes it."""
+    calls = EpisodeCalls.continuing(scoring_episode())
+    calls.start("solver", task("solve"), None)
+    calls.start("judge", task("judge"), ("solver", 0))
+    calls.retry_nested(("solver", 0), from_saved=True)
+    other, saved = calls.start("judge", task("other"), ("solver", 1))
+    assert other == ("judge", 1) and saved is None
+    key, saved = calls.start("judge", task("judge"), ("solver", 0))
+    assert key == ("judge", 0) and saved is not None
