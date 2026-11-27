@@ -2,7 +2,10 @@
 
 import hashlib
 import json
+from shlex import quote
 from typing import Literal
+
+from pydantic import Field
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
@@ -25,6 +28,12 @@ PRIME_AGENT_COMMIT: Literal["033eea1705c5ae953fe7cd7a5e7e7c45317e0dfe"] = (
     "033eea1705c5ae953fe7cd7a5e7e7c45317e0dfe"
 )
 PRIME_AGENT_VERSION = "0.10.5"
+PRIME_AGENT_SHA256 = {
+    "prime-agent-0.10.5-linux-x64.tar.gz": "b9f653f4c32e83a2270f0b52edea6a72c7bdbd1f7b5c3e64c55e75157094f3b3",
+    "prime-agent-0.10.5-linux-arm64.tar.gz": "8ddee5f1ed1a4443829944117509212f1294abbf0cbed22765f8a6efefaa2516",
+    "prime-agent-0.10.5-darwin-x64.tar.gz": "2a19423b21e79ac45050a246a18d507db66801072437e321b1f7063c6bcf9a4b",
+    "prime-agent-0.10.5-darwin-arm64.tar.gz": "6eb082c66f5259b953c38f21c72055d11942fa61372718a5eab25603247bd49c",
+}
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
@@ -40,10 +49,10 @@ prefix="$AGENT_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 rm -f "$prefix/.ready"
 if [ ! -x "$prefix/bin/prime-agent" ]; then
     case "$(uname -s)-$(uname -m)" in
-        Linux-x86_64) platform=linux-x64; sha=b9f653f4c32e83a2270f0b52edea6a72c7bdbd1f7b5c3e64c55e75157094f3b3 ;;
-        Linux-aarch64|Linux-arm64) platform=linux-arm64; sha=8ddee5f1ed1a4443829944117509212f1294abbf0cbed22765f8a6efefaa2516 ;;
-        Darwin-x86_64) platform=darwin-x64; sha=2a19423b21e79ac45050a246a18d507db66801072437e321b1f7063c6bcf9a4b ;;
-        Darwin-arm64) platform=darwin-arm64; sha=6eb082c66f5259b953c38f21c72055d11942fa61372718a5eab25603247bd49c ;;
+        Linux-x86_64) platform=linux-x64 ;;
+        Linux-aarch64|Linux-arm64) platform=linux-arm64 ;;
+        Darwin-x86_64) platform=darwin-x64 ;;
+        Darwin-arm64) platform=darwin-arm64 ;;
         *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
     esac
     command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
@@ -51,12 +60,18 @@ if [ ! -x "$prefix/bin/prime-agent" ]; then
     tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
     download_dir="$(mktemp -d "$AGENT_PRIME_AGENT_DIR/install.XXXXXX")"
     trap 'rm -rf "$download_dir"' EXIT
+    case "$tarball" in
+@@RELEASE_SHA256_CASE@@
+        *) echo "no SHA256 configured for Prime Agent release asset $tarball" >&2; exit 1 ;;
+    esac
     curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
     printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
     if command -v sha256sum >/dev/null; then
-        (cd "$download_dir" && sha256sum -c SHA256SUMS)
+        (cd "$download_dir" && sha256sum -c SHA256SUMS) \
+            || { echo "SHA256 verification failed for Prime Agent release $PRIME_AGENT_RELEASE_VERSION ($tarball)" >&2; exit 1; }
     else
-        (cd "$download_dir" && shasum -a 256 -c SHA256SUMS)
+        (cd "$download_dir" && shasum -a 256 -c SHA256SUMS) \
+            || { echo "SHA256 verification failed for Prime Agent release $PRIME_AGENT_RELEASE_VERSION ($tarball)" >&2; exit 1; }
     fi
     mkdir "$download_dir/bin"
     tar -xzf "$download_dir/$tarball" -C "$download_dir/bin"
@@ -77,9 +92,21 @@ touch "$prefix/.ready"
 )
 
 
+def _install_script(sha256: dict[str, str]) -> str:
+    checksum_cases = "\n".join(
+        f"        {quote(asset)}) sha={quote(digest)} ;;"
+        for asset, digest in sha256.items()
+    )
+    return INSTALL.replace("@@RELEASE_SHA256_CASE@@", checksum_cases)
+
+
 class PrimeAgentHarnessConfig(HarnessConfig):
     commit: Literal["033eea1705c5ae953fe7cd7a5e7e7c45317e0dfe"] = PRIME_AGENT_COMMIT
     """Prime Agent release commit to install."""
+    release_version: str = PRIME_AGENT_VERSION
+    """Prime Agent release version to install."""
+    sha256: dict[str, str] = Field(default_factory=lambda: PRIME_AGENT_SHA256.copy())
+    """SHA256 hashes keyed by release asset name. Override when pinning another release."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
@@ -167,13 +194,13 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 f"[ -f {ready} ] && [ -x {self._bin()} ] "
                 f"&& [ -x {self._kernel_venv()}/bin/python ]"
             ),
-            install=INSTALL,
+            install=_install_script(self.config.sha256),
             env={
                 **self.config.resolved_env,
                 "AGENT_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "AGENT_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
-                "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
+                "PRIME_AGENT_RELEASE_VERSION": self.config.release_version,
                 "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
             },
             label="prime-agent",
