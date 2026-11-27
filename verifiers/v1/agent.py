@@ -866,6 +866,8 @@ class Agent:
                     "cannot continue from its saved trace",
                     restore.get("id"),
                 )
+                if on_start_over is not None:
+                    on_start_over()
             else:
                 trace, target = open_restore(restore, task)
                 offered = target.id
@@ -924,10 +926,13 @@ class Agent:
                         if c.pinned:
                             snapshots.pop(c.id, None)
                     deleted.update(run.deleted_snapshots)
+                    # A run that continues its scoring makes no turns: only a box that
+                    # never came back means its restore led nowhere.
                     if target is not None and (
                         any(error.stage == "setup" for error in trace.errors[seen:])
                         or (
                             not trace.ok
+                            and not run.resumes_scoring
                             and run.restored_turns is not None
                             and trace.num_turns <= run.restored_turns
                         )
@@ -1333,7 +1338,9 @@ class _EpisodeAgent(Agent):
     ) -> Trace:
         # Keyed before the first await: calls started together keep their order.
         key, saved = (
-            self._calls.start(self._name, task, _scoring_call.get())
+            self._calls.start(
+                self._name, task, _scoring_call.get(), borrowed=runtime is not None
+            )
             if self._calls is not None and restore is None
             else (None, None)
         )
@@ -1343,6 +1350,9 @@ class _EpisodeAgent(Agent):
             trace, nested = self._calls.replay(key, saved, task)
             # The calls its scoring made join the episode before it, as they did.
             for child in nested:
+                # A scoring that runs this call rolls its calls back if it fails.
+                if (runs := _scoring_runs.get()) is not None:
+                    runs.append((self, child))
                 self._completed.append(child)
                 if self._on_trace is not None:
                     self._on_trace(child)

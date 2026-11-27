@@ -244,6 +244,8 @@ class Rollout:
                 self._finalized = session["finalized"]
                 self.trace.stop_condition, self.trace.stop_info = session["stop"]
                 self.trace.metrics = dict(session["metrics"])
+                self.trace.is_timeout = session["timeout"]
+                self.trace.root_reply = session["root_reply"]
                 if session["box"] == "grading":
                     self._grading_box = self._restore.snapshot
         else:
@@ -1734,6 +1736,7 @@ class Rollout:
                                     on_score=self._on_score,
                                     scoring_elapsed=scoring_elapsed,
                                     interception=self._interception,
+                                    staged=self._grading_box is not None,
                                 )
                             except TimeoutError:
                                 self.timeout("scoring")

@@ -379,8 +379,10 @@ class Env(ABC, Generic[ConfigT]):
                     if restore is None or slot.calls.diverged is None:
                         return episode
                     # The env's program took another path than in the saved
-                    # episode: it starts over, and keeps its retries.
+                    # episode: it starts over, and keeps its retries. Calls the
+                    # program started beside the diverged one may still run.
                     logger.warning("Starting episode over: %s", slot.calls.diverged)
+                    await slot.calls.cancel_running()
                     restore = None
                     live.clear()
 

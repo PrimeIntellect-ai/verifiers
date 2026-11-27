@@ -218,7 +218,10 @@ async def grade_task(
     scoring_elapsed: float = 0.0,
     on_score=None,
     interception=None,
+    staged: bool = False,
 ) -> None:
+    """`staged`: `config` restores a verifier box that was already staged (a rollout
+    that continues its scoring), which staging again would undo."""
     await deployment.prepare_verifier()
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
     # Setup may have an additional, stricter limit; retries do not reset scoring.
@@ -250,7 +253,8 @@ async def grade_task(
                     )
                     runtime = bind_scoring_env(runtime, policy)
                     await runtime.backend.prepare_setup()
-                    await stage_verifier(grader, result, runtime)
+                    if not staged:
+                        await stage_verifier(grader, result, runtime)
                 try:
                     async with (
                         asyncio.timeout_at(deadline),

@@ -216,7 +216,7 @@ def test_an_episode_with_an_interaction_or_a_run_inside_scoring_has_no_restore_p
 
     calls = EpisodeCalls()
     calls.start("solver", task("solve"), None)
-    calls.start("judge", task("judge"), ("solver", 0))
+    calls.start("judge", task("judge"), ("solver", 0), borrowed=True)
     calls.minted(
         ("solver", 0),
         SimpleNamespace(id="t-s", num_turns=3, agent=SimpleNamespace(runtime=None)),
@@ -293,7 +293,7 @@ def test_a_run_in_scoring_continues_from_the_box_its_judge_saved():
     judge's snapshot of that box continues both, the solver by scoring again."""
     calls = EpisodeCalls()
     calls.start("solver", task("solve"), None)
-    calls.start("judge", task("judge"), ("solver", 0))
+    calls.start("judge", task("judge"), ("solver", 0), borrowed=True)
     solver = in_box(new_trace("solve"), "box-1")
     solver.stop("agent_completed")
     solver.timing.finalize.end = 1.0
@@ -339,7 +339,7 @@ async def test_a_call_that_starts_over_runs_the_calls_of_its_scoring_fresh(monke
     saved call belongs to the box it no longer continues, so the judge runs fresh."""
     calls = EpisodeCalls()
     calls.start("solver", task("solve"), None)
-    calls.start("judge", task("judge solve"), ("solver", 0))
+    calls.start("judge", task("judge solve"), ("solver", 0), borrowed=True)
     calls.start("helper", task("help"), ("judge", 0))
     for key in [("solver", 0), ("judge", 0), ("helper", 0)]:
         calls.minted(key, in_box(new_trace(key[0]), "box-1"))
@@ -375,3 +375,94 @@ async def test_a_call_that_starts_over_runs_the_calls_of_its_scoring_fresh(monke
     await judged(agents(calls, [], "solver", "judge"))
     assert started == [("solver", True), ("judge", False)]
     assert calls.memo == {}
+
+
+def finished_call(calls: EpisodeCalls, seat: str, prompt: str, parent=None):
+    key, _ = calls.start(seat, task(prompt), parent)
+    trace = new_trace(prompt)
+    calls.minted(key, trace)
+    calls.finished(key, trace)
+    return key, trace
+
+
+def test_a_replay_brings_back_nested_calls_at_any_depth_in_the_order_they_finished():
+    calls = EpisodeCalls()
+    calls.start("solver", task("solve"), None)
+    # The helper (inside the judge's scoring) finishes before the judge.
+    calls.start("judge", task("judge"), ("solver", 0), borrowed=True)
+    finished_call(calls, "helper", "help", ("judge", 0))
+    judge = new_trace("judge")
+    calls.minted(("judge", 0), judge)
+    calls.finished(("judge", 0), judge)
+    solver = new_trace("solve")
+    calls.minted(("solver", 0), solver)
+    calls.finished(("solver", 0), solver)
+    point, _ = episode_restore_point(SimpleNamespace(id="e1", calls=calls), [])
+
+    calls = EpisodeCalls.continuing(pickle.loads(pickle.dumps(point)))
+    key, saved = calls.start("solver", task("solve"), None)
+    _, nested = calls.replay(key, saved, task("solve"))
+    assert [t.task.data.prompt_text for t in nested] == ["help", "judge"]
+    assert calls.memo == {} and calls.counts["helper"] == 1
+    assert type(nested[0].state) is vf.State
+
+
+def test_a_continued_call_waiting_for_its_turn_keeps_its_saved_trace():
+    running = new_trace("x")
+    calls = EpisodeCalls()
+    calls.start("a", task("x"), None)
+    calls.minted(("a", 0), running)
+    point, _ = episode_restore_point(
+        SimpleNamespace(id="e1", calls=calls), [saved_trace(running)]
+    )
+
+    # Continued, but not yet minted: the call waits for its agent permit.
+    calls = EpisodeCalls.continuing(point)
+    calls.start("a", task("x"), None)
+    again, reason = episode_restore_point(SimpleNamespace(id="e1", calls=calls), [])
+    assert reason is None and again["calls"] == point["calls"]
+    assert again["snapshots"] == point["snapshots"]
+
+
+@pytest.mark.asyncio
+async def test_a_diverged_attempt_stops_its_calls_that_still_run():
+    calls = EpisodeCalls()
+    stopped = asyncio.Event()
+
+    async def sibling():
+        calls.start("b", task("y"), None)
+        try:
+            await asyncio.sleep(60)
+        finally:
+            stopped.set()
+
+    running = asyncio.ensure_future(sibling())
+    await asyncio.sleep(0)
+    await calls.cancel_running()
+    assert stopped.is_set() and running.cancelled()
+
+
+def test_a_scoring_point_keeps_the_outcome_a_rewind_clears_and_needs_a_borrowed_box():
+    calls = EpisodeCalls()
+    calls.start("solver", task("solve"), None)
+    calls.start("judge", task("judge"), ("solver", 0), borrowed=True)
+    solver = in_box(new_trace("solve"), "box-1")
+    solver.stop("agent_completed")
+    solver.is_timeout = True
+    solver.root_reply = "#### 4"
+    judge = in_box(new_trace("judge"), "box-1")
+    calls.minted(("solver", 0), solver)
+    calls.minted(("judge", 0), judge)
+    point, _ = episode_restore_point(
+        SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
+    )
+    (entry,) = [c for c in point["calls"] if c["seat"] == "solver"]
+    session = entry["trace"]["checkpoints"][0]["session"]
+    assert session["timeout"] is True and session["root_reply"] == "#### 4"
+
+    # A judge in a box of its own holds nothing of the solver's scoring.
+    calls.calls[("judge", 0)].borrowed = False
+    point, reason = episode_restore_point(
+        SimpleNamespace(id="e1", calls=calls), [saved_trace(judge)]
+    )
+    assert point is None and "inside another run's scoring" in reason

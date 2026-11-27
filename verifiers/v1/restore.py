@@ -25,6 +25,7 @@ import asyncio
 import copy
 import functools
 import hashlib
+import importlib
 import time
 import weakref
 from collections import Counter
@@ -76,6 +77,14 @@ class _Call:
     trace: Trace | None = None
     finished: bool = False
     interaction: bool = False
+    borrowed: bool = False
+    """Whether it runs in a box it borrowed (a scoring workspace), not one of its own."""
+    state_class: str = ""
+    """Its task's `State` class, which a replay rebuilds its trace's state with."""
+    finish_order: int | None = None
+    pending: dict[str, Any] | None = None
+    """What the restore point held for it, until its continued trace is minted: a
+    save before then keeps it."""
 
 
 @dataclass
@@ -88,6 +97,10 @@ class EpisodeCalls:
     counts: Counter[str] = field(default_factory=Counter)
     diverged: str | None = None
     """Why the replay stopped, once a call did not match the saved one."""
+    finishes: int = 0
+    tasks: weakref.WeakSet[asyncio.Task] = field(default_factory=weakref.WeakSet)
+    """The tasks the attempt's calls run in, to stop the attempt's calls that still run
+    (`cancel_running`)."""
 
     @classmethod
     def continuing(cls, point: dict[str, Any] | None) -> EpisodeCalls:
@@ -119,14 +132,30 @@ class EpisodeCalls:
         parent: CallKey | None,
         *,
         interaction: bool = False,
+        borrowed: bool = False,
     ) -> tuple[CallKey, dict[str, Any] | None]:
         """Key a new call of `seat` and return what the restore point holds for it.
         Raises `ReplayDiverged` when the saved call was asked to do something else. An
         `interaction` is keyed and recorded, but never saved, so it replays nothing."""
         key = (seat, self.counts[seat])
         self.counts[seat] += 1
-        call = _Call(seat, key[1], fingerprint(task), parent, interaction=interaction)
+        state = state_cls(type(task))
+        call = _Call(
+            seat,
+            key[1],
+            fingerprint(task),
+            parent,
+            interaction=interaction,
+            borrowed=borrowed,
+            state_class=f"{state.__module__}:{state.__qualname__}",
+        )
         self.calls[key] = call
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:  # no running loop: nothing to stop later
+            current = None
+        if current is not None:
+            self.tasks.add(current)
         saved = None if interaction else self.memo.pop(key, None)
         if saved is None:
             return key, None
@@ -138,6 +167,7 @@ class EpisodeCalls:
                 f"{seat} call {key[1]} was asked for another task than at the save"
             )
             raise ReplayDiverged(self.diverged)
+        call.pending = saved
         return key, saved
 
     def forget_nested(self, key: CallKey) -> None:
@@ -149,41 +179,73 @@ class EpisodeCalls:
             self.forget_nested(child)
 
     def minted(self, key: CallKey, trace: Trace) -> None:
-        self.calls[key].trace = trace
+        call = self.calls[key]
+        call.trace, call.pending = trace, None
 
     def finished(self, key: CallKey, trace: Trace) -> None:
         call = self.calls[key]
-        call.trace, call.finished = trace, True
+        call.trace, call.finished, call.pending = trace, True, None
+        call.finish_order, self.finishes = self.finishes, self.finishes + 1
+
+    async def cancel_running(self) -> None:
+        """Stop the calls of this attempt that still run, besides the caller's own."""
+        current = asyncio.current_task()
+        running = [t for t in self.tasks if t is not current and not t.done()]
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
 
     def replay(
         self, key: CallKey, saved: dict[str, Any], task: Task
     ) -> tuple[Trace, list[Trace]]:
-        """The finished call `saved`, and the calls its scoring made, in the order they
-        finished, as traces for the episode. They keep their keys, so a later save of
-        this episode holds them again."""
-        children = sorted(
-            (c for c in self.memo.values() if c["parent"] == [*key]),
-            key=lambda c: c["order"],
-        )
+        """The finished call `saved`, and the calls its scoring made, at any depth, in
+        the order they finished, as traces for the episode. They keep their keys, so a
+        later save of this episode holds them again."""
+        subtree: list[dict[str, Any]] = []
+        parents = [[*key]]
+        while parents:
+            parent = parents.pop()
+            for child in [c for c in self.memo.values() if c["parent"] == parent]:
+                del self.memo[(child["seat"], child["n"])]
+                subtree.append(child)
+                parents.append([child["seat"], child["n"]])
         nested: list[Trace] = []
-        for child in children:
+        for child in sorted(subtree, key=lambda c: c["order"]):
             child_key = (child["seat"], child["n"])
-            self.memo.pop(child_key)
             self.counts[child["seat"]] = max(self.counts[child["seat"]], child["n"] + 1)
-            trace = _finished_trace(child, None)
+            trace = _finished_trace(child, _state_class(child))
             self.calls[child_key] = _Call(
-                child["seat"], child["n"], child["fingerprint"], key, trace, True
+                child["seat"],
+                child["n"],
+                child["fingerprint"],
+                tuple(child["parent"]),
+                trace,
+                state_class=child.get("state_class", ""),
             )
+            self.finished(child_key, trace)
             nested.append(trace)
-        trace = _finished_trace(saved, task)
+        trace = _finished_trace(saved, state_cls(type(task)))
         self.finished(key, trace)
         return trace, nested
 
 
-def _finished_trace(saved: dict[str, Any], task: Task | None) -> Trace:
+def _state_class(saved: dict[str, Any]) -> type:
+    from verifiers.v1.state import State
+
+    module, _, name = (saved.get("state_class") or "").partition(":")
+    try:
+        found = importlib.import_module(module)
+        for part in name.split("."):
+            found = getattr(found, part)
+        return found
+    except (ImportError, AttributeError, ValueError):
+        return State
+
+
+def _finished_trace(saved: dict[str, Any], state: type) -> Trace:
     trace = Trace.model_validate(saved["trace"])
-    if task is not None and saved.get("task_state") is not None:
-        trace.state = state_cls(type(task)).model_validate(saved["task_state"])
+    if saved.get("task_state") is not None:
+        trace.state = state.model_validate(saved["task_state"])
     return trace
 
 
@@ -200,6 +262,8 @@ def scoring_point(
         "stage": "scoring",
         "box": "own" if own_box else "grading",
         "metrics": dict(trace.metrics),
+        "timeout": trace.is_timeout,
+        "root_reply": trace.root_reply,
         "finalized": bool(trace.timing.finalize.end),
         "stop": [trace.stop_condition, trace.stop_info],
         "state": TypeAdapter(type(trace.state)).dump_python(trace.state, mode="json"),
@@ -255,7 +319,14 @@ def episode_restore_point(
         for child in calls.calls.values():
             saved_child = by_trace.get(child.trace.id) if child.trace else None
             runtime = child.trace.agent.runtime if child.trace else None
-            if child.parent == key and saved_child is not None and runtime is not None:
+            # Only a call that runs in a box it borrowed holds what `key`'s scoring
+            # works on; one in a box of its own does not.
+            if (
+                child.parent == key
+                and child.borrowed
+                and saved_child is not None
+                and runtime is not None
+            ):
                 return restore_entry(saved_child)["snapshot"], runtime.id == box
         return None
 
@@ -267,13 +338,20 @@ def episode_restore_point(
             reason = "it is an interaction, which no checkpoint can continue"
             return None, f"{call.seat} call {call.n}: {reason}"
         if trace is None:
+            if call.pending is not None:
+                # A continued call that waits for its turn still continues its saved trace.
+                entries.append(call.pending)
+                snapshot = restore_entry(call.pending["trace"])["snapshot"]
+                if all(s["id"] != snapshot["id"] for s in snapshots):
+                    snapshots.append(snapshot)
             continue
         entry: dict[str, Any] = {
             "seat": call.seat,
             "n": call.n,
             "fingerprint": call.fingerprint,
             "parent": None if call.parent is None else [*call.parent],
-            "order": order,
+            "order": order if call.finish_order is None else call.finish_order,
+            "state_class": call.state_class,
         }
         if call.finished:
             try:
