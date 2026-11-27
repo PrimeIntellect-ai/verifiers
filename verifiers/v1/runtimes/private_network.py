@@ -89,6 +89,22 @@ async def alias_hosts(runtime: Runtime, aliases: Mapping[str, str]) -> None:
             )
 
 
+async def rejoin(backends: list[RuntimeBackend]) -> None:
+    """Join each VM to its LAN network again after a memory snapshot. A VM that resumes in
+    place reaches no LAN peer, by name or address, though the network still lists it as
+    a synced member; leaving and joining again restores its routes and names."""
+    joined = [
+        backend
+        for backend in backends
+        if isinstance(backend, PrimeBackend) and backend.lan is not None
+    ]
+    async with leased_client() as client:
+        for backend in joined:
+            await client.remove_lan_member(backend.lan[0], backend.info.id)
+        for backend in joined:
+            await client._join_lan(backend.lan[0], backend.info.id, backend.lan[1])
+
+
 def _tag(index: int) -> str:
     # Server names need not be valid LAN tags; a member's position names it instead.
     return f"vf-tool-{index}"

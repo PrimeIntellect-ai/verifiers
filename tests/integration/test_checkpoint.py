@@ -447,12 +447,12 @@ async def test_another_owner_continues_a_tool_server_vm(
     taken, harness, harness_runtime, command_model
 ):
     """The task's tool server runs on a Prime VM of its own and counts only in its
-    memory. The rollout is saved while its second call runs and is then cancelled with
-    everything it holds. A second owner continues it: the box and the server's VM each
-    from their own snapshot, on a new private network, with a new state channel. The
-    state ends as 1..N only if the server kept its memory, the restored harness reached
-    the restored server, and every call ran exactly once and reached the second
-    owner."""
+    memory. The rollout is saved while its second call runs and then finishes in its
+    own boxes, which resumed from the snapshot's stop. A second owner continues the
+    saved rollout: the box and the server's VM each from their own snapshot, on a new
+    private network, with a new state channel. Each run's state ends as 1..N only if its
+    box reached its server after the stop, the server kept its memory, and every call
+    ran exactly once and reached its owner."""
     config = _eval_config(
         "tool-tick-restore",
         harness=harness,
@@ -467,9 +467,24 @@ async def test_another_owner_continues_a_tool_server_vm(
         client=config.client, model=config.model, sampling=config.sampling
     )
 
-    slot, point = await saved_rollout(
-        config, ctx, ready=lambda trace: trace.num_turns >= 2
-    )
+    env = load_environment(config.env)
+    (task,) = list(env.taskset)
+    async with env.serving():
+        (slot,) = env.slots(task)
+        running = asyncio.ensure_future(env.run_slot(slot, ctx))
+        try:
+            async with asyncio.timeout(600):
+                while not (slot.traces and slot.traces[0].num_turns >= 2):
+                    assert not running.done(), "the rollout ended before the save"
+                    await asyncio.sleep(0.2)
+            (point,) = await save_all()
+            (original,) = (await running).traces
+        finally:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+    # On its first attempt: a failed call would start it over and hide the loss.
+    assert original.errors == [] and original.attempt == 1
+    assert original.state.ticks == TICKS
     entry = restore_entry(point)
     # The save waited for the second call to finish: box and server agree on it.
     assert entry["session"]["state"]["ticks"] == TICKS[:2]

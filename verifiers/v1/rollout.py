@@ -42,7 +42,7 @@ from verifiers.v1.runtimes import (
     backend_cls,
     make_backend,
 )
-from verifiers.v1.runtimes.private_network import alias_hosts, tool_vms
+from verifiers.v1.runtimes.private_network import alias_hosts, rejoin, tool_vms
 from verifiers.v1.session import (
     RolloutLimits,
     RolloutSession,
@@ -1399,6 +1399,15 @@ class Rollout:
             *(vm.snapshot() for vm in vms.values()),
             return_exceptions=True,
         )
+        # Before the box gets a reply: its next tool call needs the LAN.
+        try:
+            await rejoin([backend, *vms.values()])
+        except Exception as e:  # noqa: BLE001 - the next tool call reports the loss
+            logger.warning(
+                "Failed to rejoin the private network after a memory snapshot - %s: %s",
+                type(e).__name__,
+                clip(str(e)),
+            )
         peers = {}
         for (name, vm), snapshot in zip(vms.items(), named):
             if isinstance(snapshot, Snapshot):
