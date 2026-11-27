@@ -60,15 +60,22 @@ def parse_judge_choice(
     allowed = "|".join(re.escape(choice) for choice in choices_by_upper)
     choice_re = rf"(?<!\w)({allowed})(?!\w)"
     horizontal_space = r"[^\S\n]"
+    # A matched wrapper delimits the choice even when the marker is an underscore.
+    wrapped_choice_re = (
+        rf"(?P<markup>\*\*|__|~~|[*_`])"
+        rf"{horizontal_space}*({allowed}){horizontal_space}*(?P=markup)"
+    )
     final_choices = re.findall(
         rf"^{horizontal_space}*FINAL{horizontal_space}+"
         rf"(?:JUDGMENT|ANSWER|VERDICT){horizontal_space}*"
-        rf"(?:IS{horizontal_space}*)?[:\-]?{horizontal_space}*{choice_re}",
+        rf"(?:IS{horizontal_space}*)?[:\-]?{horizontal_space}*"
+        rf"(?:{choice_re}|{wrapped_choice_re})",
         text_upper,
         re.MULTILINE,
     )
     if final_choices:
-        return choices_by_upper.get(final_choices[-1])
+        plain_choice, _, wrapped_choice = final_choices[-1]
+        return choices_by_upper.get(plain_choice or wrapped_choice)
 
     text = extract_boxed_answer(text, strict=True).strip() or text
     text_upper = text.upper()
