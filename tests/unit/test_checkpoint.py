@@ -270,6 +270,8 @@ def make_rollout(
     run._unpaused = asyncio.Event()
     run._unpaused.set()
     run._suspension = None
+    run._suspension_named = None
+    run._suspension_until = None
     run._suspended = None
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
@@ -370,6 +372,46 @@ async def test_a_paused_rollout_puts_off_its_periodic_snapshot():
     assert await run._checkpoint() is None
     assert backend.taken == 0
     assert run._last_capture == pytest.approx(asyncio.get_running_loop().time(), abs=1)
+
+
+async def test_a_second_save_of_a_paused_rollout_takes_no_owned_checkpoint():
+    """The checkpoint a box stopped at goes to one owner: a later save while the box
+    is still stopped saves nothing instead of sharing it."""
+    run, backend, _ = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    assert await run.save() is not None
+    assert await run.save() is None
+    assert run.save_skipped == "it is paused at a checkpoint an earlier save holds"
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    backend.durable.set()
+    await run._settle_checkpoints(wait=False)
+
+
+async def test_a_pause_right_after_a_resume_stops_the_box_again():
+    """A new pause while the last suspension still wakes the box gets a suspension of
+    its own, which stops the box once the earlier one is done."""
+    run, backend, _ = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    first = run._suspension
+    pause.resume()
+    pause.pause()
+    assert run._suspension is not first
+    await asyncio.wait_for(first, 1)
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert backend.taken == 2 and backend.woken == 1 and run._suspended is not None
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    assert backend.woken == 2
+    backend.durable.set()
+    await run._settle_checkpoints(wait=False)
 
 
 async def test_a_closing_rollout_wakes_its_paused_box():

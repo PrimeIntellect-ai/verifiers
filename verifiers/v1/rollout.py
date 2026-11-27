@@ -292,6 +292,8 @@ class Rollout:
         """Stops the box for the pause (`_suspend_box`)."""
         self._suspension_named: asyncio.Future[Checkpoint] | None = None
         """Set once the suspension's snapshot is named."""
+        self._suspension_until: asyncio.Event | None = None
+        """The pause the suspension is for (its `_unpaused`)."""
         self._suspended: Checkpoint | None = None
         """The memory checkpoint the box stopped at, while it stays stopped."""
         self._memory = False
@@ -1154,6 +1156,11 @@ class Rollout:
                 # Its upload failed: no restore can continue it.
                 self.save_skipped = "its memory snapshot failed"
                 return None
+            if suspended.pinned:
+                # Each snapshot has one owner, who deletes it once nothing restores
+                # from it, and a stopped box takes no new one.
+                self.save_skipped = "it is paused at a checkpoint an earlier save holds"
+                return None
             # The box stays stopped at this checkpoint until the pause ends, and its
             # replies stay held until then.
             suspended.pinned = True
@@ -1234,10 +1241,17 @@ class Rollout:
             or self._closed
             or self._harness_session is None
             or self._unpaused.is_set()
-            or (self._suspension is not None and not self._suspension.done())
+            # One suspension per pause. One of an earlier pause may still be waking
+            # the box: this one stops it again after (`_capturing`).
+            or (
+                self._suspension is not None
+                and not self._suspension.done()
+                and self._suspension_until is self._unpaused
+            )
         ):
             return
         self._suspension_named = asyncio.get_running_loop().create_future()
+        self._suspension_until = self._unpaused
         self._suspension = asyncio.create_task(
             self._suspend(self._suspension_named, self._unpaused)
         )
