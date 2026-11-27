@@ -63,6 +63,7 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
+from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import (
     clip,
@@ -1067,17 +1068,47 @@ class Agent:
                         await run.restore() if restore is not None else await run.step()
                     )
                     while continuable and run.runtime is not None:
+                        loop = asyncio.get_running_loop()
+                        budget = run._agent_time_remaining
+                        started = loop.time()
+                        deadline = asyncio.timeout(
+                            max(0.0, budget) if budget is not None else None
+                        )
                         try:
-                            async with boundary(TaskError, "task after_turn"):
-                                follow_up = await task.after_turn(
-                                    run.trace, run.runtime
+                            async with (
+                                deadline,
+                                boundary(TaskError, "task after_turn"),
+                            ):
+                                follow_up = await invoke(
+                                    task.after_turn,
+                                    {
+                                        "trace": run.trace,
+                                        "runtime": run.runtime,
+                                        "deployment": run.deployment,
+                                    },
                                 )
+                                messages = (
+                                    _as_messages(follow_up)
+                                    if follow_up is not None
+                                    else None
+                                )
+                        except TimeoutError as exc:
+                            if deadline.expired():
+                                run.timeout("agent")
+                            else:
+                                run.fail(exc, stage="agent")
+                            break
                         except RolloutError as exc:
                             run.fail(exc, stage="agent")
                             break
-                        if follow_up is None:
+                        finally:
+                            if budget is not None:
+                                run._agent_time_remaining = max(
+                                    0.0, budget - (loop.time() - started)
+                                )
+                        if messages is None:
                             break
-                        continuable = await run.step(_as_messages(follow_up))
+                        continuable = await run.step(messages)
                 finally:
                     if handle is not None:
                         handle._active = None

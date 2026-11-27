@@ -314,15 +314,18 @@ async def test_task_after_turn_drives_follow_up_segments_and_records_errors(
     class FakeRollout:
         ok = Rollout.ok
         fail = Rollout.fail
+        timeout = Rollout.timeout
 
         def __init__(self, *, task, **_kwargs):
             self.task = task
             self.trace = make_trace()
             self.runtime = object()
+            self.deployment = None
             self._failed = False
             self._failure = None
             self._borrowed_runtime = None
             self._attempt = 1
+            self._agent_time_remaining = None
             self.rewound_snapshots = ()
             self.deleted_snapshots = set()
 
@@ -354,6 +357,12 @@ async def test_task_after_turn_drives_follow_up_segments_and_records_errors(
     assert trace.ok and trace.info["checks"] == 2
     assert seen_steps == [None, [vf.UserMessage(content="fix the file")]]
 
+    class RuntimeOnlyTask(vf.Task):
+        async def after_turn(self, runtime):
+            assert runtime is not None
+
+    assert (await agent.run(RuntimeOnlyTask(vf.TaskData(idx=0, prompt="go")))).ok
+
     class FailingCheckTask(vf.Task):
         async def after_turn(self, trace, runtime):
             trace.info["report"] = "bad"
@@ -362,4 +371,25 @@ async def test_task_after_turn_drives_follow_up_segments_and_records_errors(
     failed = await agent.run(FailingCheckTask(vf.TaskData(idx=0, prompt="go")))
     assert not failed.ok and failed.info["report"] == "bad"
     assert [(e.type, e.stage) for e in failed.errors] == [("TaskError", "agent")]
-    assert len(closed) == 2
+
+    class BadReturnTask(vf.Task):
+        async def after_turn(self, trace, runtime):
+            return False  # type: ignore[return-value]
+
+    bad_return = await agent.run(BadReturnTask(vf.TaskData(idx=0, prompt="go")))
+    assert not bad_return.ok
+    assert [(e.type, e.stage) for e in bad_return.errors] == [("TaskError", "agent")]
+
+    class SlowCheckTask(vf.Task):
+        async def after_turn(self, runtime):
+            await asyncio.sleep(10)
+
+    class TimedRollout(FakeRollout):
+        def __init__(self, *, task, **kwargs):
+            super().__init__(task=task, **kwargs)
+            self._agent_time_remaining = 0.02
+
+    monkeypatch.setattr(agent_mod, "Rollout", TimedRollout)
+    timed_out = await agent.run(SlowCheckTask(vf.TaskData(idx=0, prompt="go")))
+    assert timed_out.stop_condition == "agent_timeout" and not timed_out.errors
+    assert len(closed) == 5
