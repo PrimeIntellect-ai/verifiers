@@ -8,6 +8,8 @@ import time
 from types import SimpleNamespace
 from typing import Literal
 
+import pytest
+
 import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
 from verifiers.v1.clients import ModelContext, ModelRoute
@@ -325,6 +327,49 @@ async def test_a_save_of_a_paused_rollout_returns_its_stopped_box():
     assert session.flowing.is_set()
     backend.durable.set()
     await run._settle_checkpoints(wait=False)
+
+
+async def test_a_save_that_races_a_suspension_joins_it():
+    """A save that arrives before the suspension named its snapshot waits for that
+    snapshot instead of taking its own, which would wait for the pause to end."""
+    run, backend, _ = make_rollout()
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    saved = await asyncio.wait_for(run.save(hold=True), 1)
+    assert saved is not None and restore_entry(saved)["id"] == "ck1"
+    assert backend.taken == 1
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    run.release()
+    backend.durable.set()
+    await run._settle_checkpoints(wait=False)
+
+
+async def test_a_paused_rollout_whose_snapshot_never_uploads_saves_nothing():
+    run, backend, session = make_rollout()
+    backend.fail = True
+    pause = Pause()
+    pause.attach(run)  # type: ignore[arg-type]
+    pause.pause()
+    await asyncio.wait_for(backend.stopped.wait(), 1)
+    backend.durable.set()
+    await asyncio.gather(*run._durable.values(), return_exceptions=True)
+    assert await run.save(hold=True) is None
+    assert run.save_skipped == "its memory snapshot failed" and run._hold_id is None
+    pause.resume()
+    await asyncio.wait_for(run._suspension, 1)
+    assert session.flowing.is_set()
+
+
+async def test_a_paused_rollout_puts_off_its_periodic_snapshot():
+    """A due periodic snapshot of a paused rollout is put off by an interval, so its
+    timer does not fire again at once."""
+    run, backend, _ = make_rollout()
+    run._unpaused.clear()
+    assert await run._checkpoint() is None
+    assert backend.taken == 0
+    assert run._last_capture == pytest.approx(asyncio.get_running_loop().time(), abs=1)
 
 
 async def test_a_closing_rollout_wakes_its_paused_box():

@@ -1167,10 +1167,12 @@ class InterceptionServer(Interception):
             started = time.time()
             try:
                 if not session.running.is_set():
-                    # A paused episode sends nothing upstream until it resumes.
-                    if session.on_paused_call is not None:
-                        session.on_paused_call()
-                    await session.running.wait()
+                    # A paused episode sends nothing upstream until it resumes. A waiter
+                    # can wake after a resume that a new pause already undid.
+                    while not session.running.is_set():
+                        if session.on_paused_call is not None:
+                            session.on_paused_call()
+                        await session.running.wait()
                     started = time.time()
                 try:
                     # What actually goes upstream: the native body with the rollout's model +

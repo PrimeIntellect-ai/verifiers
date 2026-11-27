@@ -290,6 +290,8 @@ class Rollout:
         self._unpaused.set()
         self._suspension: asyncio.Task[None] | None = None
         """Stops the box for the pause (`_suspend_box`)."""
+        self._suspension_named: asyncio.Future[Checkpoint] | None = None
+        """Set once the suspension's snapshot is named."""
         self._suspended: Checkpoint | None = None
         """The memory checkpoint the box stopped at, while it stays stopped."""
         self._memory = False
@@ -982,9 +984,8 @@ class Rollout:
         self._hold_started = asyncio.get_running_loop().time()
         if self._segment_start is not None and self._deadline is not None:
             when = self._deadline.when()
-            if when is not None:
+            if when is not None and self._reschedule(None):
                 self._hold_deadline = when
-                self._deadline.reschedule(None)
 
     def _end_hold(self, reason: str = OWNER_HOLD) -> None:
         self._holds.discard(reason)
@@ -998,10 +999,20 @@ class Rollout:
         )
         self._held_time += held
         if self._hold_deadline is not None and self._deadline is not None:
-            self._deadline.reschedule(self._hold_deadline + held)
-            if self.deadline_at is not None:
+            moved = self._reschedule(self._hold_deadline + held)
+            if moved and self.deadline_at is not None:
                 self.deadline_at += held
         self._hold_deadline = None
+
+    def _reschedule(self, when: float | None) -> bool:
+        """Move the segment's agent deadline. False once the segment's timeout is past
+        moving: it expired or its block exited, which a hold can race with."""
+        assert self._deadline is not None
+        try:
+            self._deadline.reschedule(when)
+        except RuntimeError:
+            return False
+        return True
 
     async def restore(self) -> bool:
         """Run the restored attempt's first segment: the box restored from the
@@ -1050,12 +1061,15 @@ class Rollout:
                 self._closed
                 or not self._checkpointing
                 or not self._checkpointing.interval
-                # A paused rollout makes no progress to snapshot; its box may be stopped.
-                or not self._unpaused.is_set()
             ):
                 return None
             now = asyncio.get_running_loop().time()
             if now - self._last_capture < self._checkpointing.interval:
+                return None
+            if not self._unpaused.is_set():
+                # A paused rollout makes no progress to snapshot, and its box may be
+                # stopped: the next snapshot is due an interval later.
+                self._last_capture = now
                 return None
             # Pace failed attempts too, including a program that exited before capture.
             self._last_capture = now
@@ -1122,8 +1136,24 @@ class Rollout:
             self.save_skipped = "its harness program is not running (setup or scoring)"
         if self.save_skipped is not None:
             return None
+        if (
+            self._suspended is None
+            and self._suspension is not None
+            and not self._suspension.done()
+        ):
+            # A suspension under way names its checkpoint soon. A snapshot of this
+            # save's own would wait for the pause to end.
+            assert self._suspension_named is not None
+            await asyncio.wait(
+                {self._suspension, self._suspension_named},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
         suspended = self._suspended
         if suspended is not None:
+            if suspended.deleted or suspended not in self.trace.checkpoints:
+                # Its upload failed: no restore can continue it.
+                self.save_skipped = "its memory snapshot failed"
+                return None
             # The box stays stopped at this checkpoint until the pause ends, and its
             # replies stay held until then.
             suspended.pinned = True
@@ -1207,12 +1237,16 @@ class Rollout:
             or (self._suspension is not None and not self._suspension.done())
         ):
             return
-        self._suspension = asyncio.create_task(self._suspend(self._unpaused))
+        self._suspension_named = asyncio.get_running_loop().create_future()
+        self._suspension = asyncio.create_task(
+            self._suspend(self._suspension_named, self._unpaused)
+        )
         self._captures.add(self._suspension)
         self._suspension.add_done_callback(self._captures.discard)
 
-    async def _suspend(self, until: asyncio.Event) -> None:
-        taken: asyncio.Future[Checkpoint] = asyncio.get_running_loop().create_future()
+    async def _suspend(
+        self, taken: asyncio.Future[Checkpoint], until: asyncio.Event
+    ) -> None:
         try:
             await self._capture(taken, pinned=False, until=until)
         except Exception:
@@ -1357,14 +1391,19 @@ class Rollout:
                         pinned=pinned,
                     )
                     self.trace.checkpoints.append(checkpoint)
+                    if until is not None:
+                        self._suspended = checkpoint
                     if not taken.done():
                         taken.set_result(checkpoint)
 
                 try:
-                    snapshot = await self.runtime.backend.snapshot(
-                        on_taken, stay_stopped=until is not None
+                    snapshot = await (
+                        self.runtime.backend.snapshot(on_taken)
+                        if until is None
+                        else self.runtime.backend.snapshot(on_taken, stay_stopped=True)
                     )
                 except Exception:
+                    self._suspended = None
                     logger.warning(
                         "memory snapshot failed (rollout %s)",
                         self.trace.id,
@@ -1381,7 +1420,6 @@ class Rollout:
                     self._durable[checkpoint.id] = asyncio.create_task(
                         self._make_durable(checkpoint)
                     )
-                    self._suspended = checkpoint
                     # A stopped box takes no turn of the snapshot pace.
                     await pace.aclose()
                     try:
@@ -1675,6 +1713,8 @@ class Rollout:
         if self._closed:
             return self.trace
         self._closed = True
+        # A box stopped for a pause runs again: finalizing and teardown reach into it.
+        self._unpaused.set()
         LIVE.discard(self)
         trace = self.trace
         skip = self._scoring_skip()

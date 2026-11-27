@@ -15,6 +15,7 @@ class HeldRollout:
     _end_hold = Rollout._end_hold
     _segment_agent_time = Rollout._segment_agent_time
     _suspend_box = Rollout._suspend_box
+    _reschedule = Rollout._reschedule
 
     def __init__(self) -> None:
         # No memory snapshots: a pause stops only the agent deadline.
@@ -58,10 +59,13 @@ def test_a_session_follows_its_episodes_pause():
 
 
 async def test_rollouts_built_in_an_episode_see_its_pause():
+    async def read() -> Pause | None:
+        return pausing.get()
+
     pause = Pause()
     token = pausing.set(pause)
     try:
-        seen = await asyncio.create_task(asyncio.sleep(0, pausing.get()))
+        seen = await asyncio.create_task(read())
     finally:
         pausing.reset(token)
     assert seen is pause and pausing.get() is None
@@ -109,3 +113,20 @@ async def test_an_owner_release_does_not_end_a_pause():
         assert deadline.when() is None
         pause.resume()
         assert deadline.when() is not None
+
+
+async def test_a_pause_after_the_segment_timed_out_reaches_every_rollout():
+    """A pause can race the end of a segment whose deadline already left its block:
+    the deadline is past moving, and the other rollouts still get the pause."""
+    first, second = HeldRollout(), HeldRollout()
+    pause = Pause()
+    pause.attach(first)  # type: ignore[arg-type]
+    pause.attach(second)  # type: ignore[arg-type]
+    loop = asyncio.get_running_loop()
+    async with asyncio.timeout_at(loop.time() + 10) as deadline:
+        first._deadline = deadline
+        await asyncio.sleep(0)
+    pause.pause()
+    assert second._hold_started is not None
+    pause.resume()
+    assert first._hold_started is None and second._hold_started is None

@@ -413,6 +413,11 @@ class PrimeBackend(RuntimeBackend):
 
         try:
             return await run_shielded(create())
+        except asyncio.CancelledError:
+            # The caller never learns of a box left stopped, so nothing would wake it.
+            if not self._awake.is_set():
+                await self.wake()
+            raise
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
 
