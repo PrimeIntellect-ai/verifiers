@@ -16,6 +16,8 @@ deletes it, and the owner deletes it once nothing will restore it
 from __future__ import annotations
 
 import asyncio
+import functools
+import time
 import weakref
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
@@ -112,6 +114,7 @@ async def save_all(
     *,
     hold: bool = False,
     watchdog: bool = True,
+    timeout: float | None = None,
 ) -> list[dict[str, Any]]:
     """Take a memory checkpoint of every running rollout of this process and return
     their traces as saved (`restorable`). A rollout that takes no memory snapshots,
@@ -123,7 +126,10 @@ async def save_all(
     ends by itself `HOLD_SECONDS` after the save returns, unless `watchdog` is False:
     the caller then arms the watchdogs (`arm_hold_watchdogs`) once it handed the saves
     over. A save of many rollouts can take minutes, so a watchdog armed at each
-    rollout's own save would let the first ones go on before the caller has them."""
+    rollout's own save would let the first ones go on before the caller has them.
+    A rollout whose save takes longer than `timeout` seconds has no restore point:
+    its save goes on, and gives its snapshot and hold back to the rollout when it
+    ends."""
 
     async def save(rollout: Rollout) -> dict[str, Any] | None:
         try:
@@ -138,26 +144,46 @@ async def save_all(
         return point
 
     rollouts = list(LIVE)
+    started = time.monotonic()
     saves = [asyncio.ensure_future(save(rollout)) for rollout in rollouts]
     try:
-        results = await asyncio.gather(*saves)
+        late = (await asyncio.wait(saves, timeout=timeout))[1] if saves else set()
     except BaseException:
         # The caller never gets the saves done so far: nobody would release their
         # rollouts or delete their snapshots, so both go back to the rollouts.
         for rollout, task in zip(rollouts, saves):
-            if (
-                task.done()
-                and not task.cancelled()
+            if not task.done():
+                task.cancel()
+            elif (
+                not task.cancelled()
                 and task.exception() is None
                 and (point := task.result()) is not None
             ):
                 rollout.disown(point)
         raise
-    points = [point for point in results if point is not None]
-    logger.info("Saved %d of %d running rollouts", len(points), len(rollouts))
+    points = []
+    for rollout, task in zip(rollouts, saves):
+        if task in late:
+            task.add_done_callback(functools.partial(_disown_late, rollout))
+            if skipped is not None:
+                reason = f"its save took longer than {timeout:g}s"
+                skipped[reason] = skipped.get(reason, 0) + 1
+        elif (point := task.result()) is not None:
+            points.append(point)
+    logger.info(
+        "Saved %d of %d running rollouts in %.1fs",
+        len(points),
+        len(rollouts),
+        time.monotonic() - started,
+    )
     if hold and watchdog:
         arm_hold_watchdogs()
     return points
+
+
+def _disown_late(rollout: Rollout, task: asyncio.Future) -> None:
+    if not task.cancelled() and (point := task.result()) is not None:
+        rollout.disown(point)
 
 
 def arm_hold_watchdogs() -> None:
