@@ -19,12 +19,19 @@ Trace-scoped state preserves tabs across resume and records owned process IDs.
 
 import argparse
 import asyncio
+import fcntl
 import json
+import locale
 import os
 import re
+import select
+import selectors
 import shutil
+import struct
 import subprocess
 import sys
+import termios
+import threading
 import time
 import urllib.request
 from contextlib import AsyncExitStack
@@ -156,19 +163,215 @@ def ensure_chromium(state_dir: Path) -> str:
     )
 
 
+def _pending(fd: int) -> int:
+    """Bytes waiting in a pipe right now."""
+    return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0" * 4))[0]
+
+
+def _at_end(fd: int) -> bool:
+    """Whether every writer has closed the pipe; late bytes read here are dropped."""
+    poller = select.poll()  # select.select rejects fds >= 1024
+    poller.register(fd, select.POLLIN)
+    if not poller.poll(0):
+        return False
+    return not os.read(fd, 65536)
+
+
+def _discard_until_eof(fd: int) -> None:
+    """Read a held pipe to EOF, so its writer neither blocks nor gets SIGPIPE."""
+    try:
+        with open(fd, "rb", buffering=0) as pipe:
+            while pipe.read(65536):
+                pass
+    except OSError:
+        pass
+
+
+def _drain_in_background(fd: int) -> None:
+    """Drain a held pipe on a daemon thread; never raises."""
+    try:
+        copy = os.dup(fd)
+    except OSError:
+        return
+    try:
+        threading.Thread(target=_discard_until_eof, args=(copy,), daemon=True).start()
+    except Exception:  # noqa: BLE001 - e.g. no more threads
+        os.close(copy)
+
+
+def _text(output: bytes | bytearray) -> str:
+    """Bytes as text, with their newlines translated on their own."""
+    return output.decode(errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
+MAX_KEPT_BYTES = 1 << 20
+"""Bytes of each stream a call keeps, as its head and tail."""
+
+
+def _cut_sequence(data: bytes | bytearray) -> int:
+    """How many bytes at the end of `data` are a UTF-8 character missing its last bytes."""
+    for back in range(1, min(4, len(data)) + 1):
+        byte = data[-back]
+        if byte & 0xC0 != 0x80:  # the character's first byte
+            needed = 2 if byte >> 5 == 0b110 else 3 if byte >> 4 == 0b1110 else 4
+            return back if byte >= 0xC0 and back < needed else 0
+    return 0
+
+
+class _KeptOutput:
+    """One stream's first and last MAX_KEPT_BYTES / 2 bytes, and how many it had."""
+
+    def __init__(self) -> None:
+        self.head = bytearray()
+        self.tail = bytearray()  # bytes after the head
+        self.size = 0
+        self.after_head = -1  # the first byte after the head, once there is one
+        self.before_tail = -1  # the last byte dropped from the tail's front
+
+    def extend(self, chunk: bytes) -> None:
+        half = MAX_KEPT_BYTES // 2
+        room = max(0, half - len(self.head))
+        self.head += chunk[:room]
+        if self.after_head < 0 and len(chunk) > room:
+            self.after_head = chunk[room]
+        self.tail += chunk[room:]
+        excess = len(self.tail) - (MAX_KEPT_BYTES - half)
+        if excess > 0:
+            self.before_tail = self.tail[excess - 1]
+            del self.tail[:excess]
+        self.size += len(chunk)
+
+    def text(self) -> str:
+        """The stream as text; if longer, its head and tail around a marker."""
+        head, tail = self.head, self.tail
+        if self.size == len(head) + len(tail):
+            return _text(head + tail)
+        if head.endswith(b"\r") and self.after_head == ord("\n"):
+            head = head[:-1]
+        head = head[: len(head) - _cut_sequence(head)]
+        if tail[:1] == b"\n" and self.before_tail == ord("\r"):
+            start = 1
+        else:  # skip the rest of a split character
+            start = 0
+            while start < min(3, len(tail)) and tail[start] & 0xC0 == 0x80:
+                start += 1
+        tail = tail[start:]
+        omitted = self.size - len(head) - len(tail)
+        unit = "byte" if omitted == 1 else "bytes"
+        marker = f"\n[... {omitted} {unit} of output omitted ...]\n"
+        return _text(head) + marker + _text(tail)
+
+
+EXIT_GRACE = 0.5
+"""Seconds to keep reading after the program exits, for short-lived children."""
+
+HELD_OUTPUT_NOTE = "[a process started by this code is still running and holds its output; later output is not shown]"
+
+
+def run_program(
+    args: list[str], stdin: str, env: dict[str, str], timeout: float
+) -> str:
+    """Run a program with `stdin` as its input and return its stdout then stderr.
+
+    Pipes a leftover child still holds EXIT_GRACE after the program exits are drained
+    in the background, and the result ends with HELD_OUTPUT_NOTE.
+    """
+    held_open = False
+    # As with text=True: code it cannot encode fails the call.
+    data = memoryview(stdin.encode(locale.getpreferredencoding(False)))
+    with subprocess.Popen(
+        args,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    ) as process:
+        assert process.stdin and process.stdout and process.stderr
+        stdout, stderr = _KeptOutput(), _KeptOutput()
+        deadline = time.monotonic() + timeout
+        exited_at = None
+        try:
+            with selectors.DefaultSelector() as selector:
+                if data:
+                    selector.register(process.stdin, selectors.EVENT_WRITE)
+                else:
+                    process.stdin.close()
+                selector.register(process.stdout, selectors.EVENT_READ, stdout)
+                selector.register(process.stderr, selectors.EVENT_READ, stderr)
+                while selector.get_map():
+                    now = time.monotonic()
+                    if exited_at is None and process.poll() is not None:
+                        exited_at = now
+                        if not process.stdin.closed:
+                            selector.unregister(process.stdin)
+                            process.stdin.close()
+                    if exited_at is None:
+                        remaining = deadline - now
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(process.args, timeout)
+                    else:
+                        # Children the program started may still be writing.
+                        remaining = exited_at + EXIT_GRACE - now
+                        if remaining <= 0:
+                            # A pipe still open is held by a child left running.
+                            for key in list(selector.get_map().values()):
+                                pending = _pending(key.fd)
+                                while pending > 0:
+                                    chunk = os.read(key.fd, min(pending, 65536))
+                                    if not chunk:
+                                        break
+                                    pending -= len(chunk)
+                                    key.data.extend(chunk)
+                                if _at_end(key.fd):
+                                    selector.unregister(key.fileobj)
+                                else:
+                                    held_open = True
+                                    _drain_in_background(key.fd)
+                            break
+                    for key, _ in selector.select(min(remaining, 0.1)):
+                        if key.fileobj is process.stdin:
+                            try:
+                                written = os.write(key.fd, data[: select.PIPE_BUF])
+                            except BrokenPipeError:  # it exits without reading all
+                                written = len(data)
+                            data = data[written:]
+                            if not data:
+                                selector.unregister(process.stdin)
+                                process.stdin.close()
+                            continue
+                        chunk = os.read(key.fd, 65536)
+                        if chunk:
+                            key.data.extend(chunk)
+                        else:
+                            selector.unregister(key.fileobj)
+            # The program may have closed its stdout and stderr and still be running.
+            try:
+                process.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise subprocess.TimeoutExpired(process.args, timeout) from None
+        finally:
+            # Do not communicate() here: leftover children may still hold the pipes.
+            if process.returncode is None:
+                process.kill()
+                process.wait()
+    text = stdout.text() + stderr.text()
+    if held_open:
+        text += ("\n" if text and not text.endswith("\n") else "") + HELD_OUTPUT_NOTE
+    return text
+
+
 def run_browser(code: str, env: dict[str, str]) -> str:
     """Run model code through the pinned browser-harness CLI."""
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "browser_harness.run"],
-            input=code,
-            capture_output=True,
-            text=True,
-            timeout=BROWSER_TOOL_TIMEOUT,
-            env=env,
-            check=False,
+        return (
+            run_program(
+                [sys.executable, "-m", "browser_harness.run"],
+                code,
+                env,
+                BROWSER_TOOL_TIMEOUT,
+            )
+            or "(no output)"
         )
-        return (result.stdout + result.stderr) or "(no output)"
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
