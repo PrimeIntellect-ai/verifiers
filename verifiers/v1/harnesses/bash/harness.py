@@ -3,7 +3,11 @@ import os
 from typing import Literal
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import (
+    SEARCH_API_KEY_ENV,
+    HarnessConfig,
+    SearchConfig,
+)
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
@@ -26,7 +30,7 @@ EDIT_SYSTEM_PROMPT = (
 )
 # Appended when search is enabled, so the model knows the extra tool exists.
 SEARCH_PROMPT = (
-    "You also have a search tool that returns Google results (title, URL, snippet) for a query; "
+    "You also have a search tool that returns web results (title, URL, snippet) for a query; "
     "use it to research, and use bash (e.g. curl) to read result pages in full when needed."
 )
 
@@ -37,11 +41,12 @@ class BashHarnessConfig(HarnessConfig):
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""
 
-    search: bool = False
-    """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
-    eval environment; the key is handed to the program over argv (like the interception secret) so
-    the agent's `bash` subprocesses don't inherit it. Results matching the runtime's
-    network blocklist are excluded."""
+    search: SearchConfig | None = None
+    """Offer a `search` tool (web results from `search.provider`); off by default, a `[search]`
+    section enables it. Requires the provider's key (`SERPER_API_KEY` or `YOU_API_KEY`) in the
+    eval environment; the key is handed to the program over argv (like the interception secret)
+    so the agent's `bash` subprocesses don't inherit it. Results matching the runtime's network
+    blocklist are excluded."""
 
     compaction: CompactionConfig | None = CompactionConfig()
     """Context compaction. Auto-compaction by default; set `summarize_at_tokens`
@@ -74,7 +79,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         fragments = [BASH_SYSTEM_PROMPT]
         if self.config.edit:
             fragments.append(EDIT_SYSTEM_PROMPT)
-        if self.config.search:
+        if self.config.search is not None:
             fragments.append(SEARCH_PROMPT)
         harness_prompt = " ".join(fragments)
         system_prompt = "\n\n".join(p for p in (harness_prompt, system_prompt) if p)
@@ -97,24 +102,30 @@ class BashHarness(Harness[BashHarnessConfig]):
         args += compaction_args(self.config.compaction)
         if self.config.edit:
             args.append("--edit")
-        if self.config.search:
+        if (search := self.config.search) is not None:
             # Resolve the key and keep it OUT of the program env: it's handed to the program over
-            # argv (--serper-key), so popping it here stops the agent's `bash` subprocesses from
-            # inheriting it via $SERPER_API_KEY / /proc/self/environ. Prefer a key set in the harness
+            # argv (--search-key), so popping it here stops the agent's `bash` subprocesses from
+            # inheriting it via the environment / /proc/self/environ. Prefer a key set in the harness
             # env (harness config env / forward_env); fall back to the host env only when the key is
-            # *absent* (None), not present-but-empty — a rollout setting SERPER_API_KEY="" is
+            # *absent* (None), not present-but-empty — a rollout setting the key to "" is
             # deliberately masking the host secret, so honor that (the check below then fails loudly
-            # rather than leaking the host key). The pop is scoped to search=true, so an unrelated
-            # key forwarded for the agent's own bash-side use is left untouched.
-            serper_key = env.pop("SERPER_API_KEY", None)
-            if serper_key is None:
-                serper_key = os.environ.get("SERPER_API_KEY")
-            if not serper_key:
+            # rather than leaking the host key). The pop is scoped to an enabled search and the
+            # chosen provider, so an unrelated key forwarded for the agent's own bash-side use is
+            # left untouched.
+            key_env = SEARCH_API_KEY_ENV[search.provider]
+            search_key = env.pop(key_env, None)
+            if search_key is None:
+                search_key = os.environ.get(key_env)
+            if not search_key:
                 raise ValueError(
-                    "bash search=true requires SERPER_API_KEY in the eval environment "
+                    f"bash search requires {key_env} in the eval environment "
                     "(the host env or the harness config's env)"
                 )
-            args += ["--search", f"--serper-key={serper_key}"]
+            args += [
+                "--search",
+                f"--search-provider={search.provider}",
+                f"--search-key={search_key}",
+            ]
             if isinstance(runtime.config, NetworkPolicyConfig) and runtime.config.block:
                 args.append(f"--search-block={json.dumps(runtime.config.block)}")
         return await launch_chat_program(

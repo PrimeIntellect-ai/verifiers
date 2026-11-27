@@ -14,7 +14,14 @@ id = "bash"
 compaction = { summarize_at_tokens = 100000 }
 ```
 
-Web search is disabled by default; setting `search = true` enables it and requires `SERPER_API_KEY` on the evaluator host.
+Web search is disabled by default. A `[env.agent.harness.search]` section enables it; by default it searches with Serper and requires `SERPER_API_KEY` on the evaluator host. With `provider = "eco"` (CLI: `--env.agent.harness.search.provider eco`) it searches with You.com Eco Search instead and requires `YOU_API_KEY`:
+
+```toml
+[env.agent.harness.search]
+provider = "eco"
+```
+
+The `rlm` harness enables search with `builtin_skills = ["edit", "search"]` and reads the provider from the same `[env.agent.harness.search]` section.
 
 ## A minimal harness implementation
 
