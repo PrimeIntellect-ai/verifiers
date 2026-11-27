@@ -1202,3 +1202,44 @@ async def test_an_owner_does_not_pin_a_snapshot_dropped_while_it_waited():
     saved = await saving
     assert saved is not None and saved["checkpoints"][-1]["id"] != timed.id
     assert not timed.pinned
+
+
+async def test_save_all_and_release_all_filter_by_trace_ids(monkeypatch):
+    """`save_all` and `release_all` act only on the named traces when `trace_ids` is given."""
+    from verifiers.v1 import restore
+
+    first, first_backend, first_session = make_rollout()
+    second, second_backend, second_session = make_rollout()
+    for backend in (first_backend, second_backend):
+        backend.running.set()
+        backend.durable.set()
+    monkeypatch.setattr(restore, "LIVE", {first, second})
+
+    saves = await restore.save_all(hold=True, trace_ids={first.trace.id})
+    assert [s["id"] for s in saves] == [first.trace.id]
+    assert not first_session.flowing.is_set()
+    assert second_session.flowing.is_set() and second.trace.checkpoints == []
+
+    restore.release_all(trace_ids={second.trace.id})
+    assert not first_session.flowing.is_set()
+    restore.release_all(trace_ids={first.trace.id})
+    assert first_session.flowing.is_set()
+
+
+async def test_agent_start_forwards_restore(monkeypatch):
+    """`Agent.start` forwards `restore=` to `Agent._run`, matching `Agent.run`."""
+    agent = vf.Agent(vf.AgentConfig(model="m"))
+    task = vf.Task(vf.TaskData(idx=0, prompt="q"))
+    saved = {"id": "saved-trace"}
+    seen: dict = {}
+
+    async def fake_run(handle, task, **kwargs):
+        seen["handle"] = handle
+        seen["restore"] = kwargs["restore"]
+        return make_trace()
+
+    monkeypatch.setattr(agent, "_run", fake_run)
+    run = agent.start(task, restore=saved)
+    await run.wait()
+    assert seen["handle"] is run
+    assert seen["restore"] is saved
