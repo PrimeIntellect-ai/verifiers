@@ -627,8 +627,10 @@ class InterceptionServer(Interception):
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
+            session = self.sessions.get(dialect.secret(request.headers))
             try:
-                response = await self.handle_request(request, dialect)
+                with session.waits() if session else contextlib.nullcontext():
+                    response = await self.handle_request(request, dialect)
             except BaseException:
                 _finish_idempotent_attempt(request, None)
                 raise
@@ -774,18 +776,19 @@ class InterceptionServer(Interception):
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
         body = from_json(await request.read())
-        await session.flowing.wait()
-        try:
-            return web.json_response(
-                await session.decide_tool(
-                    str(body.get("tool_call_id", "")),
-                    body.get("name"),
-                    body.get("arguments"),
+        with session.waits():
+            await session.flowing.wait()
+            try:
+                return web.json_response(
+                    await session.decide_tool(
+                        str(body.get("tool_call_id", "")),
+                        body.get("name"),
+                        body.get("arguments"),
+                    )
                 )
-            )
-        except RolloutError as error:
-            session.error = error
-            return web.json_response({"error": str(error)}, status=400)
+            except RolloutError as error:
+                session.error = error
+                return web.json_response({"error": str(error)}, status=400)
 
     def record_call(
         self,

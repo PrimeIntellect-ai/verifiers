@@ -17,7 +17,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -159,6 +159,10 @@ class Snapshot(BaseModel):
 
     id: str
     """The provider's id for the snapshot."""
+    peers: dict[str, Snapshot] = Field(default_factory=dict, exclude_if=lambda v: not v)
+    """Snapshots of the tool server VMs on the box's private network, by server name,
+    taken in the same stop. A restore boots each server's VM from its own, and whoever
+    deletes the snapshot deletes these with it."""
 
 
 @dataclass

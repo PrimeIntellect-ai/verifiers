@@ -15,9 +15,11 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     PrimeBackend,
     PrimeConfig,
+    Runtime,
     RuntimeBackend,
     make_backend,
 )
@@ -57,6 +59,34 @@ def tool_vms(
 def lan_host(backend: RuntimeBackend) -> str:
     """The name a LAN member resolves a VM by."""
     return f"{backend.info.id}.sandbox.internal"
+
+
+_ALIAS = r"""
+for _ in $(seq 30); do
+  address=$(getent hosts "$2" | awk 'NR == 1 {print $1}')
+  [ -n "$address" ] && break
+  sleep 1
+done
+[ -n "$address" ] || { echo "$2 does not resolve" >&2; exit 1; }
+grep -v " $1\$" /etc/hosts > /tmp/vf-hosts || true
+printf '%s %s\n' "$address" "$1" >> /tmp/vf-hosts
+cat /tmp/vf-hosts > /etc/hosts
+"""
+
+
+async def alias_hosts(runtime: Runtime, aliases: Mapping[str, str]) -> None:
+    """Make the box resolve each old LAN name in `aliases` to the address of its new
+    one. A box restored from a memory snapshot still reaches its peers at the names of
+    the VMs it first ran beside; restored peers are new VMs with new names."""
+    for old, new in aliases.items():
+        if old == new:
+            continue
+        result = await runtime.run(["sh", "-c", _ALIAS, "sh", old, new], {})
+        if result.exit_code != 0:
+            raise SandboxError(
+                f"could not resolve {old} to {new} in the restored box: "
+                f"{(result.stderr or result.stdout).strip()[-500:]}"
+            )
 
 
 def _tag(index: int) -> str:

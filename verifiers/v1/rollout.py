@@ -42,7 +42,7 @@ from verifiers.v1.runtimes import (
     backend_cls,
     make_backend,
 )
-from verifiers.v1.runtimes.private_network import tool_vms
+from verifiers.v1.runtimes.private_network import alias_hosts, tool_vms
 from verifiers.v1.session import (
     RolloutLimits,
     RolloutSession,
@@ -85,6 +85,9 @@ class RolloutTimeouts:
 
 HOLD_SECONDS = 120
 """How long a saved rollout waits for its owner's `release` before it goes on by itself."""
+TOOLS_REST_SECONDS = 60
+"""How long a snapshot of a box with tool server VMs waits for the box to ask for a
+model turn or a tool verdict, when no tool call is under way between them."""
 
 
 def _unpin(taken: asyncio.Future[Checkpoint]) -> None:
@@ -289,6 +292,8 @@ class Rollout:
         """Why the last `save` returned nothing."""
         self._state_unsaved: str | None = None
         """Why the newest snapshot could not record the task state, if it could not."""
+        self._tools_busy = False
+        """Whether the newest snapshot was given up because a tool call was under way."""
         self._hold_id: str | None = None
         """Identifies the pending owner save, then its exported snapshot, until release."""
         self._release_timer: asyncio.TimerHandle | None = None
@@ -442,15 +447,29 @@ class Rollout:
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
                 spec = self.task.deployment_spec()
+                # Tool servers on Prime VMs of their own boot with the workspace.
+                vms = tool_vms(
+                    toolsets,
+                    runtime.backend.config,
+                    composed=spec is not None,
+                    borrowed=self._borrowed_runtime is not None,
+                )
+                if self._restore is not None:
+                    # Each continues its snapshot from the box's stop, still serving.
+                    peers = self._restore.snapshot.peers
+                    if set(peers) != set(vms):
+                        raise SandboxError(
+                            "the rollout cannot continue from its memory snapshot: "
+                            f"it holds tool server VMs {sorted(peers)}, the task "
+                            f"runs {sorted(vms)}"
+                        )
+                    vms = {
+                        name: backend_cls(config).restore_config(config, peers[name])
+                        for name, config in vms.items()
+                    }
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
-                    # Tool servers on Prime VMs of their own boot with the workspace.
-                    tool_vms=tool_vms(
-                        toolsets,
-                        runtime.backend.config,
-                        composed=spec is not None,
-                        borrowed=self._borrowed_runtime is not None,
-                    ),
+                    tool_vms=vms,
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -528,12 +547,18 @@ class Rollout:
                     if self._has_user
                     else "its agent takes no checkpoints"
                     if self._checkpointing is None
-                    # Everything the box reaches the host through must follow it to a
-                    # new box: the relay does, tool servers and services do not.
-                    else "its task has tool servers or services of its own"
-                    if toolsets
-                    or self._shared_tools
+                    # Everything the box reaches must follow it to a new box: the
+                    # relay does, and so do tool servers on VMs of their own, which
+                    # stop and restore with the box. Other tool servers and services
+                    # do not.
+                    else "its task has services, shared tools or tool servers off VMs "
+                    "of their own"
+                    if self._shared_tools
                     or self.deployment.spec is not None
+                    or any(
+                        toolset.server_name not in self.deployment.tool_vms
+                        for toolset in toolsets
+                    )
                     else None
                 )
                 self._memory = self.unsaveable is None and self._relay is not None
@@ -597,6 +622,10 @@ class Rollout:
                     if self.deployment.spec is not None
                     else {}
                 )
+                # The URLs the restored harness holds for its tool server VMs.
+                held = (
+                    self._restore.session["live"].get("tools", {}) if restored else {}
+                )
                 self._urls = await self._stack.enter_async_context(
                     serve_tools(
                         toolsets,
@@ -614,8 +643,19 @@ class Rollout:
                             name: self.deployment.target(name)
                             for name in self.deployment.tool_vms
                         },
+                        restored=held,
                     )
                 )
+                if held:
+                    # The harness reaches each server at the LAN name of the VM it
+                    # first ran on: resolve that name to the VM that continues it.
+                    await alias_hosts(
+                        runtime,
+                        {
+                            urlsplit(url).hostname: self.deployment.hosts[name]
+                            for name, url in held.items()
+                        },
+                    )
                 logger.debug(
                     "Started interception and tool servers in %s",
                     format_time(time.perf_counter() - started),
@@ -624,7 +664,11 @@ class Rollout:
                 # execution policy while preserving the framework routes the agent uses.
                 # Service hosts resolve inside the deployment (Compose names, LAN
                 # names), not as egress.
-                internal = {*services, *self.deployment.hosts.values()}
+                internal = {
+                    *services,
+                    *self.deployment.hosts.values(),
+                    *(urlsplit(url).hostname for url in held.values()),
+                }
                 await self.deployment.prepare_execution(
                     [
                         url
@@ -1112,6 +1156,8 @@ class Rollout:
                 self.save_skipped = (
                     "its harness program ended during the save"
                     if ended
+                    else "a tool call was under way throughout the save"
+                    if self._tools_busy
                     else self._state_unsaved or "its memory snapshot failed"
                 )
                 return None
@@ -1163,7 +1209,7 @@ class Rollout:
             # Its durable wait failed and dropped it: the box's teardown frees it.
             stray = self.runtime.backend.stray_snapshots
             if all(snapshot.id != snapshot_id for snapshot in stray):
-                stray.append(Snapshot(id=snapshot_id))
+                stray.append(Snapshot.model_validate(restore_entry(saved)["snapshot"]))
         self._release_hold(snapshot_id)
 
     def _release_hold(self, hold_id: str | None) -> None:
@@ -1221,6 +1267,19 @@ class Rollout:
         async with self.runtime.backend.snapshot_pace(), self._capturing:
             if self._closed:
                 return None
+            self._tools_busy = False
+            if self.deployment.tool_vms:
+                # The tool server VMs stop beside the box, and a call between them
+                # does not survive the stop. Wait, without holding the box, until it
+                # asks for its model or a tool verdict: a harness that runs one tool
+                # at a time then runs none. The hold follows without a yield.
+                try:
+                    async with asyncio.timeout(TOOLS_REST_SECONDS):
+                        while not session.asking.is_set():
+                            await session.asking.wait()
+                except TimeoutError:
+                    self._tools_busy = True
+                    return None
             session.hold()
             try:
                 # Another commit can begin after the previous one wakes this waiter.
@@ -1252,6 +1311,10 @@ class Rollout:
                     "relay": self._relay.state,
                     "secret": self._secret,
                 }
+                if self.deployment.tool_vms:
+                    data["live"]["tools"] = {
+                        name: self._urls[name] for name in self.deployment.tool_vms
+                    }
                 started = time.time()
 
                 def on_taken(snapshot: Snapshot) -> None:
@@ -1272,7 +1335,7 @@ class Rollout:
                         taken.set_result(checkpoint)
 
                 try:
-                    snapshot = await self.runtime.backend.snapshot(on_taken)
+                    snapshot = await self._snapshot(on_taken)
                 except Exception:
                     logger.warning(
                         "memory snapshot failed (rollout %s)",
@@ -1320,6 +1383,37 @@ class Rollout:
             node,
         )
         return checkpoint
+
+    async def _snapshot(self, taken: Callable[[Snapshot], None]) -> Snapshot:
+        """Snapshot the box, and its tool server VMs in the same stop (`Snapshot.peers`).
+        With tool server VMs, `taken` gets the snapshot once every one is named."""
+        backend = self.runtime.backend
+        vms = {
+            name: self.deployment.target_backends[name]
+            for name in self.deployment.tool_vms
+        }
+        if not vms:
+            return await backend.snapshot(taken)
+        main, *named = await asyncio.gather(
+            backend.snapshot(),
+            *(vm.snapshot() for vm in vms.values()),
+            return_exceptions=True,
+        )
+        peers = {}
+        for (name, vm), snapshot in zip(vms.items(), named):
+            if isinstance(snapshot, Snapshot):
+                # Only the box's teardown frees what nothing restores.
+                vm.stray_snapshots.remove(snapshot)
+                peers[name] = snapshot
+        stray = backend.stray_snapshots
+        if not isinstance(main, Snapshot) or len(peers) < len(vms):
+            stray.extend(peers.values())
+            raise next(e for e in (main, *named) if isinstance(e, BaseException))
+        stray.remove(main)
+        snapshot = main.model_copy(update={"peers": peers})
+        stray.append(snapshot)
+        taken(snapshot)
+        return snapshot
 
     def _drop_capture(self, checkpoint: Checkpoint | None) -> None:
         """Drop a snapshot that failed after `_take_snapshot` handed it out. No retry

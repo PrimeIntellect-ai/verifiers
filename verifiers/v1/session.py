@@ -429,10 +429,27 @@ class RolloutSession:
     again (`committing`). A snapshot records the trace only when it is set: every
     reply on the trace can then be replayed to a box that did not get it."""
     _committing: int = 0
+    asking: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    """Set while the box waits for a model turn or a tool gate verdict (`waits`): a
+    harness that runs one tool at a time then runs none, so the box's tool servers are
+    at rest too."""
+    _asking: int = 0
 
     def __post_init__(self) -> None:
         self.flowing.set()
         self.settled.set()
+
+    @contextlib.contextmanager
+    def waits(self) -> Iterator[None]:
+        """The box waits for the answer to a request that comes before any tool runs."""
+        self._asking += 1
+        self.asking.set()
+        try:
+            yield
+        finally:
+            self._asking -= 1
+            if not self._asking:
+                self.asking.clear()
 
     @contextlib.contextmanager
     def committing(self) -> Iterator[None]:

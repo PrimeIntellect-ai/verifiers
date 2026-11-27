@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import math
 import secrets
 import shlex
@@ -342,6 +343,18 @@ async def _read_back_port(runtime: Runtime, path: str, deadline: float) -> int:
         await asyncio.sleep(min(1, remaining))
 
 
+def state_channel_path(server: ServerBase) -> str:
+    """Where a server on a VM of its own reads its state channel (`write_state_channel`)."""
+    return f"/tmp/vf-state-channel-{server.server_name}.json"
+
+
+async def write_state_channel(
+    runtime: Runtime, path: str, url: str | None, secret: str
+) -> None:
+    """Point the server that reads `path` at the state channel `url`."""
+    await runtime.write(path, json.dumps({"url": url, "secret": secret}).encode())
+
+
 async def serve_in_runtime(
     server: ServerBase,
     runtime: Runtime,
@@ -350,12 +363,15 @@ async def serve_in_runtime(
     listen_all: bool = False,
     state_url: str | None = None,
     state_secret: str = "",
+    state_file: str | None = None,
 ) -> int:
     """Start a server and return its bound port.
 
     Exposed servers use the runtime's forwarded port when one is configured. Otherwise,
     the OS chooses a port and reports it through a file. With a state channel, the server
-    fetches the current rollout task from the adjacent `/task` endpoint.
+    fetches the current rollout task from the adjacent `/task` endpoint. With
+    `state_file`, the server reads the channel from that file in its runtime, which a
+    restore from a memory snapshot rewrites.
     """
     # A shared server has a private service secret but no fixed state URL. Set
     # both controls explicitly so a subprocess cannot inherit stale host values.
@@ -364,6 +380,9 @@ async def serve_in_runtime(
         "VF_STATE_URL": state_url or "",
         "VF_STATE_SECRET": state_secret,
     }
+    if state_file is not None:
+        await write_state_channel(runtime, state_file, state_url, state_secret)
+        env["VF_STATE_FILE"] = state_file
     if runtime.type == "subprocess":
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
@@ -464,6 +483,7 @@ async def _serve(
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
     placements: Mapping[str, Runtime] | None = None,
+    restored: Mapping[str, str] | None = None,
 ):
     cfg = server.config
     service = getattr(cfg, "service", None)
@@ -507,17 +527,25 @@ async def _serve(
             backend = await stack.enter_async_context(provision_backend(cfg.runtime))
             runtime = backend.bind()
 
+        state_url = (
+            runtime.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
+        )
+        if own_vm is not None and server.server_name in (restored or {}):
+            # The VM continues a memory snapshot and still runs the server: move it to
+            # this rollout's state channel, and keep the URL its harness already holds.
+            await write_state_channel(
+                runtime, state_channel_path(server), state_url, state_secret
+            )
+            yield _ServedServer(restored[server.server_name], runtime)
+            return
         port = await serve_in_runtime(
             server,
             runtime,
             exposed=host is None,
             listen_all=host is not None,
-            state_url=(
-                runtime.host_url(f"{state_base.rstrip('/')}/state")
-                if state_base
-                else None
-            ),
+            state_url=state_url,
             state_secret=state_secret,
+            state_file=state_channel_path(server) if own_vm is not None else None,
         )
         if host is not None:
             yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
@@ -556,6 +584,7 @@ async def serve(
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
     placements: Mapping[str, Runtime] | None = None,
+    restored: Mapping[str, str] | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -568,6 +597,7 @@ async def serve(
         services=services,
         hosts=hosts,
         placements=placements,
+        restored=restored,
     ) as served:
         yield served.url
 
@@ -679,6 +709,7 @@ async def serve_tools(
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
     placements: Mapping[str, Runtime] | None = None,
+    restored: Mapping[str, str] | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` own their connections through `Toolset.serve`, and
@@ -686,7 +717,9 @@ async def serve_tools(
     join under their per-rollout state tag.
     `state_secret` is private to task-scoped servers; shared servers keep an
     eval-level service secret and receive only signed `state_route` coordinates.
-    `state_base` is universally reachable from either placement."""
+    `state_base` is universally reachable from either placement. `restored` maps the
+    servers whose VMs continue a memory snapshot to the URL their harness holds: they
+    still run, so they only move to this rollout's state channel."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
         for name, server in (shared or {}).items():
@@ -716,6 +749,7 @@ async def serve_tools(
                     services=services,
                     hosts=hosts,
                     placements=placements,
+                    restored=restored,
                 )
             )
             logger.debug("Connected tool server %s", name)
