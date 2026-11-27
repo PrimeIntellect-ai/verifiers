@@ -284,6 +284,14 @@ class Rollout:
         self._pause = pausing.get()
         if self._pause is not None:
             self._session.running = self._pause.running
+            self._session.on_paused_call = self._suspend_box
+        self._unpaused = asyncio.Event()
+        """Cleared while the episode is paused (`set_paused`)."""
+        self._unpaused.set()
+        self._suspension: asyncio.Task[None] | None = None
+        """Stops the box for the pause (`_suspend_box`)."""
+        self._suspended: Checkpoint | None = None
+        """The memory checkpoint the box stopped at, while it stays stopped."""
         self._memory = False
         """Whether this run can take memory snapshots: decided at `open`, once the box,
         its relay and the task's tool servers are known. Its checkpoints at model turns
@@ -1042,6 +1050,8 @@ class Rollout:
                 self._closed
                 or not self._checkpointing
                 or not self._checkpointing.interval
+                # A paused rollout makes no progress to snapshot; its box may be stopped.
+                or not self._unpaused.is_set()
             ):
                 return None
             now = asyncio.get_running_loop().time()
@@ -1112,6 +1122,18 @@ class Rollout:
             self.save_skipped = "its harness program is not running (setup or scoring)"
         if self.save_skipped is not None:
             return None
+        suspended = self._suspended
+        if suspended is not None:
+            # The box stays stopped at this checkpoint until the pause ends, and its
+            # replies stay held until then.
+            suspended.pinned = True
+            if hold:
+                self._hold_id = suspended.id
+                self._unheld.clear()
+                self._begin_hold()
+                if watchdog:
+                    self.arm_hold_watchdog()
+            return restorable(self.trace, suspended)
         task = asyncio.current_task()
         if task is not None:
             self._captures.add(task)
@@ -1162,11 +1184,43 @@ class Rollout:
 
     def set_paused(self, paused: bool) -> None:
         """The episode paused or resumed (`Pause`): the agent deadline stops while it
-        is paused."""
+        is paused, and so does the box (`_suspend_box`)."""
         if paused:
             self._begin_hold(PAUSE_HOLD)
+            if self._unpaused.is_set():
+                self._unpaused = asyncio.Event()
+            self._suspend_box()
         else:
             self._end_hold(PAUSE_HOLD)
+            self._unpaused.set()
+
+    def _suspend_box(self) -> None:
+        """Stop the box until the pause ends: a memory checkpoint whose box stays
+        stopped, so a long pause holds no compute. Tried again when a model call
+        waits for the pause (`RolloutSession.on_paused_call`): a box still booting or
+        between segments has nothing to snapshot yet."""
+        if (
+            not self._memory
+            or self._closed
+            or self._harness_session is None
+            or self._unpaused.is_set()
+            or (self._suspension is not None and not self._suspension.done())
+        ):
+            return
+        self._suspension = asyncio.create_task(self._suspend(self._unpaused))
+        self._captures.add(self._suspension)
+        self._suspension.add_done_callback(self._captures.discard)
+
+    async def _suspend(self, until: asyncio.Event) -> None:
+        taken: asyncio.Future[Checkpoint] = asyncio.get_running_loop().create_future()
+        try:
+            await self._capture(taken, pinned=False, until=until)
+        except Exception:
+            logger.warning(
+                "box did not run again after its pause (rollout %s)",
+                self.trace.id,
+                exc_info=True,
+            )
 
     def arm_hold_watchdog(self) -> None:
         """Release the hold by itself after `HOLD_SECONDS`, unless the owner does first:
@@ -1235,20 +1289,26 @@ class Rollout:
         return taken.result()
 
     async def _capture(
-        self, taken: asyncio.Future[Checkpoint], pinned: bool
+        self,
+        taken: asyncio.Future[Checkpoint],
+        pinned: bool,
+        until: asyncio.Event | None = None,
     ) -> Checkpoint | None:
         """Take the snapshot `_take_snapshot` hands out through `taken`, and hold the
-        box's replies until it runs again. A snapshot that fails after it was handed
-        out is dropped (`_drop_capture`). So is a snapshot that no owner holds and
-        whose program ended while the box stopped."""
+        box's replies until it runs again. With `until`, the box stays stopped until
+        it is set (`_suspend_box`). A snapshot that fails after it was handed out is
+        dropped (`_drop_capture`). So is a snapshot that no owner holds and whose
+        program ended while the box stopped."""
         assert self.runtime is not None and self._relay is not None
         assert self._harness_session is not None
         session = self._session
         loop = asyncio.get_running_loop()
         checkpoint: Checkpoint | None = None
+        pace = AsyncExitStack()
         # The pace is waited for before the box is held, not while.
-        async with self.runtime.backend.snapshot_pace(), self._capturing:
-            if self._closed:
+        await pace.enter_async_context(self.runtime.backend.snapshot_pace())
+        async with pace, self._capturing:
+            if self._closed or (until is not None and until.is_set()):
                 return None
             session.hold()
             try:
@@ -1301,7 +1361,9 @@ class Rollout:
                         taken.set_result(checkpoint)
 
                 try:
-                    snapshot = await self.runtime.backend.snapshot(on_taken)
+                    snapshot = await self.runtime.backend.snapshot(
+                        on_taken, stay_stopped=until is not None
+                    )
                 except Exception:
                     logger.warning(
                         "memory snapshot failed (rollout %s)",
@@ -1313,6 +1375,20 @@ class Rollout:
                 if checkpoint is None:
                     on_taken(snapshot)
                 assert checkpoint is not None
+                if until is not None:
+                    # Restorable while the box stays stopped: an owner may save it
+                    # (`save`), and a retry continues it if the box never runs again.
+                    self._durable[checkpoint.id] = asyncio.create_task(
+                        self._make_durable(checkpoint)
+                    )
+                    self._suspended = checkpoint
+                    # A stopped box takes no turn of the snapshot pace.
+                    await pace.aclose()
+                    try:
+                        await until.wait()
+                    finally:
+                        self._suspended = None
+                        await self.runtime.backend.wake()
                 if not checkpoint.pinned and (
                     self._harness_session is None
                     or self._harness_session.memory_state() is None
@@ -1338,9 +1414,10 @@ class Rollout:
                     self._end_hold()
                     session.resume()
         checkpoint.held = time.time() - started
-        self._durable[checkpoint.id] = asyncio.create_task(
-            self._make_durable(checkpoint)
-        )
+        if until is None:
+            self._durable[checkpoint.id] = asyncio.create_task(
+                self._make_durable(checkpoint)
+            )
         logger.debug(
             "memory checkpoint %s taken in %s: id=%s node=%s",
             checkpoint.id,
@@ -1429,7 +1506,9 @@ class Rollout:
         """Before the box goes: wait for the snapshots still uploading, so a retry
         can restore them (its teardown would fail them), or, with nothing to retry,
         stop waiting and leave them to be freed."""
-        # A snapshot still being taken would start its upload after this returned.
+        # A box stopped for a pause runs again, so its teardown can reach it. A
+        # snapshot still being taken would start its upload after this returned.
+        self._unpaused.set()
         await asyncio.gather(*self._captures, return_exceptions=True)
         tasks = list(self._durable.values())
         if not wait:

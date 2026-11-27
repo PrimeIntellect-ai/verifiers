@@ -282,13 +282,22 @@ class RuntimeBackend(ABC):
         pass
 
     async def snapshot(
-        self, taken: Callable[[Snapshot], None] | None = None
+        self,
+        taken: Callable[[Snapshot], None] | None = None,
+        *,
+        stay_stopped: bool = False,
     ) -> Snapshot:
         """Snapshot the box's files and memory. The box stops while the snapshot is
         taken and runs again when this returns; its connections to the outside may be
-        dead by then. `taken` gets the snapshot as soon as the provider names it,
-        before the box has stopped; a snapshot that fails after that still raises
-        here. The snapshot becomes restorable only later (`wait_snapshot`)."""
+        dead by then. With `stay_stopped`, the box stays stopped until `wake`, and
+        frees its compute meanwhile. `taken` gets the snapshot as soon as the provider
+        names it, before the box has stopped; a snapshot that fails after that still
+        raises here (and the box runs again). The snapshot becomes restorable only
+        later (`wait_snapshot`)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
+
+    async def wake(self) -> None:
+        """Run the box a `snapshot(stay_stopped=True)` left stopped."""
         raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
 
     def snapshot_pace(self) -> AbstractAsyncContextManager[Any]:

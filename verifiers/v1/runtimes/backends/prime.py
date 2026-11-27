@@ -355,7 +355,10 @@ class PrimeBackend(RuntimeBackend):
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
     async def snapshot(
-        self, taken: Callable[[Snapshot], None] | None = None
+        self,
+        taken: Callable[[Snapshot], None] | None = None,
+        *,
+        stay_stopped: bool = False,
     ) -> Snapshot:
         # A pause is the platform's memory snapshot: it stops the box, and the resume
         # continues it. The platform uploads the snapshot after the pause. Until it is
@@ -365,6 +368,7 @@ class PrimeBackend(RuntimeBackend):
             # Shielded as one: a box left paused never runs its rollout again.
             self._awake.clear()
             self._snapshots += 1
+            stopped = False
             try:
                 try:
                     paused = await self._client.pause(self.info.id)
@@ -396,12 +400,15 @@ class PrimeBackend(RuntimeBackend):
                     await self._client.wait_for_pause(
                         self.info.id, timeout_seconds=_PAUSE_SETTLE_SECONDS
                     )
+                    stopped = stay_stopped
                 finally:
                     # The pause was accepted, so the box stops or has stopped. It must
                     # run again also when the wait for it failed.
-                    await self._resume()
+                    if not stopped:
+                        await self._resume()
             finally:
-                self._awake.set()
+                if not stopped:
+                    self._awake.set()
             return snapshot
 
         try:
@@ -423,6 +430,13 @@ class PrimeBackend(RuntimeBackend):
             slots = _snapshot_slots[loop] = asyncio.Semaphore(_SNAPSHOTS_IN_FLIGHT)
         async with slots:
             yield
+
+    async def wake(self) -> None:
+        try:
+            await run_shielded(self._resume())
+        finally:
+            # A box that did not resume fails the calls that waited for it.
+            self._awake.set()
 
     async def _resume(self) -> None:
         """Resume the paused box. The pause freed its memory on its node, which another

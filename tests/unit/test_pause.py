@@ -14,8 +14,16 @@ class HeldRollout:
     _begin_hold = Rollout._begin_hold
     _end_hold = Rollout._end_hold
     _segment_agent_time = Rollout._segment_agent_time
+    _suspend_box = Rollout._suspend_box
 
     def __init__(self) -> None:
+        # No memory snapshots: a pause stops only the agent deadline.
+        self._memory = False
+        self._closed = False
+        self._harness_session = None
+        self._suspension = None
+        self._unpaused = asyncio.Event()
+        self._unpaused.set()
         self._holds: set[str] = set()
         self._hold_started = None
         self._hold_deadline = None

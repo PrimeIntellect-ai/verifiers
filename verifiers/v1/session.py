@@ -429,6 +429,9 @@ class RolloutSession:
     """Cleared while the episode is paused (`Pause.running`): no new model call goes
     upstream until it is set again."""
 
+    on_paused_call: Callable[[], None] | None = field(default=None, repr=False)
+    """Called when a model call starts to wait for a paused episode (`running`)."""
+
     settled: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     """Cleared while a turn is between its commit and its reply being ready to send
     again (`committing`). A snapshot records the trace only when it is set: every

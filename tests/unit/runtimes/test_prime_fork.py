@@ -190,3 +190,41 @@ def test_a_snapshot_is_named_before_the_box_stops(monkeypatch, taken_fails):
         assert backend._awake.is_set()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("settles", [True, False])
+def test_a_box_kept_stopped_runs_again_only_on_wake(monkeypatch, settles):
+    """A snapshot that keeps the box stopped leaves calls into it waiting until
+    `wake`. A box whose stop was not seen to finish runs again at once."""
+    calls: list[str] = []
+
+    class Client:
+        async def pause(self, sandbox_id):
+            calls.append("pause")
+            return SimpleNamespace(checkpoint_id="ck1")
+
+        async def wait_for_pause(self, sandbox_id, timeout_seconds):
+            if not settles:
+                raise TimeoutError("still pausing")
+            calls.append("paused")
+
+    async def resume(self):
+        calls.append("resume")
+
+    async def scenario():
+        monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+        monkeypatch.setattr(PrimeBackend, "_resume", resume)
+        backend = PrimeBackend(PrimeConfig())
+        backend._client = Client()
+        backend.info.id = "sb1"
+        if not settles:
+            with pytest.raises(SandboxError, match="still pausing"):
+                await backend.snapshot(stay_stopped=True)
+            assert calls == ["pause", "resume"] and backend._awake.is_set()
+            return
+        assert (await backend.snapshot(stay_stopped=True)).id == "ck1"
+        assert calls == ["pause", "paused"] and not backend._awake.is_set()
+        await backend.wake()
+        assert calls == ["pause", "paused", "resume"] and backend._awake.is_set()
+
+    asyncio.run(scenario())
