@@ -42,6 +42,10 @@ sed -i 's/if b.get("signature") else out/if isinstance(b.get("signature"), str) 
 sed -i 's/signed = b.get("data") if is_redacted else b.get("signature")/signed = bool(b.get("data")) if is_redacted else isinstance(b.get("signature"), str)/' "$AGENT_HERMES_DIR/agent/anthropic_message_convert.py"
 grep -qF 'if isinstance(b.get("signature"), str) else out' "$AGENT_HERMES_DIR/agent/anthropic_message_convert.py"
 grep -qF 'signed = bool(b.get("data")) if is_redacted else isinstance(b.get("signature"), str)' "$AGENT_HERMES_DIR/agent/anthropic_message_convert.py"
+# Replay tool-call ids verbatim: the upstream minted them and takes them back, and rewriting Kimi's `functions.<name>:<n>` ids forks the trace.
+# Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/anthropic_message_convert.py#L117
+sed -i 's/return (re\\.sub(r"\\[^a-zA-Z0-9_-]", "_", tool_id) if tool_id else "") or "tool_0"/return tool_id or "tool_0"/' "$AGENT_HERMES_DIR/agent/anthropic_message_convert.py"
+grep -qF 'return tool_id or "tool_0"' "$AGENT_HERMES_DIR/agent/anthropic_message_convert.py"
 uv sync --project "$AGENT_HERMES_DIR" --python 3.14 --locked --no-dev --extra acp --extra mcp --extra anthropic
 touch "$AGENT_HERMES_DIR/.ready"
 """
