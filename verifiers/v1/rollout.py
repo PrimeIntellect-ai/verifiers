@@ -86,6 +86,12 @@ class RolloutTimeouts:
 HOLD_SECONDS = 120
 """How long a saved rollout waits for its owner's `release` before it goes on by itself."""
 
+
+def _unpin(taken: asyncio.Future[Checkpoint]) -> None:
+    if not taken.cancelled():
+        taken.result().pinned = False
+
+
 _HOME_PROBE = (
     "home=$(awk -F: -v u=\"$1\" '$1 == u { print $6 }' /etc/passwd); "
     'test -n "$home" || exit 1; home=${2:-$home}; echo "$home"; test -d "$home"'
@@ -1090,9 +1096,11 @@ class Rollout:
         """Take a memory checkpoint of the running rollout now and return its trace as
         saved (`restorable`), for an owner that continues the rollout in another
         process (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`). The
-        save returns once the box runs again; the snapshot becomes durable in the
-        background, and a restore from it waits for that (`PrimeBackend.start`), so
-        a save of thousands of boxes does not wait for their uploads. With `hold`,
+        save returns once the provider names the snapshot, before the box has
+        stopped, so a save of thousands of boxes waits neither for their stops nor
+        for their uploads: a restore waits until the snapshot is durable
+        (`PrimeBackend.start`), and one from a snapshot that failed later starts
+        over (`_drop_capture`). With `hold`,
         nothing the box asked for is answered until `release`, so the rollout cannot
         move past its checkpoint while the owner records it; `watchdog` arms the
         release that ends a hold no owner ends (`arm_hold_watchdog`), which an owner
@@ -1122,12 +1130,20 @@ class Rollout:
         checkpoint = None
         try:
             checkpoint = await self._owner_checkpoint(hold=hold)
+            ended = (
+                self._harness_session is None
+                or self._harness_session.memory_state() is None
+            )
             if checkpoint is None:
                 self._release_hold(hold_id)
-                self.save_skipped = self._state_unsaved or "its memory snapshot failed"
+                self.save_skipped = (
+                    "its harness program ended during the save"
+                    if ended
+                    else self._state_unsaved or "its memory snapshot failed"
+                )
                 return None
-            if self._harness_session.memory_state() is None:
-                # The program left while the box was being stopped: the snapshot may
+            if ended:
+                # The program left before the snapshot was named: the snapshot may
                 # hold a box with nothing to continue.
                 checkpoint.pinned = False
                 self._release_hold(hold_id)
@@ -1172,7 +1188,9 @@ class Rollout:
                 found = True
         if not found and self.runtime is not None:
             # Its durable wait failed and dropped it: the box's teardown frees it.
-            self.runtime.backend.stray_snapshots.append(Snapshot(id=snapshot_id))
+            stray = self.runtime.backend.stray_snapshots
+            if all(snapshot.id != snapshot_id for snapshot in stray):
+                stray.append(Snapshot(id=snapshot_id))
         self._release_hold(snapshot_id)
 
     def _release_hold(self, hold_id: str | None) -> None:
@@ -1183,21 +1201,49 @@ class Rollout:
         """Answer the box again after a `save(hold=True)`."""
         self._hold_id = None
         self._unheld.set()
-        self._end_hold()
         if self._release_timer is not None:
             self._release_timer.cancel()
             self._release_timer = None
-        # A snapshot that is being taken holds the box for itself, and lets the
-        # replies flow when it is done.
+        # A snapshot that is being taken holds the box for itself. It ends the hold
+        # and lets the replies flow when the box runs again.
         if not self._capturing.locked():
+            self._end_hold()
             self._session.resume()
 
     async def _take_snapshot(self, *, pinned: bool = False) -> Checkpoint | None:
-        """Hold replies and snapshot the box at a replayable trace boundary."""
+        """Hold replies and snapshot the box at a replayable trace boundary. Returns
+        the checkpoint once the provider names the snapshot, before the box has
+        stopped. The rest of the capture goes on in the background (`_capture`)."""
         assert self.runtime is not None and self._relay is not None
-        session = self._session
         if self._harness_session is None:
             return None
+        taken: asyncio.Future[Checkpoint] = asyncio.get_running_loop().create_future()
+        capture = asyncio.create_task(self._capture(taken, pinned))
+        self._captures.add(capture)
+        capture.add_done_callback(self._captures.discard)
+        try:
+            await asyncio.wait({taken, capture}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            # Nobody gets the checkpoint: it is the rollout's own.
+            taken.add_done_callback(_unpin)
+            raise
+        # A capture that ended already may have dropped the snapshot it named.
+        if capture.done():
+            return capture.result()
+        return taken.result()
+
+    async def _capture(
+        self, taken: asyncio.Future[Checkpoint], pinned: bool
+    ) -> Checkpoint | None:
+        """Take the snapshot `_take_snapshot` hands out through `taken`, and hold the
+        box's replies until it runs again. A snapshot that fails after it was handed
+        out is dropped (`_drop_capture`). So is a snapshot that no owner holds and
+        whose program ended while the box stopped."""
+        assert self.runtime is not None and self._relay is not None
+        assert self._harness_session is not None
+        session = self._session
+        loop = asyncio.get_running_loop()
+        checkpoint: Checkpoint | None = None
         # The pace is waited for before the box is held, not while.
         async with self.runtime.backend.snapshot_pace(), self._capturing:
             if self._closed:
@@ -1234,18 +1280,47 @@ class Rollout:
                     "secret": self._secret,
                 }
                 started = time.time()
+
+                def on_taken(snapshot: Snapshot) -> None:
+                    nonlocal checkpoint
+                    self._last_capture = loop.time()
+                    checkpoint = Checkpoint(
+                        id=snapshot.id,
+                        node=node,
+                        session=data,
+                        agent_time=self._agent_time_spent + self._segment_agent_time(),
+                        snapshot=snapshot,
+                        time=TimeSpan(start=started),
+                        captured=time.time(),
+                        pinned=pinned,
+                    )
+                    self.trace.checkpoints.append(checkpoint)
+                    if not taken.done():
+                        taken.set_result(checkpoint)
+
                 try:
-                    snapshot = await self.runtime.backend.snapshot()
+                    snapshot = await self.runtime.backend.snapshot(on_taken)
                 except Exception:
                     logger.warning(
                         "memory snapshot failed (rollout %s)",
                         self.trace.id,
                         exc_info=True,
                     )
+                    self._drop_capture(checkpoint)
                     return None
-                captured = time.time()
-                self._last_capture = asyncio.get_running_loop().time()
-                agent_time = self._agent_time_spent + self._segment_agent_time()
+                if checkpoint is None:
+                    on_taken(snapshot)
+                assert checkpoint is not None
+                if not checkpoint.pinned and (
+                    self._harness_session is None
+                    or self._harness_session.memory_state() is None
+                ):
+                    # The program left while the box was being stopped: the snapshot
+                    # may hold a box with nothing to continue. An owner's snapshot
+                    # stays the owner's, since the owner may have ended the rollout
+                    # itself. A restore that leads nowhere starts over.
+                    self._drop_capture(checkpoint)
+                    return None
                 # The box's connections to the server did not survive the stop: its
                 # relay opens new ones and repeats the requests that wait.
                 try:
@@ -1258,30 +1333,36 @@ class Rollout:
                     )
             finally:
                 if self._hold_id is None:
+                    self._end_hold()
                     session.resume()
-        checkpoint = Checkpoint(
-            id=snapshot.id,
-            node=node,
-            session=data,
-            agent_time=agent_time,
-            snapshot=snapshot,
-            time=TimeSpan(start=started),
-            captured=captured,
-            pinned=pinned,
-            held=captured - started,
-        )
-        self.trace.checkpoints.append(checkpoint)
+        checkpoint.held = time.time() - started
         self._durable[checkpoint.id] = asyncio.create_task(
             self._make_durable(checkpoint)
         )
         logger.debug(
             "memory checkpoint %s taken in %s: id=%s node=%s",
             checkpoint.id,
-            format_time(captured - started),
+            format_time(checkpoint.held),
             self.trace.id,
             node,
         )
         return checkpoint
+
+    def _drop_capture(self, checkpoint: Checkpoint | None) -> None:
+        """Drop a snapshot that failed after `_take_snapshot` handed it out. No retry
+        restores from it. The box's teardown frees it, also when an owner holds it.
+        The owner's restore from it then starts over."""
+        if checkpoint is None:
+            return
+        assert self.runtime is not None
+        # Deleted for an owner that picked it before the drop (`_owner_checkpoint`).
+        checkpoint.deleted = True
+        with contextlib.suppress(ValueError):
+            self.trace.checkpoints.remove(checkpoint)
+        checkpoint.pinned = False
+        stray = self.runtime.backend.stray_snapshots
+        if checkpoint.snapshot not in stray:
+            stray.append(checkpoint.snapshot)
 
     async def _make_durable(self, checkpoint: Checkpoint) -> None:
         assert self.runtime is not None
@@ -1722,12 +1803,13 @@ class Rollout:
             ):
                 if span.start and not span.end:
                     span.end = now
-            trace.split_agent_time()
             if runtime is not None:
                 await self._cleanup_harness(runtime)
             # A failed attempt's retry restores the newest snapshot, which must be
             # durable before the box goes.
             await self._settle_checkpoints(wait=not trace.ok)
+            # After the settle: a capture that was still running has its hold time now.
+            trace.split_agent_time()
             # Tear down here — the env's `finalize()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

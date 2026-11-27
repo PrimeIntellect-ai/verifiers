@@ -11,7 +11,7 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -281,10 +281,14 @@ class RuntimeBackend(ABC):
     async def start(self) -> None:
         pass
 
-    async def snapshot(self) -> Snapshot:
+    async def snapshot(
+        self, taken: Callable[[Snapshot], None] | None = None
+    ) -> Snapshot:
         """Snapshot the box's files and memory. The box stops while the snapshot is
         taken and runs again when this returns; its connections to the outside may be
-        dead by then. The snapshot becomes restorable only later (`wait_snapshot`)."""
+        dead by then. `taken` gets the snapshot as soon as the provider names it,
+        before the box has stopped; a snapshot that fails after that still raises
+        here. The snapshot becomes restorable only later (`wait_snapshot`)."""
         raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
 
     def snapshot_pace(self) -> AbstractAsyncContextManager[Any]:

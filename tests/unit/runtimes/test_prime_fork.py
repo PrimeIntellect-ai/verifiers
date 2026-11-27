@@ -150,3 +150,43 @@ def test_a_lost_pause_resumes_only_a_box_that_may_be_paused(
         assert backend._awake.is_set()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("taken_fails", [False, True])
+def test_a_snapshot_is_named_before_the_box_stops(monkeypatch, taken_fails):
+    """`taken` gets the snapshot once the pause is accepted, before the box has
+    stopped. The box runs again whatever `taken` does."""
+    calls: list[str] = []
+
+    class Client:
+        async def pause(self, sandbox_id):
+            calls.append("pause")
+            return SimpleNamespace(checkpoint_id="ck1")
+
+        async def wait_for_pause(self, sandbox_id, timeout_seconds):
+            calls.append("paused")
+
+    async def resume(self):
+        calls.append("resume")
+
+    def taken(snapshot):
+        calls.append(f"taken:{snapshot.id}")
+        if taken_fails:
+            raise RuntimeError("taken failed")
+
+    async def scenario():
+        monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+        monkeypatch.setattr(PrimeBackend, "_resume", resume)
+        backend = PrimeBackend(PrimeConfig())
+        backend._client = Client()
+        backend.info.id = "sb1"
+        if taken_fails:
+            with pytest.raises(SandboxError, match="taken failed"):
+                await backend.snapshot(taken)
+            assert calls == ["pause", "taken:ck1", "resume"]
+        else:
+            assert (await backend.snapshot(taken)).id == "ck1"
+            assert calls == ["pause", "taken:ck1", "paused", "resume"]
+        assert backend._awake.is_set()
+
+    asyncio.run(scenario())
