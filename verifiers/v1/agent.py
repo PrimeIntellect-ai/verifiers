@@ -34,6 +34,7 @@ from verifiers.v1.configs.agent import (
 )
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
+from verifiers.v1.errors import RolloutError, TaskError, boundary
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
@@ -198,6 +199,14 @@ class Segment:
             if isinstance(message, AssistantMessage):
                 return (message.content or "").strip()
         return ""
+
+
+def _as_messages(message: str | Messages) -> Messages:
+    if isinstance(message, str):
+        return [UserMessage(content=message)]
+    # A turn's messages may arrive typed or as wire dicts (env code naturally
+    # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
+    return [parse_message(m) if isinstance(m, dict) else m for m in message]
 
 
 @dataclass
@@ -576,13 +585,9 @@ class Interaction:
                 "a bare turn() before answering (or hand the interaction a task "
                 "with `prompt=None` to open the conversation yourself)"
             )
-        messages: Messages | None = None
-        if isinstance(message, str):
-            messages = [UserMessage(content=message)]
-        elif message is not None:
-            # A turn's messages may arrive typed or as wire dicts (env code naturally
-            # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
-            messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
+        messages: Messages | None = (
+            _as_messages(message) if message is not None else None
+        )
         self._started = True
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
@@ -1058,10 +1063,21 @@ class Agent:
                 if handle is not None:
                     handle._active = run
                 try:
-                    if restore is not None:
-                        await run.restore()
-                    else:
-                        await run.step()
+                    continuable = (
+                        await run.restore() if restore is not None else await run.step()
+                    )
+                    while continuable and run.runtime is not None:
+                        try:
+                            async with boundary(TaskError, "task after_turn"):
+                                follow_up = await task.after_turn(
+                                    run.trace, run.runtime
+                                )
+                        except RolloutError as exc:
+                            run.fail(exc, stage="agent")
+                            break
+                        if follow_up is None:
+                            break
+                        continuable = await run.step(_as_messages(follow_up))
                 finally:
                     if handle is not None:
                         handle._active = None

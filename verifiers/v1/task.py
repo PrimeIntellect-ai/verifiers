@@ -215,6 +215,11 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
+    async def after_turn(self, trace: Trace, runtime: Runtime) -> str | Messages | None:
+        """Check the workspace after a harness segment ends. Return a follow-up prompt
+        (or messages) to run another segment in the same rollout, or None to finish."""
+        return None
+
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
