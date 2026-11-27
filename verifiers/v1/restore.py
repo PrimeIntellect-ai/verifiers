@@ -192,13 +192,11 @@ class EpisodeCalls:
             if from_saved and saved is not None:
                 self.memo[child] = saved
         if from_saved:
-            # Number the seats' calls again from the first offered one, unless a call
-            # outside `key`'s scoring holds a later key.
+            # Number the seats' calls again from the first offered one; `start` skips
+            # the keys other calls hold.
             for seat in {child[0] for child in nested}:
                 first = min(n for s, n in nested if s == seat)
-                taken = any(s == seat and n >= first for s, n in self.calls)
-                if not taken:
-                    self.counts[seat] = min(self.counts[seat], first)
+                self.counts[seat] = min(self.counts[seat], first)
 
     def _nested(self, key: CallKey) -> list[CallKey]:
         """The calls made inside `key`'s scoring, at any depth, saved or started."""
@@ -428,7 +426,11 @@ def episode_restore_point(
             )
             continue
         point = by_trace.get(trace.id)
-        waiting = any(c["parent"] == [*key] for c in calls.memo.values())
+        # A call of its scoring that waits for its agent permit has left `memo` but
+        # holds its saved point until its trace is minted.
+        waiting = any(c["parent"] == [*key] for c in calls.memo.values()) or any(
+            c.parent == key and c.pending is not None for c in calls.calls.values()
+        )
         if point is None and waiting and (continued := calls.consumed.get(key)):
             # It continues its scoring from its saved point, and the calls of its
             # scoring have not taken theirs yet: the point still holds.

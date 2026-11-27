@@ -572,7 +572,10 @@ def test_a_scoring_retry_keeps_the_keys_other_calls_hold():
     # Another solver's judge took the next judge key meanwhile.
     calls.start("judge", task("other"), ("solver", 1))
     calls.retry_nested(("solver", 0), from_saved=True)
-    assert calls.counts["judge"] == 2 and ("judge", 1) in calls.calls
+    # The judge takes its saved point again; the other judge keeps its key.
+    assert calls.start("judge", task("judge"), ("solver", 0))[0] == ("judge", 0)
+    assert ("judge", 1) in calls.calls
+    assert calls.start("judge", task("next"), None)[0] == ("judge", 2)
 
 
 def test_a_save_while_a_continued_run_restores_its_scoring_box_keeps_the_point():
@@ -610,3 +613,18 @@ def test_a_new_call_skips_keys_a_replayed_call_took():
     calls = EpisodeCalls()
     calls.calls[("judge", 0)] = SimpleNamespace(parent=None)
     assert calls.start("judge", task("x"), None)[0] == ("judge", 1)
+
+
+def test_a_save_while_a_nested_call_waits_for_its_permit_keeps_the_point():
+    point = scoring_episode()
+    calls = EpisodeCalls.continuing(point)
+    key, saved = calls.start("solver", task("solve"), None)
+    calls.minted(key, vf.Trace.model_validate(saved["trace"]))
+    # The judge took its saved point but waits for its agent permit.
+    calls.start("judge", task("judge"), ("solver", 0))
+    again, reason = episode_restore_point(SimpleNamespace(id="e1", calls=calls), [])
+    assert reason is None
+    assert sorted((c["seat"], c["n"]) for c in again["calls"]) == [
+        ("judge", 0),
+        ("solver", 0),
+    ]
