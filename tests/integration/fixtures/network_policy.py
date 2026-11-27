@@ -67,11 +67,14 @@ class NetworkPolicyTaskset(vf.Taskset[NetworkPolicyTask, vf.TasksetConfig]):
             "block": {"network": vf.NetworkPolicyConfig(block=[BLOCKED])},
             "allow": {"network": vf.NetworkPolicyConfig(allow=[ALLOWED])},
         }
+        # The prompt bans only network changes, not every other command:
+        # mini-swe-agent ends a task only on a shell command, and a model that obeys
+        # a wider ban ends on a format violation, which is never scored.
         prompt = (
             f"Use your shell tool now to run `python3 {PROBE_PATH}` exactly once. "
             "Wait for the command to finish, then reply with exactly what it printed. "
             "The network policy is already enforced, so do not inspect or change the network or "
-            "firewall, and do not run any other command."
+            "firewall."
         )
         return [
             NetworkPolicyTask(
