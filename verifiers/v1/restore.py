@@ -19,6 +19,7 @@ import asyncio
 import functools
 import time
 import weakref
+from collections.abc import Collection
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
@@ -103,9 +104,16 @@ def unsaveable(config: AgentConfig, harness: Harness | None = None) -> str | Non
     return None
 
 
-def release_all() -> None:
-    """Let every rollout that `save_all(hold=True)` holds go on."""
-    for rollout in list(LIVE):
+def _live(trace_ids: Collection[str] | None = None) -> list[Rollout]:
+    if trace_ids is None:
+        return list(LIVE)
+    wanted = set(trace_ids)
+    return [rollout for rollout in list(LIVE) if rollout.trace.id in wanted]
+
+
+def release_all(trace_ids: Collection[str] | None = None) -> None:
+    """Let every rollout (or only those in `trace_ids`) that `save_all(hold=True)` holds go on."""
+    for rollout in _live(trace_ids):
         rollout.release()
 
 
@@ -115,8 +123,10 @@ async def save_all(
     hold: bool = False,
     watchdog: bool = True,
     timeout: float | None = None,
+    trace_ids: Collection[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Take a memory checkpoint of every running rollout of this process and return
+    """Take a memory checkpoint of every running rollout of this process (or only those
+    in `trace_ids`) and return
     their traces as saved (`restorable`). A rollout that takes no memory snapshots,
     runs no harness segment right now, or whose snapshot fails has none: it starts
     over when its owner runs it again. `skipped` collects why, as a count per reason.
@@ -143,7 +153,7 @@ async def save_all(
             skipped[reason] = skipped.get(reason, 0) + 1
         return point
 
-    rollouts = list(LIVE)
+    rollouts = _live(trace_ids)
     started = time.monotonic()
     saves = [asyncio.ensure_future(save(rollout)) for rollout in rollouts]
     try:
@@ -177,7 +187,7 @@ async def save_all(
         time.monotonic() - started,
     )
     if hold and watchdog:
-        arm_hold_watchdogs()
+        arm_hold_watchdogs(trace_ids)
     return points
 
 
@@ -186,8 +196,9 @@ def _disown_late(rollout: Rollout, task: asyncio.Future) -> None:
         rollout.disown(point)
 
 
-def arm_hold_watchdogs() -> None:
-    """Start the self-release of every rollout a `save_all(hold=True)` holds, for an
-    owner that does more work before it can `release_all`."""
-    for rollout in list(LIVE):
+def arm_hold_watchdogs(trace_ids: Collection[str] | None = None) -> None:
+    """Start the self-release of every rollout (or only those in `trace_ids`) a
+    `save_all(hold=True)` holds, for an owner that does more work before it can
+    `release_all`."""
+    for rollout in _live(trace_ids):
         rollout.arm_hold_watchdog()

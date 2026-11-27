@@ -816,6 +816,7 @@ class Agent:
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         route: ModelRoute | None = None,
+        restore: dict[str, Any] | None = None,
     ) -> AgentRun:
         """Schedule a rollout and return the object used to steer it and await its trace."""
         return AgentRun(
@@ -828,6 +829,7 @@ class Agent:
                 collect_artifacts=collect_artifacts,
                 on_score=on_score,
                 route=route,
+                restore=restore,
             )
         )
 
