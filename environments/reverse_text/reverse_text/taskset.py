@@ -32,7 +32,7 @@ class ReverseTextTask(vf.Task[ReverseTextData]):
     async def lcs(self, trace: vf.Trace) -> float:
         completion = trace.last_reply
         match = _TAG.search(completion or "")
-        response = match.group(1).strip() if match else ""
+        response = match.group(1) if match else ""
         return SequenceMatcher(None, response, self.data.answer).ratio()
 
 
