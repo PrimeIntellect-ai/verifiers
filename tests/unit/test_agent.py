@@ -301,10 +301,10 @@ async def test_request_hook_failure_fails_the_rollout(outcome):
     assert cancelled == ([True] if outcome == "keeps waiting" else [])
 
 
-async def test_task_after_turn_drives_follow_up_segments_and_records_errors(
+async def test_task_follow_up_drives_segments_and_records_errors(
     monkeypatch,
 ):
-    """`Task.after_turn` runs follow-up segments inside `Agent.run` until it returns
+    """`Task.follow_up` runs follow-up segments inside `Agent.run` until it returns
     None; an exception records a `TaskError` on the trace and still closes cleanly."""
     from verifiers.v1 import agent as agent_mod
 
@@ -342,13 +342,13 @@ async def test_task_after_turn_drives_follow_up_segments_and_records_errors(
             return self.trace
 
         async def abort(self) -> None:
-            raise AssertionError("after_turn failure must close, not abort")
+            raise AssertionError("follow_up failure must close, not abort")
 
     monkeypatch.setattr(agent_mod, "Rollout", FakeRollout)
     agent = vf.Agent(vf.AgentConfig(model="m"))
 
     class RepairTask(vf.Task):
-        async def after_turn(self, trace, runtime):
+        async def follow_up(self, trace, runtime):
             count = trace.info.get("checks", 0) + 1
             trace.info["checks"] = count
             return "fix the file" if count == 1 else None
@@ -358,13 +358,13 @@ async def test_task_after_turn_drives_follow_up_segments_and_records_errors(
     assert seen_steps == [None, [vf.UserMessage(content="fix the file")]]
 
     class RuntimeOnlyTask(vf.Task):
-        async def after_turn(self, runtime):
+        async def follow_up(self, runtime):
             assert runtime is not None
 
     assert (await agent.run(RuntimeOnlyTask(vf.TaskData(idx=0, prompt="go")))).ok
 
     class FailingCheckTask(vf.Task):
-        async def after_turn(self, trace, runtime):
+        async def follow_up(self, trace, runtime):
             trace.info["report"] = "bad"
             raise ValueError("invalid report")
 
@@ -373,7 +373,7 @@ async def test_task_after_turn_drives_follow_up_segments_and_records_errors(
     assert [(e.type, e.stage) for e in failed.errors] == [("TaskError", "agent")]
 
     class BadReturnTask(vf.Task):
-        async def after_turn(self, trace, runtime):
+        async def follow_up(self, trace, runtime):
             return False  # type: ignore[return-value]
 
     bad_return = await agent.run(BadReturnTask(vf.TaskData(idx=0, prompt="go")))
@@ -381,7 +381,7 @@ async def test_task_after_turn_drives_follow_up_segments_and_records_errors(
     assert [(e.type, e.stage) for e in bad_return.errors] == [("TaskError", "agent")]
 
     class SlowCheckTask(vf.Task):
-        async def after_turn(self, runtime):
+        async def follow_up(self, runtime):
             await asyncio.sleep(10)
 
     class TimedRollout(FakeRollout):

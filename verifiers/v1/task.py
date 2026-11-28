@@ -215,8 +215,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
-    async def after_turn(self, trace: Trace, runtime: Runtime) -> str | Messages | None:
-        """Check the workspace after a harness segment ends. Return a follow-up prompt
+    async def follow_up(self, trace: Trace, runtime: Runtime) -> str | Messages | None:
+        """Called when the agent finishes a segment. Return a follow-up prompt
         (or messages) to run another segment in the same rollout, or None to finish."""
         return None
 

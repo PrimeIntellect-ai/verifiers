@@ -1077,10 +1077,10 @@ class Agent:
                         try:
                             async with (
                                 deadline,
-                                boundary(TaskError, "task after_turn"),
+                                boundary(TaskError, "task follow_up"),
                             ):
                                 follow_up = await invoke(
-                                    task.after_turn,
+                                    task.follow_up,
                                     {
                                         "trace": run.trace,
                                         "runtime": run.runtime,
