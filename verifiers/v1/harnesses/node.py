@@ -19,8 +19,14 @@ install_node() {
     # Finish downloading, extracting and validating before replacing the shared installation.
     download_dir=$(mktemp -d "$node.XXXXXX")
     trap 'rm -rf "$download_dir"' EXIT
-    curl -fsSL --retry 5 --retry-all-errors "https://nodejs.org/dist/v$AGENT_NODE_VERSION/node-v$AGENT_NODE_VERSION-$1.tar.gz" \
-        -o "$download_dir/node.tar.gz"
+    # --retry-all-errors needs curl 7.71; task images can ship older curl.
+    for attempt in 1 2 3 4 5 6; do
+        curl -fsSL "https://nodejs.org/dist/v$AGENT_NODE_VERSION/node-v$AGENT_NODE_VERSION-$1.tar.gz" \
+            -o "$download_dir/node.tar.gz" && break
+        rc=$?
+        [ "$attempt" -lt 6 ] || exit "$rc"
+        sleep "$((1 << (attempt - 1)))"
+    done
     mkdir "$download_dir/node"
     tar -xzf "$download_dir/node.tar.gz" -C "$download_dir/node" --strip-components=1
     node_ok "$download_dir/node/bin/node"
