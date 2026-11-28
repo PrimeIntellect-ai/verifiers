@@ -29,6 +29,16 @@ uv run vf-validate @ <run-dir>/configs/resolved/validate.json --resume
 
 For interactive troubleshooting, `vf-debug` runs `Task.setup` and then executes a one-off shell `--command` or uploaded `--script-path check.sh` inside the runtime before tearing it down. Because neither `vf-validate` nor `vf-debug` wraps the task in an `Env`, both take top-level `--taskset.*` and `--runtime.*` flags, alongside [`--select.*`](tasksets.md#selecting-tasks) to filter tasks. Note that both commands execute real task setup (which may spin up paid sandboxes), and `vf-validate`'s noop check will call any configured judges.
 
+## Describe a package
+
+`vf-describe` prints, as JSON on stdout, what an installed package exports and how it is built, without calling `load()`, starting a runtime or calling a model:
+
+```bash
+uv run vf-describe my-task
+```
+
+The descriptor lists the exported taskset, harness, env and judge classes and their config schemas; the taskset's `INFINITE` flag and toolsets; the task's `NEEDS_CONTAINER` flag, `TaskData` schema, toolsets, rewards and metrics (each with its weight, priority, docstring and source location) and the judges plugged by default; the harness's capability flags and dialects; and the env's agent roles with the harness each plays by default. Describing still runs the package's own code: its import, the default factories of its taskset and task configs (their validators don't run), any JSON-schema hooks on its models, and its `toolsets()` classmethods, as an env calls them before a run. Describe an untrusted package where its code may run, such as a sandbox. A reward or metric plugged in the default task config is listed by its `fn` path and never imported. Its `schema_version` changes only when a field changes meaning or is removed. A package that can't be described exits non-zero with a JSON error on stderr.
+
 ## Re-score without rerunning the agent
 
 `Task.rescore(trace)` re-computes the offline metrics, rewards, and judge scores of a finished `Trace` without re-running the agent. It clears the trace's scores, then runs the scoring hooks and judges that need only the saved `Trace`. The original sandbox is gone, so it skips `setup`, `finalize`, and any scoring hooks that request a `runtime`.

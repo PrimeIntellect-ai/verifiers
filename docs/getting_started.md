@@ -21,12 +21,13 @@ To work with other tasksets, including packages you build yourself following [bu
 
 ## Commands
 
-verifiers installs three CLI commands, which you run with `uv run` in the environment where verifiers and your taskset package are installed:
+verifiers installs four CLI commands, which you run with `uv run` in the environment where verifiers and your taskset package are installed:
 
 | Command | Use |
 | --- | --- |
 | [`vf-validate <taskset>`](debugging.md#before-running-an-agent) | Check task setup, a known gold solution, or the untouched task |
 | [`vf-debug <taskset>`](debugging.md#before-running-an-agent) | Run a command or script inside the prepared task runtime |
 | `vf-run <taskset>` | Run a few episodes in-process and save their traces, with a one-line summary |
+| [`vf-describe <id>`](debugging.md#describe-a-package) | Print what a package exports, as JSON, without loading or running it |
 
 Pass `--help` to any command to inspect its flags. Because tasksets and harnesses register their own options dynamically, include the taskset ID before `--help` to see the taskset's flags.
