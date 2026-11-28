@@ -817,25 +817,26 @@ class InterceptionServer(Interception):
                 # A malformed harness knob must not kill recording (this runs in the
                 # exchange's `finally`); the provider rejects the request on its own.
                 logger.warning("Could not record call settings", exc_info=True)
-        session.trace.calls.append(
-            ModelCall(
-                node=node,
-                model=request.get("model") if request is not None else None,
-                sampling=sampling,
-                endpoint=dialect.upstream_path,
-                finish_reason=finish_reason,
-                usage=usage,
-                time=TimeSpan(start=started, end=time.time()),
-                error=None if error is None else Error.from_exception(error),
-                policy=PolicyEvent(
-                    code=PROVIDER_CAPABILITY_POLICY_CODE,
-                    paths=policy_paths,
-                )
-                if policy_paths
-                else None,
-                acp=acp,
+        call = ModelCall(
+            node=node,
+            model=request.get("model") if request is not None else None,
+            sampling=sampling,
+            endpoint=dialect.upstream_path,
+            finish_reason=finish_reason,
+            usage=usage,
+            time=TimeSpan(start=started, end=time.time()),
+            error=None if error is None else Error.from_exception(error),
+            policy=PolicyEvent(
+                code=PROVIDER_CAPABILITY_POLICY_CODE,
+                paths=policy_paths,
             )
+            if policy_paths
+            else None,
+            acp=acp,
         )
+        session.trace.calls.append(call)
+        if not session.judge_only and session.limits.turn_capped(call):
+            session.trace.stop("max_turn_tokens")
         session.trace.notify()
 
     async def handle_request(

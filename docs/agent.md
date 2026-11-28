@@ -80,7 +80,7 @@ A truncated or timed-out run is often not worth grading. `agent.scoring.skip` ma
 
 A skipped trace keeps no task rewards, metrics, or judge scores, so its reward is the mapped value. Use 0 for a plain skip, or a negative value to rank such runs below runs that finished and failed. `trace.info["scoring_skipped"]` records the reason. Task finalization and harness metrics still run. A `skip_scoring` stop sets its own reward (see [tasksets](tasksets.md)).
 
-`Trace.is_truncated` only checks the run's last model response. Some harnesses keep going after a response hits its per-turn token cap: they compact, or answer a cut-off tool call. Set `agent.max_turn_tokens` to cap each response and stop the run before the next model call once a response hits that cap. The stop condition is `max_turn_tokens`. The run is then truncated, so `skip.truncated` applies, unless `skip.max_turn_tokens` sets its own reward.
+`Trace.is_truncated` only checks the run's last model response. Some harnesses keep going after a response hits its per-turn token cap: they compact, or answer a cut-off tool call. Set `agent.max_turn_tokens` to cap each response and stop the run as soon as a response hits that cap. The stop condition is `max_turn_tokens`, also when that response is the run's last. The run is then truncated, so `skip.truncated` applies, unless `skip.max_turn_tokens` sets its own reward.
 
 ```toml
 [env.agent]

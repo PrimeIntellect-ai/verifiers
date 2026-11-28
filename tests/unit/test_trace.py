@@ -430,6 +430,12 @@ def test_max_turn_tokens_limit():
     usage = vf.Usage(prompt_tokens=100, completion_tokens=16)
     trace.calls.append(vf.ModelCall(finish_reason="length", usage=usage))
     assert limits.reached(trace) == "max_turn_tokens"
+    assert limits.turn_capped(trace.calls[-1])
+    assert not limits.turn_capped(trace.calls[-2])
+    errored = vf.ModelCall(
+        finish_reason="length", usage=usage, error=vf.Error(type="X", message="x")
+    )
+    assert not limits.turn_capped(errored)
     trace.stop("max_turn_tokens")
     assert trace.is_truncated
 
