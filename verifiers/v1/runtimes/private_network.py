@@ -98,11 +98,24 @@ async def rejoin(backends: list[RuntimeBackend]) -> None:
         for backend in backends
         if isinstance(backend, PrimeBackend) and backend.lan is not None
     ]
+    errors: list[Exception] = []
+    left: list[PrimeBackend] = []
     async with leased_client() as client:
+        # Each VM leaves before any joins again; one that left joins again whatever
+        # becomes of the others.
         for backend in joined:
-            await client.remove_lan_member(backend.lan[0], backend.info.id)
-        for backend in joined:
-            await client._join_lan(backend.lan[0], backend.info.id, backend.lan[1])
+            try:
+                await client.remove_lan_member(backend.lan[0], backend.info.id)
+                left.append(backend)
+            except Exception as e:  # noqa: BLE001 - raised once every VM is back
+                errors.append(e)
+        for backend in left:
+            try:
+                await client._join_lan(backend.lan[0], backend.info.id, backend.lan[1])
+            except Exception as e:  # noqa: BLE001 - raised once every VM is back
+                errors.append(e)
+    if errors:
+        raise SandboxError(f"rejoining the private network failed: {errors[0]}")
 
 
 def _tag(index: int) -> str:

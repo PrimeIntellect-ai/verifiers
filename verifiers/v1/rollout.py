@@ -317,6 +317,7 @@ class Rollout:
         self._opened = False
         self._deployment_started = False
         self._closed = False
+        self._closing = asyncio.Event()
         self._harness_cleaned = False
         self._endpoint: str | None = None
         self._relay: Relay | None = None
@@ -1135,6 +1136,15 @@ class Rollout:
             self.save_skipped = "its harness program is not running (setup or scoring)"
         if self.save_skipped is not None:
             return None
+        # Before the hold, which stops the agent deadline: the tool call runs on it.
+        loop = asyncio.get_running_loop()
+        if not await self._tools_rest(loop.time() + TOOLS_REST_SECONDS):
+            self.save_skipped = (
+                "it is finishing"
+                if self._closed
+                else "a tool call was under way throughout the save"
+            )
+            return None
         task = asyncio.current_task()
         if task is not None:
             self._captures.add(task)
@@ -1263,23 +1273,28 @@ class Rollout:
         session = self._session
         loop = asyncio.get_running_loop()
         checkpoint: Checkpoint | None = None
-        # The pace is waited for before the box is held, not while.
-        async with self.runtime.backend.snapshot_pace(), self._capturing:
+        self._tools_busy = False
+        deadline = loop.time() + TOOLS_REST_SECONDS
+        # The pace is waited for before the box is held, not while, and so is the rest
+        # of its tool calls: a busy box keeps no snapshot slot. The hold follows the
+        # rest without a yield, so the box takes the slot again until it is at rest.
+        held = AsyncExitStack()
+        while True:
+            if not await self._tools_rest(deadline):
+                self._tools_busy = not self._closed
+                return None
+            try:
+                await held.enter_async_context(self.runtime.backend.snapshot_pace())
+                await held.enter_async_context(self._capturing)
+            except BaseException:
+                await held.aclose()
+                raise
+            if not self.deployment.tool_vms or session.asking.is_set():
+                break
+            await held.aclose()
+        async with held:
             if self._closed:
                 return None
-            self._tools_busy = False
-            if self.deployment.tool_vms:
-                # The tool server VMs stop beside the box, and a call between them
-                # does not survive the stop. Wait, without holding the box, until it
-                # asks for its model or a tool verdict: a harness that runs one tool
-                # at a time then runs none. The hold follows without a yield.
-                try:
-                    async with asyncio.timeout(TOOLS_REST_SECONDS):
-                        while not session.asking.is_set():
-                            await session.asking.wait()
-                except TimeoutError:
-                    self._tools_busy = True
-                    return None
             session.hold()
             try:
                 # Another commit can begin after the previous one wakes this waiter.
@@ -1384,6 +1399,33 @@ class Rollout:
         )
         return checkpoint
 
+    async def _tools_rest(self, deadline: float) -> bool:
+        """Wait, without holding the box, until it asks for its model or a tool verdict:
+        the tool server VMs stop beside the box, and a call between them does not
+        survive the stop. A harness that runs one tool at a time then runs none. False
+        when a call still runs at `deadline`, or the rollout closes; True at once
+        without tool server VMs."""
+        if not self.deployment.tool_vms:
+            return True
+        session = self._session
+        loop = asyncio.get_running_loop()
+        while not session.asking.is_set():
+            left = deadline - loop.time()
+            if self._closed or left <= 0:
+                return False
+            waits = {
+                asyncio.ensure_future(session.asking.wait()),
+                asyncio.ensure_future(self._closing.wait()),
+            }
+            try:
+                await asyncio.wait(
+                    waits, timeout=left, return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                for wait in waits:
+                    wait.cancel()
+        return True
+
     async def _snapshot(self, taken: Callable[[Snapshot], None]) -> Snapshot:
         """Snapshot the box, and its tool server VMs in the same stop (`Snapshot.peers`).
         With tool server VMs, `taken` gets the snapshot once every one is named."""
@@ -1399,25 +1441,25 @@ class Rollout:
             *(vm.snapshot() for vm in vms.values()),
             return_exceptions=True,
         )
-        # Before the box gets a reply: its next tool call needs the LAN.
-        try:
-            await rejoin([backend, *vms.values()])
-        except Exception as e:  # noqa: BLE001 - the next tool call reports the loss
-            logger.warning(
-                "Failed to rejoin the private network after a memory snapshot - %s: %s",
-                type(e).__name__,
-                clip(str(e)),
-            )
-        peers = {}
-        for (name, vm), snapshot in zip(vms.items(), named):
-            if isinstance(snapshot, Snapshot):
-                # Only the box's teardown frees what nothing restores.
-                vm.stray_snapshots.remove(snapshot)
-                peers[name] = snapshot
+        peers = {
+            name: snapshot
+            for name, snapshot in zip(vms, named)
+            if isinstance(snapshot, Snapshot)
+        }
+        # Only the box's teardown frees what nothing restores, a VM's failed
+        # snapshots too.
         stray = backend.stray_snapshots
-        if not isinstance(main, Snapshot) or len(peers) < len(vms):
-            stray.extend(peers.values())
-            raise next(e for e in (main, *named) if isinstance(e, BaseException))
+        for vm in vms.values():
+            stray.extend(vm.stray_snapshots)
+            vm.stray_snapshots.clear()
+        # Before the box gets a reply: its next tool call needs the LAN. Shielded: a
+        # VM that a cancelled rejoin left off the network reaches no peer again.
+        await asyncio.shield(rejoin([backend, *vms.values()]))
+        failed = [e for e in (main, *named) if isinstance(e, BaseException)]
+        if failed:
+            raise failed[0]
+        for peer in peers.values():
+            stray.remove(peer)
         stray.remove(main)
         snapshot = main.model_copy(update={"peers": peers})
         stray.append(snapshot)
@@ -1541,6 +1583,7 @@ class Rollout:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
+        self._closing.set()
         LIVE.discard(self)
         await self._settle_checkpoints(wait=False)
         if self._harness_session is not None:
@@ -1670,6 +1713,7 @@ class Rollout:
         if self._closed:
             return self.trace
         self._closed = True
+        self._closing.set()
         LIVE.discard(self)
         trace = self.trace
         skip = self._scoring_skip()

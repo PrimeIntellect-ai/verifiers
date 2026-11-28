@@ -779,16 +779,20 @@ class InterceptionServer(Interception):
         with session.waits():
             await session.flowing.wait()
             try:
-                return web.json_response(
-                    await session.decide_tool(
+                # A verdict's request hooks can write to the trace while a snapshot
+                # begins: it records the trace only once they are done, and the box
+                # gets the verdict only once it runs again.
+                with session.committing():
+                    verdict = await session.decide_tool(
                         str(body.get("tool_call_id", "")),
                         body.get("name"),
                         body.get("arguments"),
                     )
-                )
             except RolloutError as error:
                 session.error = error
                 return web.json_response({"error": str(error)}, status=400)
+            await session.flowing.wait()
+            return web.json_response(verdict)
 
     def record_call(
         self,
