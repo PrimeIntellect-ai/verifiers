@@ -764,15 +764,6 @@ def resolve_image(
         dockerfile = "tests/docker-compose.yaml"
     if verifier or (task_dir / dockerfile).exists():
         if ignore_dockerfile:
-            if verifier:
-                logger.warning(
-                    "%s: [%s] names no docker_image — grading in the agent's "
-                    "image rather than building %s, so the verifier runs somewhere "
-                    "the task never declared",
-                    task_dir.name,
-                    section,
-                    dockerfile,
-                )
             return None
         raise ValueError(
             f"{task_dir.name}: [{section}] needs a pullable docker_image instead of "
@@ -1031,7 +1022,33 @@ def make_tar(directory: Path) -> bytes:
     return buffer.getvalue()
 
 
+def warn_unbuilt_verifier(data: HarborData) -> None:
+    """Warn when a separate verifier still falls back to the agent's image despite a
+    tests build definition (no `[verifier.environment].docker_image` and no
+    `verifier_image` override from the taskset)."""
+    if data.verifier is None or data.verifier_image is not None or not data.task_dir:
+        return
+    task_dir = Path(data.task_dir)
+    for filename in ("Dockerfile", "docker-compose.yaml"):
+        if (task_dir / "tests" / filename).is_file():
+            logger.warning(
+                "%s: [verifier.environment] names no docker_image — grading in the "
+                "agent's image rather than building tests/%s, so the verifier runs "
+                "somewhere the task never declared",
+                task_dir.name,
+                filename,
+            )
+            return
+
+
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
+    def __iter__(self) -> Iterator[HarborTask]:
+        # Check after subclass `load()` so prebuilt `verifier_image` overrides do not
+        # trigger a false warning.
+        for task in super().__iter__():
+            warn_unbuilt_verifier(task.data)
+            yield task
+
     def load(self) -> Iterator[HarborTask]:
         root = dataset_dir(self.config)
         task_dirs = [
