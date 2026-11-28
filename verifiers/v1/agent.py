@@ -34,6 +34,7 @@ from verifiers.v1.configs.agent import (
 )
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
+from verifiers.v1.errors import RolloutError, TaskError, boundary
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
@@ -62,6 +63,7 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
+from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import (
     clip,
@@ -198,6 +200,14 @@ class Segment:
             if isinstance(message, AssistantMessage):
                 return (message.content or "").strip()
         return ""
+
+
+def _as_messages(message: str | Messages) -> Messages:
+    if isinstance(message, str):
+        return [UserMessage(content=message)]
+    # A turn's messages may arrive typed or as wire dicts (env code naturally
+    # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
+    return [parse_message(m) if isinstance(m, dict) else m for m in message]
 
 
 @dataclass
@@ -576,13 +586,9 @@ class Interaction:
                 "a bare turn() before answering (or hand the interaction a task "
                 "with `prompt=None` to open the conversation yourself)"
             )
-        messages: Messages | None = None
-        if isinstance(message, str):
-            messages = [UserMessage(content=message)]
-        elif message is not None:
-            # A turn's messages may arrive typed or as wire dicts (env code naturally
-            # writes `{"role": "user", ...}`); the trace speaks typed, so normalize.
-            messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
+        messages: Messages | None = (
+            _as_messages(message) if message is not None else None
+        )
         self._started = True
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
@@ -1058,10 +1064,51 @@ class Agent:
                 if handle is not None:
                     handle._active = run
                 try:
-                    if restore is not None:
-                        await run.restore()
-                    else:
-                        await run.step()
+                    continuable = (
+                        await run.restore() if restore is not None else await run.step()
+                    )
+                    while continuable and run.runtime is not None:
+                        loop = asyncio.get_running_loop()
+                        budget = run._agent_time_remaining
+                        started = loop.time()
+                        deadline = asyncio.timeout(
+                            max(0.0, budget) if budget is not None else None
+                        )
+                        try:
+                            async with (
+                                deadline,
+                                boundary(TaskError, "task follow_up"),
+                            ):
+                                follow_up = await invoke(
+                                    task.follow_up,
+                                    {
+                                        "trace": run.trace,
+                                        "runtime": run.runtime,
+                                        "deployment": run.deployment,
+                                    },
+                                )
+                                messages = (
+                                    _as_messages(follow_up)
+                                    if follow_up is not None
+                                    else None
+                                )
+                        except TimeoutError as exc:
+                            if deadline.expired():
+                                run.timeout("agent")
+                            else:
+                                run.fail(exc, stage="agent")
+                            break
+                        except RolloutError as exc:
+                            run.fail(exc, stage="agent")
+                            break
+                        finally:
+                            if budget is not None:
+                                run._agent_time_remaining = max(
+                                    0.0, budget - (loop.time() - started)
+                                )
+                        if messages is None:
+                            break
+                        continuable = await run.step(messages)
                 finally:
                     if handle is not None:
                         handle._active = None

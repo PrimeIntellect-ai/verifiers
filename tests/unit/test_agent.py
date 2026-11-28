@@ -299,3 +299,97 @@ async def test_request_hook_failure_fails_the_rollout(outcome):
     assert [(e.type, e.stage) for e in trace.errors] == [("ProviderError", "agent")]
     assert not trace.is_timeout
     assert cancelled == ([True] if outcome == "keeps waiting" else [])
+
+
+async def test_task_follow_up_drives_segments_and_records_errors(
+    monkeypatch,
+):
+    """`Task.follow_up` runs follow-up segments inside `Agent.run` until it returns
+    None; an exception records a `TaskError` on the trace and still closes cleanly."""
+    from verifiers.v1 import agent as agent_mod
+
+    seen_steps: list = []
+    closed = []
+
+    class FakeRollout:
+        ok = Rollout.ok
+        fail = Rollout.fail
+        timeout = Rollout.timeout
+
+        def __init__(self, *, task, **_kwargs):
+            self.task = task
+            self.trace = make_trace()
+            self.runtime = object()
+            self.deployment = None
+            self._failed = False
+            self._failure = None
+            self._borrowed_runtime = None
+            self._attempt = 1
+            self._agent_time_remaining = None
+            self.rewound_snapshots = ()
+            self.deleted_snapshots = set()
+
+        async def open(self) -> bool:
+            return True
+
+        async def step(self, messages=None) -> bool:
+            seen_steps.append(messages)
+            return True
+
+        async def close(self) -> vf.Trace:
+            self.trace.ok = not self._failed
+            closed.append(self.trace)
+            return self.trace
+
+        async def abort(self) -> None:
+            raise AssertionError("follow_up failure must close, not abort")
+
+    monkeypatch.setattr(agent_mod, "Rollout", FakeRollout)
+    agent = vf.Agent(vf.AgentConfig(model="m"))
+
+    class RepairTask(vf.Task):
+        async def follow_up(self, trace, runtime):
+            count = trace.info.get("checks", 0) + 1
+            trace.info["checks"] = count
+            return "fix the file" if count == 1 else None
+
+    trace = await agent.run(RepairTask(vf.TaskData(idx=0, prompt="go")))
+    assert trace.ok and trace.info["checks"] == 2
+    assert seen_steps == [None, [vf.UserMessage(content="fix the file")]]
+
+    class RuntimeOnlyTask(vf.Task):
+        async def follow_up(self, runtime):
+            assert runtime is not None
+
+    assert (await agent.run(RuntimeOnlyTask(vf.TaskData(idx=0, prompt="go")))).ok
+
+    class FailingCheckTask(vf.Task):
+        async def follow_up(self, trace, runtime):
+            trace.info["report"] = "bad"
+            raise ValueError("invalid report")
+
+    failed = await agent.run(FailingCheckTask(vf.TaskData(idx=0, prompt="go")))
+    assert not failed.ok and failed.info["report"] == "bad"
+    assert [(e.type, e.stage) for e in failed.errors] == [("TaskError", "agent")]
+
+    class BadReturnTask(vf.Task):
+        async def follow_up(self, trace, runtime):
+            return False  # type: ignore[return-value]
+
+    bad_return = await agent.run(BadReturnTask(vf.TaskData(idx=0, prompt="go")))
+    assert not bad_return.ok
+    assert [(e.type, e.stage) for e in bad_return.errors] == [("TaskError", "agent")]
+
+    class SlowCheckTask(vf.Task):
+        async def follow_up(self, runtime):
+            await asyncio.sleep(10)
+
+    class TimedRollout(FakeRollout):
+        def __init__(self, *, task, **kwargs):
+            super().__init__(task=task, **kwargs)
+            self._agent_time_remaining = 0.02
+
+    monkeypatch.setattr(agent_mod, "Rollout", TimedRollout)
+    timed_out = await agent.run(SlowCheckTask(vf.TaskData(idx=0, prompt="go")))
+    assert timed_out.stop_condition == "agent_timeout" and not timed_out.errors
+    assert len(closed) == 5
