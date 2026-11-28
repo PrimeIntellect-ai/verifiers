@@ -1532,11 +1532,13 @@ class Rollout:
         skip = self._scoring_policy.skip
         if self.trace.is_format_violation:
             return "format_violation", skip.get("format_violation")
+        if (stop := self.trace.stop_condition) in skip:
+            return stop, skip[stop]
         if "truncated" in skip and self.trace.is_truncated:
             return "truncated", skip["truncated"]
         if "timeout" in skip and self.trace.is_timeout:
             return "timeout", skip["timeout"]
-        if (stop := self.trace.stop_condition) in self._skip_scoring_stops:
+        if stop in self._skip_scoring_stops:
             return stop, self._skip_scoring_stops[stop]
         return None
 

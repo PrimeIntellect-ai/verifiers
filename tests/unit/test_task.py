@@ -1,9 +1,13 @@
 """`Task` hooks: config-plugged functions merge with decorated ones, and scoring can be deferred."""
 
+from types import SimpleNamespace
+
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.rollout import Rollout
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 PLUGGED_FNS_PY = """
@@ -175,3 +179,28 @@ def test_failed_scoring_rolls_back_its_drop() -> None:
         trace.drop("judge: outcome=task_defect")
         raise RuntimeError("the judge failed")
     assert not trace.is_dropped
+
+
+@pytest.mark.parametrize(
+    "stop,skip,expected",
+    [
+        ("max_turn_tokens", {"max_turn_tokens": -1.0}, ("max_turn_tokens", -1.0)),
+        (
+            "max_turn_tokens",
+            {"max_turn_tokens": -1.0, "truncated": 0.0},
+            ("max_turn_tokens", -1.0),
+        ),
+        ("max_turns", {"max_turn_tokens": -1.0, "truncated": 0.0}, ("truncated", 0.0)),
+        ("max_turns", {"max_turn_tokens": -1.0}, None),
+    ],
+)
+def test_skip_reason_per_limit(stop, skip, expected) -> None:
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+    )
+    trace.stop(stop)
+    rollout = SimpleNamespace(
+        trace=trace, _scoring_policy=ScoringConfig(skip=skip), _skip_scoring_stops={}
+    )
+    assert Rollout._scoring_skip(rollout) == expected
