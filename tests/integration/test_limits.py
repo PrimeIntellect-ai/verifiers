@@ -64,6 +64,33 @@ async def test_skip_scoring_on_truncated(run, skip):
 
 
 @pytest.mark.parametrize(
+    "skip,reward",
+    [
+        ({"max_turns": -1.0}, -1.0),
+        ({"max_turns": -1.0, "truncated": 0.0}, -1.0),
+        ({"max_turn_tokens": -1.0}, 1.0),
+    ],
+    ids=["limit", "limit-over-truncated", "other-limit"],
+)
+async def test_skip_scoring_on_limit(run, skip, reward):
+    (episode,) = await run(
+        "counter-tool",
+        harness="null",
+        runtime={"type": "prime"},
+        taskset_overrides={"task": {"constant_reward": True}},
+        env={"agent": {"max_turns": 1, "scoring": {"skip": skip}}},
+    )
+    (trace,) = episode.traces
+    assert trace.stop_condition == "max_turns" and trace.ok
+    assert trace.reward == reward
+    if reward == 1.0:
+        assert "scoring_skipped" not in trace.info
+    else:
+        assert set(trace.rewards) == {"max_turns"}
+        assert trace.info["scoring_skipped"] == "max_turns"
+
+
+@pytest.mark.parametrize(
     "skip", [{}, {"timeout": 0.0}, {"timeout": -1.0}], ids=["scored", "0", "-1"]
 )
 async def test_skip_scoring_on_timeout(run, skip):

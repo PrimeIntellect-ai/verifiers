@@ -34,6 +34,19 @@ class ScoringJudgeConfig(BaseClientConfig):
         return sampling.model_dump(exclude_unset=True)
 
 
+SkipReason = Literal[
+    "truncated",
+    "timeout",
+    "format_violation",
+    "max_turns",
+    "max_input_tokens",
+    "max_output_tokens",
+    "max_total_tokens",
+    "max_turn_tokens",
+    "compaction_failed",
+]
+
+
 class ScoringConfig(BaseConfig):
     mode: Literal["shared", "isolated"] = "shared"
     """Score in the workspace or restore into a fresh runtime."""
@@ -50,14 +63,14 @@ class ScoringConfig(BaseConfig):
     combined with the runtime's own rules the same way. None keeps the default: isolated
     scoring runs under `TaskData.network`, shared scoring keeps the agent phase's network,
     and Harbor's shared grading lifts the policy."""
-    skip: dict[Literal["truncated", "timeout", "format_violation"], FiniteFloat] = (
-        Field(default_factory=dict)
-    )
+    skip: dict[SkipReason, FiniteFloat] = Field(default_factory=dict)
     """Skip task scoring for these reasons and record the value as a fixed reward named
     after the reason. `truncated` matches `Trace.is_truncated`, `timeout` a stage
-    deadline that expired before scoring (`Trace.is_timeout`). A format violation is
-    never scored, so `format_violation` only sets its reward. A reason left out is
-    scored as usual, or, for a format violation, keeps no rewards."""
+    deadline that expired before scoring (`Trace.is_timeout`). A framework limit's stop
+    condition (`max_turn_tokens`, `max_turns`, ...) matches only a trace that limit
+    stopped, and wins over `truncated`. A format violation is never scored, so
+    `format_violation` only sets its reward. A reason left out is scored as usual, or,
+    for a format violation, keeps no rewards."""
 
     @field_serializer("runtime")
     def serialize_runtime(
