@@ -39,7 +39,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.dialects.base import CAPABILITY_NOTICE
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
-from verifiers.v1.trace import InterceptRecord, Trace
+from verifiers.v1.trace import InterceptRecord, ModelCall, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Message,
@@ -259,8 +259,9 @@ class RolloutLimits:
     `max_turns` -> num_turns, `max_input_tokens` -> num_input_tokens, `max_output_tokens` ->
     num_output_tokens, `max_total_tokens` -> num_total_tokens. Token caps are soft by one turn:
     they're checked between turns, so the turn that crosses a cap still completes.
-    `max_turn_tokens` caps each response (applied through sampling) and refuses the turn
-    after a response that hit it."""
+    `max_turn_tokens` caps each response (applied through sampling) and stops the trace
+    as soon as a response hits it, so a clean end after that response cannot name the
+    trace instead."""
 
     max_turns: int | None = None
     max_input_tokens: int | None = None
@@ -287,19 +288,23 @@ class RolloutLimits:
             and trace.num_total_tokens >= self.max_total_tokens
         ):
             return "max_total_tokens"
-        if self.max_turn_tokens is not None:
-            last = next((c for c in reversed(trace.calls) if c.error is None), None)
-            # A length finish below the cap ran out of context, not turn tokens.
-            if (
-                last is not None
-                and last.finish_reason == "length"
-                and (
-                    last.usage is None
-                    or last.usage.completion_tokens >= self.max_turn_tokens
-                )
-            ):
-                return "max_turn_tokens"
+        last = next((c for c in reversed(trace.calls) if c.error is None), None)
+        if last is not None and self.turn_capped(last):
+            return "max_turn_tokens"
         return None
+
+    def turn_capped(self, call: ModelCall) -> bool:
+        """Whether `call`'s response hit `max_turn_tokens`. A length finish below the cap
+        ran out of context, not turn tokens."""
+        return (
+            self.max_turn_tokens is not None
+            and call.error is None
+            and call.finish_reason == "length"
+            and (
+                call.usage is None
+                or call.usage.completion_tokens >= self.max_turn_tokens
+            )
+        )
 
 
 @dataclass
