@@ -1,18 +1,18 @@
 Given a task, a reference answer, and a response, determine if the response is correct — it must match the reference answer (any one of them, when several are listed) in substance (exact wording may differ).
 
 Task:
-```
+{fence}
 {question}
-```
+{fence}
 
 Reference answer:
-```
+{fence}
 {answer}
-```
+{fence}
 
 Response:
-```
+{fence}
 {response}
-```
+{fence}
 
 Respond either "{positive}" or "{negative}" only.

@@ -3,7 +3,6 @@
 import asyncio
 import json
 import math
-import re
 import tomllib
 from functools import cached_property
 from pathlib import Path
@@ -13,7 +12,13 @@ from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_valid
 
 from verifiers.v1.configs.harness import ID
 from verifiers.v1.configs.judge import JudgeConfig
-from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
+from verifiers.v1.judge import (
+    Judge,
+    JudgeView,
+    judge_fence,
+    judge_question,
+    judge_response,
+)
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -297,9 +302,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             # template's newline before Response closes it). Absent when `answer_field` is unset.
             # Fence longer than any backtick run in the answer, so a patch/markdown containing ```
             # can't close it early and spill into the prompt as instructions.
-            fence = "`" * (
-                max((len(m) for m in re.findall(r"`+", answer)), default=2) + 1
-            )
+            fence = judge_fence(answer)
             reference = (
                 "\nReference solution (a correct implementation of this task, for comparison):\n"
                 f"{fence}\n{answer}\n{fence}\n"

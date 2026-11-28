@@ -63,3 +63,24 @@ def fake_judge_model(monkeypatch):
 
     monkeypatch.setattr(Judge, "complete", fake_complete)
     return prompts
+
+
+def _outside_fences(prompt: str) -> list[str]:
+    lines, fence = [], ""
+    for line in prompt.splitlines():
+        run = re.match(r" {0,3}(`{3,})", line)
+        if fence:
+            if run and line.strip() == run.group(1) and len(run.group(1)) >= len(fence):
+                fence = ""
+        elif run:
+            fence = run.group(1)
+        else:
+            lines.append(line)
+    return lines
+
+
+@pytest.fixture
+def outside_fences():
+    """The prompt lines outside every code fence: what a judge reads as prompt structure
+    rather than as fenced data."""
+    return _outside_fences

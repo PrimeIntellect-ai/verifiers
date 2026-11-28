@@ -111,6 +111,16 @@ def judge_verdict(text: str, choices: Sequence[str]) -> str:
     return verdict
 
 
+def judge_fence(*texts: object) -> str:
+    """A code fence longer than any backtick run in `texts` (at least ```), so text put
+    inside it can't close it early and spill into the prompt as instructions."""
+    longest = max(
+        (len(run) for text in texts for run in re.findall(r"`+", str(text))),
+        default=0,
+    )
+    return "`" * max(3, longest + 1)
+
+
 ConfigT = TypeVar("ConfigT", bound=JudgeConfig, default=JudgeConfig)
 
 
@@ -149,6 +159,12 @@ class Judge(Generic[ParsedT, ConfigT]):
         # pull in the answer). An unknown placeholder stays as written.
         if not fields:
             return template
+        # `{fence}`, which the built-in prompts put around each field, is longer than
+        # any backtick run in the values. With a fixed ```, a reply holding its own ```
+        # line would end its block, and a "Reference answer:" written after it would
+        # read as part of the prompt.
+        if "fence" not in fields:
+            fields["fence"] = judge_fence(*fields.values())
         pattern = re.compile(r"\{(" + "|".join(map(re.escape, fields)) + r")\}")
         return pattern.sub(lambda m: str(fields[m.group(1)]), template)
 
