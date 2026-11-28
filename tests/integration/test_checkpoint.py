@@ -21,6 +21,7 @@ from grid import grid
 from prime_sandboxes import AsyncSandboxClient
 from subagent_restore import sub_agent_turns
 from tick_restore import COMMAND, TURNS
+from tool_tick_restore import EXPECTED as TICKS
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import ChatDialect
@@ -430,6 +431,79 @@ async def test_every_saved_turn_continues_to_the_same_result(
     assert sorted(await PrimeBackend.discard(snapshots)) == sorted(
         snapshot.id for snapshot in snapshots
     )
+    await assert_no_leaks(taken)
+
+
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(["bash"], needs=NEEDS), indirect=True
+)
+@pytest.mark.parametrize(
+    "command_model",
+    [[("ticker_tick", {})] * len(TICKS)],
+    indirect=True,
+    ids=["ticker"],
+)
+async def test_another_owner_continues_a_tool_server_vm(
+    taken, harness, harness_runtime, command_model
+):
+    """The task's tool server runs on a Prime VM of its own and counts only in its
+    memory. The rollout is saved while its second call runs and then finishes in its
+    own boxes, which resumed from the snapshot's stop. A second owner continues the
+    saved rollout: the box and the server's VM each from their own snapshot, on a new
+    private network, with a new state channel. Each run's state ends as 1..N only if its
+    box reached its server after the stop, the server kept its memory, and every call
+    ran exactly once and reached its owner."""
+    config = _eval_config(
+        "tool-tick-restore",
+        harness=harness,
+        runtime=harness_runtime,
+        taskset_overrides={"task": {"tools": {"runtime": {"type": "prime"}}}},
+        max_turns=12,
+        max_tokens=4096,
+        rollout_timeout=600,
+        client=command_model,
+    )
+    ctx = ModelContext(
+        client=config.client, model=config.model, sampling=config.sampling
+    )
+
+    env = load_environment(config.env)
+    (task,) = list(env.taskset)
+    async with env.serving():
+        (slot,) = env.slots(task)
+        running = asyncio.ensure_future(env.run_slot(slot, ctx))
+        try:
+            async with asyncio.timeout(600):
+                while not (slot.traces and slot.traces[0].num_turns >= 2):
+                    assert not running.done(), "the rollout ended before the save"
+                    await asyncio.sleep(0.2)
+            (point,) = await save_all()
+            (original,) = (await running).traces
+        finally:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+    # On its first attempt: a failed call would start it over and hide the loss.
+    assert original.errors == [] and original.attempt == 1
+    assert original.state.ticks == TICKS
+    entry = restore_entry(point)
+    # The save waited for the second call to finish: box and server agree on it.
+    assert entry["session"]["state"]["ticks"] == TICKS[:2]
+    snapshot = Snapshot.model_validate(entry["snapshot"])
+    assert list(snapshot.peers) == ["ticker"]
+    point = pickle.loads(pickle.dumps(point))
+
+    second = load_environment(config.env)
+    (task,) = list(second.taskset)
+    async with second.serving():
+        episode = await second.run_slot(RunSlot(task, id=slot.id, restore=point), ctx)
+    (trace,) = episode.traces
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.has_restored and trace.attempt == 2
+    assert sum(node.parent is None for node in trace.nodes) == 1
+    assert trace.state.ticks == TICKS
+    assert trace.reward == 1.0
+    # The owner deletes the box's snapshot and its server's together.
+    assert await PrimeBackend.discard([snapshot]) == [snapshot.id]
     await assert_no_leaks(taken)
 
 

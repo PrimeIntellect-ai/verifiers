@@ -19,5 +19,6 @@ include = [
     "echo_tool.py",
     "fetch_tool.py",
     "tool_response_image.py",
+    "tool_tick_restore.py",
     "pyproject.toml",
 ]

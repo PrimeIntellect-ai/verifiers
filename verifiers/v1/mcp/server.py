@@ -6,6 +6,7 @@ import functools
 import hashlib
 import hmac
 import inspect
+import json
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
@@ -148,9 +149,15 @@ class ServerBase(Generic[ConfigT, StateT]):
         return current if current is not None else self._inert_state  # type: ignore[return-value]
 
     def _state_channel(self) -> tuple[str | None, str, str | None]:
-        """Use an env channel, or authenticate the exact coordinates of a shared call."""
+        """Use an env channel, or authenticate the exact coordinates of a shared call.
+        A channel file replaces the env channel: a host that continues this server from
+        a memory snapshot rewrites it (`write_state_channel`)."""
         url = os.environ.get("VF_STATE_URL")
         secret = os.environ.get("VF_STATE_SECRET", "")
+        if path := os.environ.get("VF_STATE_FILE"):
+            with open(path) as f:
+                channel = json.load(f)
+            url, secret = channel["url"], channel["secret"]
         if url:
             return url, secret, None
         shared_url = _request_query(STATE_URL_PARAM)

@@ -480,7 +480,10 @@ class PrimeBackend(RuntimeBackend):
 
     async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
         started = time.monotonic()
-        durable = await self._wait_durable(snapshot.id)
+        durable = await asyncio.gather(
+            self._wait_durable(snapshot.id),
+            *(self._wait_durable(peer.id) for peer in snapshot.peers.values()),
+        )
         self.stray_snapshots.remove(snapshot)
         logger.debug(
             "prime: checkpoint %s durable after %.1fs on sandbox %s",
@@ -488,7 +491,8 @@ class PrimeBackend(RuntimeBackend):
             time.monotonic() - started,
             self.info.id,
         )
-        return durable.stored_bytes
+        sizes = [checkpoint.stored_bytes for checkpoint in durable]
+        return None if None in sizes else sum(sizes)
 
     @classmethod
     async def discard(cls, snapshots: list[Snapshot]) -> list[str]:
@@ -497,18 +501,24 @@ class PrimeBackend(RuntimeBackend):
         # newer one needs it. Usually called after teardown released `_client`.
         deleted = []
         async with leased_client() as client:
-            for snapshot in snapshots:
+
+            async def delete(checkpoint_id: str) -> bool:
                 try:
-                    await client.delete_checkpoint(snapshot.id)
+                    await client.delete_checkpoint(checkpoint_id)
                 except Exception as e:  # noqa: BLE001 - provider cleanup is best-effort
                     if "HTTP 404" in str(e):
                         # Already gone: an owner that asks again must not ask forever.
-                        deleted.append(snapshot.id)
-                        continue
+                        return True
                     logger.warning(
-                        "prime: failed to delete checkpoint %s: %s", snapshot.id, e
+                        "prime: failed to delete checkpoint %s: %s", checkpoint_id, e
                     )
-                else:
+                    return False
+                return True
+
+            for snapshot in snapshots:
+                # Deleted only with all its peers, so a failed peer is asked again.
+                parts = [snapshot.id, *(peer.id for peer in snapshot.peers.values())]
+                if all([await delete(checkpoint_id) for checkpoint_id in parts]):
                     deleted.append(snapshot.id)
         return deleted
 

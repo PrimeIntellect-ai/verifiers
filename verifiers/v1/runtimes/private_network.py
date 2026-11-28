@@ -15,9 +15,11 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     PrimeBackend,
     PrimeConfig,
+    Runtime,
     RuntimeBackend,
     make_backend,
 )
@@ -57,6 +59,63 @@ def tool_vms(
 def lan_host(backend: RuntimeBackend) -> str:
     """The name a LAN member resolves a VM by."""
     return f"{backend.info.id}.sandbox.internal"
+
+
+_ALIAS = r"""
+for _ in $(seq 30); do
+  address=$(getent hosts "$2" | awk 'NR == 1 {print $1}')
+  [ -n "$address" ] && break
+  sleep 1
+done
+[ -n "$address" ] || { echo "$2 does not resolve" >&2; exit 1; }
+grep -v " $1\$" /etc/hosts > /tmp/vf-hosts || true
+printf '%s %s\n' "$address" "$1" >> /tmp/vf-hosts
+cat /tmp/vf-hosts > /etc/hosts
+"""
+
+
+async def alias_hosts(runtime: Runtime, aliases: Mapping[str, str]) -> None:
+    """Make the box resolve each old LAN name in `aliases` to the address of its new
+    one. A box restored from a memory snapshot still reaches its peers at the names of
+    the VMs it first ran beside; restored peers are new VMs with new names."""
+    for old, new in aliases.items():
+        if old == new:
+            continue
+        result = await runtime.run(["sh", "-c", _ALIAS, "sh", old, new], {})
+        if result.exit_code != 0:
+            raise SandboxError(
+                f"could not resolve {old} to {new} in the restored box: "
+                f"{(result.stderr or result.stdout).strip()[-500:]}"
+            )
+
+
+async def rejoin(backends: list[RuntimeBackend]) -> None:
+    """Join each VM to its LAN network again after a memory snapshot. A VM that resumes in
+    place reaches no LAN peer, by name or address, though the network still lists it as
+    a synced member; leaving and joining again restores its routes and names."""
+    joined = [
+        backend
+        for backend in backends
+        if isinstance(backend, PrimeBackend) and backend.lan is not None
+    ]
+    errors: list[Exception] = []
+    left: list[PrimeBackend] = []
+    async with leased_client() as client:
+        # Each VM leaves before any joins again; one that left joins again whatever
+        # becomes of the others.
+        for backend in joined:
+            try:
+                await client.remove_lan_member(backend.lan[0], backend.info.id)
+                left.append(backend)
+            except Exception as e:  # noqa: BLE001 - raised once every VM is back
+                errors.append(e)
+        for backend in left:
+            try:
+                await client._join_lan(backend.lan[0], backend.info.id, backend.lan[1])
+            except Exception as e:  # noqa: BLE001 - raised once every VM is back
+                errors.append(e)
+    if errors:
+        raise SandboxError(f"rejoining the private network failed: {errors[0]}")
 
 
 def _tag(index: int) -> str:

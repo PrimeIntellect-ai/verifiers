@@ -627,8 +627,10 @@ class InterceptionServer(Interception):
         selects the wire format (see `dialects.DIALECTS`)."""
 
         async def handler(request: web.Request) -> web.StreamResponse:
+            session = self.sessions.get(dialect.secret(request.headers))
             try:
-                response = await self.handle_request(request, dialect)
+                with session.waits() if session else contextlib.nullcontext():
+                    response = await self.handle_request(request, dialect)
             except BaseException:
                 _finish_idempotent_attempt(request, None)
                 raise
@@ -774,18 +776,23 @@ class InterceptionServer(Interception):
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
         body = from_json(await request.read())
-        await session.flowing.wait()
-        try:
-            return web.json_response(
-                await session.decide_tool(
-                    str(body.get("tool_call_id", "")),
-                    body.get("name"),
-                    body.get("arguments"),
-                )
-            )
-        except RolloutError as error:
-            session.error = error
-            return web.json_response({"error": str(error)}, status=400)
+        with session.waits():
+            await session.flowing.wait()
+            try:
+                # A verdict's request hooks can write to the trace while a snapshot
+                # begins: it records the trace only once they are done, and the box
+                # gets the verdict only once it runs again.
+                with session.committing():
+                    verdict = await session.decide_tool(
+                        str(body.get("tool_call_id", "")),
+                        body.get("name"),
+                        body.get("arguments"),
+                    )
+            except RolloutError as error:
+                session.error = error
+                return web.json_response({"error": str(error)}, status=400)
+            await session.flowing.wait()
+            return web.json_response(verdict)
 
     def record_call(
         self,

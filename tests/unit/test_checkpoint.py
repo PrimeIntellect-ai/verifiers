@@ -257,6 +257,9 @@ def make_rollout(
     run._held_time = 0.0
     run._capturing = asyncio.Lock()
     run._state_unsaved = None
+    run._tools_busy = False
+    run.deployment = SimpleNamespace(tool_vms={})  # type: ignore[assignment]
+    run._urls = {}
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
     run.rewound_snapshots = []

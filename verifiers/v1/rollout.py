@@ -42,7 +42,7 @@ from verifiers.v1.runtimes import (
     backend_cls,
     make_backend,
 )
-from verifiers.v1.runtimes.private_network import tool_vms
+from verifiers.v1.runtimes.private_network import alias_hosts, rejoin, tool_vms
 from verifiers.v1.session import (
     RolloutLimits,
     RolloutSession,
@@ -85,6 +85,9 @@ class RolloutTimeouts:
 
 HOLD_SECONDS = 120
 """How long a saved rollout waits for its owner's `release` before it goes on by itself."""
+TOOLS_REST_SECONDS = 60
+"""How long a snapshot of a box with tool server VMs waits for the box to ask for a
+model turn or a tool verdict, when no tool call is under way between them."""
 
 
 def _unpin(taken: asyncio.Future[Checkpoint]) -> None:
@@ -289,6 +292,8 @@ class Rollout:
         """Why the last `save` returned nothing."""
         self._state_unsaved: str | None = None
         """Why the newest snapshot could not record the task state, if it could not."""
+        self._tools_busy = False
+        """Whether the newest snapshot was given up because a tool call was under way."""
         self._hold_id: str | None = None
         """Identifies the pending owner save, then its exported snapshot, until release."""
         self._release_timer: asyncio.TimerHandle | None = None
@@ -312,6 +317,7 @@ class Rollout:
         self._opened = False
         self._deployment_started = False
         self._closed = False
+        self._closing = asyncio.Event()
         self._harness_cleaned = False
         self._endpoint: str | None = None
         self._relay: Relay | None = None
@@ -442,15 +448,29 @@ class Rollout:
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
                 spec = self.task.deployment_spec()
+                # Tool servers on Prime VMs of their own boot with the workspace.
+                vms = tool_vms(
+                    toolsets,
+                    runtime.backend.config,
+                    composed=spec is not None,
+                    borrowed=self._borrowed_runtime is not None,
+                )
+                if self._restore is not None:
+                    # Each continues its snapshot from the box's stop, still serving.
+                    peers = self._restore.snapshot.peers
+                    if set(peers) != set(vms):
+                        raise SandboxError(
+                            "the rollout cannot continue from its memory snapshot: "
+                            f"it holds tool server VMs {sorted(peers)}, the task "
+                            f"runs {sorted(vms)}"
+                        )
+                    vms = {
+                        name: backend_cls(config).restore_config(config, peers[name])
+                        for name, config in vms.items()
+                    }
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
-                    # Tool servers on Prime VMs of their own boot with the workspace.
-                    tool_vms=tool_vms(
-                        toolsets,
-                        runtime.backend.config,
-                        composed=spec is not None,
-                        borrowed=self._borrowed_runtime is not None,
-                    ),
+                    tool_vms=vms,
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -528,12 +548,18 @@ class Rollout:
                     if self._has_user
                     else "its agent takes no checkpoints"
                     if self._checkpointing is None
-                    # Everything the box reaches the host through must follow it to a
-                    # new box: the relay does, tool servers and services do not.
-                    else "its task has tool servers or services of its own"
-                    if toolsets
-                    or self._shared_tools
+                    # Everything the box reaches must follow it to a new box: the
+                    # relay does, and so do tool servers on VMs of their own, which
+                    # stop and restore with the box. Other tool servers and services
+                    # do not.
+                    else "its task has services, shared tools or tool servers off VMs "
+                    "of their own"
+                    if self._shared_tools
                     or self.deployment.spec is not None
+                    or any(
+                        toolset.server_name not in self.deployment.tool_vms
+                        for toolset in toolsets
+                    )
                     else None
                 )
                 self._memory = self.unsaveable is None and self._relay is not None
@@ -597,6 +623,10 @@ class Rollout:
                     if self.deployment.spec is not None
                     else {}
                 )
+                # The URLs the restored harness holds for its tool server VMs.
+                held = (
+                    self._restore.session["live"].get("tools", {}) if restored else {}
+                )
                 self._urls = await self._stack.enter_async_context(
                     serve_tools(
                         toolsets,
@@ -614,8 +644,19 @@ class Rollout:
                             name: self.deployment.target(name)
                             for name in self.deployment.tool_vms
                         },
+                        restored=held,
                     )
                 )
+                if held:
+                    # The harness reaches each server at the LAN name of the VM it
+                    # first ran on: resolve that name to the VM that continues it.
+                    await alias_hosts(
+                        runtime,
+                        {
+                            urlsplit(url).hostname: self.deployment.hosts[name]
+                            for name, url in held.items()
+                        },
+                    )
                 logger.debug(
                     "Started interception and tool servers in %s",
                     format_time(time.perf_counter() - started),
@@ -624,7 +665,11 @@ class Rollout:
                 # execution policy while preserving the framework routes the agent uses.
                 # Service hosts resolve inside the deployment (Compose names, LAN
                 # names), not as egress.
-                internal = {*services, *self.deployment.hosts.values()}
+                internal = {
+                    *services,
+                    *self.deployment.hosts.values(),
+                    *(urlsplit(url).hostname for url in held.values()),
+                }
                 await self.deployment.prepare_execution(
                     [
                         url
@@ -1091,6 +1136,15 @@ class Rollout:
             self.save_skipped = "its harness program is not running (setup or scoring)"
         if self.save_skipped is not None:
             return None
+        # Before the hold, which stops the agent deadline: the tool call runs on it.
+        loop = asyncio.get_running_loop()
+        if not await self._tools_rest(loop.time() + TOOLS_REST_SECONDS):
+            self.save_skipped = (
+                "it is finishing"
+                if self._closed
+                else "a tool call was under way throughout the save"
+            )
+            return None
         task = asyncio.current_task()
         if task is not None:
             self._captures.add(task)
@@ -1112,6 +1166,8 @@ class Rollout:
                 self.save_skipped = (
                     "its harness program ended during the save"
                     if ended
+                    else "a tool call was under way throughout the save"
+                    if self._tools_busy
                     else self._state_unsaved or "its memory snapshot failed"
                 )
                 return None
@@ -1163,7 +1219,7 @@ class Rollout:
             # Its durable wait failed and dropped it: the box's teardown frees it.
             stray = self.runtime.backend.stray_snapshots
             if all(snapshot.id != snapshot_id for snapshot in stray):
-                stray.append(Snapshot(id=snapshot_id))
+                stray.append(Snapshot.model_validate(restore_entry(saved)["snapshot"]))
         self._release_hold(snapshot_id)
 
     def _release_hold(self, hold_id: str | None) -> None:
@@ -1217,8 +1273,26 @@ class Rollout:
         session = self._session
         loop = asyncio.get_running_loop()
         checkpoint: Checkpoint | None = None
-        # The pace is waited for before the box is held, not while.
-        async with self.runtime.backend.snapshot_pace(), self._capturing:
+        self._tools_busy = False
+        deadline = loop.time() + TOOLS_REST_SECONDS
+        # The pace is waited for before the box is held, not while, and so is the rest
+        # of its tool calls: a busy box keeps no snapshot slot. The hold follows the
+        # rest without a yield, so the box takes the slot again until it is at rest.
+        held = AsyncExitStack()
+        while True:
+            if not await self._tools_rest(deadline):
+                self._tools_busy = not self._closed
+                return None
+            try:
+                await held.enter_async_context(self.runtime.backend.snapshot_pace())
+                await held.enter_async_context(self._capturing)
+            except BaseException:
+                await held.aclose()
+                raise
+            if not self.deployment.tool_vms or session.asking.is_set():
+                break
+            await held.aclose()
+        async with held:
             if self._closed:
                 return None
             session.hold()
@@ -1252,6 +1326,10 @@ class Rollout:
                     "relay": self._relay.state,
                     "secret": self._secret,
                 }
+                if self.deployment.tool_vms:
+                    data["live"]["tools"] = {
+                        name: self._urls[name] for name in self.deployment.tool_vms
+                    }
                 started = time.time()
 
                 def on_taken(snapshot: Snapshot) -> None:
@@ -1272,7 +1350,7 @@ class Rollout:
                         taken.set_result(checkpoint)
 
                 try:
-                    snapshot = await self.runtime.backend.snapshot(on_taken)
+                    snapshot = await self._snapshot(on_taken)
                 except Exception:
                     logger.warning(
                         "memory snapshot failed (rollout %s)",
@@ -1320,6 +1398,73 @@ class Rollout:
             node,
         )
         return checkpoint
+
+    async def _tools_rest(self, deadline: float) -> bool:
+        """Wait, without holding the box, until it asks for its model or a tool verdict:
+        the tool server VMs stop beside the box, and a call between them does not
+        survive the stop. A harness that runs one tool at a time then runs none. False
+        when a call still runs at `deadline`, or the rollout closes; True at once
+        without tool server VMs."""
+        if not self.deployment.tool_vms:
+            return True
+        session = self._session
+        loop = asyncio.get_running_loop()
+        while not session.asking.is_set():
+            left = deadline - loop.time()
+            if self._closed or left <= 0:
+                return False
+            waits = {
+                asyncio.ensure_future(session.asking.wait()),
+                asyncio.ensure_future(self._closing.wait()),
+            }
+            try:
+                await asyncio.wait(
+                    waits, timeout=left, return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                for wait in waits:
+                    wait.cancel()
+        return True
+
+    async def _snapshot(self, taken: Callable[[Snapshot], None]) -> Snapshot:
+        """Snapshot the box, and its tool server VMs in the same stop (`Snapshot.peers`).
+        With tool server VMs, `taken` gets the snapshot once every one is named."""
+        backend = self.runtime.backend
+        vms = {
+            name: self.deployment.target_backends[name]
+            for name in self.deployment.tool_vms
+        }
+        if not vms:
+            return await backend.snapshot(taken)
+        main, *named = await asyncio.gather(
+            backend.snapshot(),
+            *(vm.snapshot() for vm in vms.values()),
+            return_exceptions=True,
+        )
+        peers = {
+            name: snapshot
+            for name, snapshot in zip(vms, named)
+            if isinstance(snapshot, Snapshot)
+        }
+        # Only the box's teardown frees what nothing restores, a VM's failed
+        # snapshots too.
+        stray = backend.stray_snapshots
+        for vm in vms.values():
+            stray.extend(vm.stray_snapshots)
+            vm.stray_snapshots.clear()
+        # Before the box gets a reply: its next tool call needs the LAN. Shielded: a
+        # VM that a cancelled rejoin left off the network reaches no peer again.
+        await asyncio.shield(rejoin([backend, *vms.values()]))
+        failed = [e for e in (main, *named) if isinstance(e, BaseException)]
+        if failed:
+            raise failed[0]
+        for peer in peers.values():
+            stray.remove(peer)
+        stray.remove(main)
+        snapshot = main.model_copy(update={"peers": peers})
+        stray.append(snapshot)
+        taken(snapshot)
+        return snapshot
 
     def _drop_capture(self, checkpoint: Checkpoint | None) -> None:
         """Drop a snapshot that failed after `_take_snapshot` handed it out. No retry
@@ -1438,6 +1583,7 @@ class Rollout:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
+        self._closing.set()
         LIVE.discard(self)
         await self._settle_checkpoints(wait=False)
         if self._harness_session is not None:
@@ -1569,6 +1715,7 @@ class Rollout:
         if self._closed:
             return self.trace
         self._closed = True
+        self._closing.set()
         LIVE.discard(self)
         trace = self.trace
         skip = self._scoring_skip()

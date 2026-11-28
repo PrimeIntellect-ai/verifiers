@@ -81,9 +81,9 @@ def open_restore(data: dict[str, Any], task: Task) -> tuple[Trace, Checkpoint]:
 
 def unsaveable(config: AgentConfig, harness: Harness | None = None) -> str | None:
     """Why the rollouts of an agent with `config` take no memory snapshots, so `save_all`
-    returns nothing for them; None when they take them. A task with tool
-    servers or services of its own rules its rollout out as well, which only the
-    rollout knows."""
+    returns nothing for them; None when they take them. A task with services, shared
+    tools or tool servers off Prime VMs of their own rules its rollout out as well,
+    which only the rollout knows."""
     from verifiers.v1.runtimes import backend_cls
     from verifiers.v1.utils.loaders import harness_class
 

@@ -49,9 +49,10 @@ class RolloutCheckpointConfig(BaseConfig):
     snapshot stops the box for a few seconds and resets its open connections to the
     outside. It needs a runtime that takes memory snapshots
     (`SUPPORTS_MEMORY_SNAPSHOTS`), a harness that runs detached from the host
-    (`Harness.SUPPORTS_MEMORY_RESTORE`) and a rollout without tool servers or services
-    of its own. Elsewhere a retry starts over. Every snapshot is deleted once the run
-    is final."""
+    (`Harness.SUPPORTS_MEMORY_RESTORE`), and a rollout without services or shared tools
+    whose tool servers, if any, run on Prime VMs of their own: those stop with the box
+    and restore beside it. Elsewhere a retry starts over. Every snapshot is deleted once
+    the run is final."""
 
     interval: PositiveFloat | None = Field(default=None, allow_inf_nan=False)
     """Seconds between memory snapshots during execution. A held owner save can
